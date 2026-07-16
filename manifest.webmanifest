@@ -1,0 +1,13 @@
+{
+  "name": "Portfolio Command Center",
+  "short_name": "Portfolio CC",
+  "description": "Portfolio allocation and trading P/L dashboard.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#080706",
+  "theme_color": "#080706",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

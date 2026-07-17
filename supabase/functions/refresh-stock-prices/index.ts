@@ -1,0 +1,235 @@
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+const snapshotPath = "/openapi/market-data/stock/snapshot";
+const refreshWindowMs = 15 * 60_000;
+
+type Instrument = {
+  id: string;
+  symbol: string;
+  asset_type: "stock" | "etf";
+};
+
+type PriceResult = {
+  instrument: Instrument;
+  price: number;
+  marketTime: string;
+};
+
+function timestampUtc(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let value = "";
+  for (const byte of bytes) value += String.fromCharCode(byte);
+  return btoa(value);
+}
+
+async function makeSignature(
+  path: string,
+  query: Record<string, string>,
+  appKey: string,
+  appSecret: string,
+  host: string,
+  timestamp: string,
+  nonce: string,
+): Promise<string> {
+  const values: Record<string, string> = {
+    ...query,
+    host,
+    "x-app-key": appKey,
+    "x-signature-algorithm": "HMAC-SHA1",
+    "x-signature-nonce": nonce,
+    "x-signature-version": "1.0",
+    "x-timestamp": timestamp,
+  };
+  const sorted = Object.keys(values).sort().map((key) => `${key}=${values[key]}`).join("&");
+  const encoded = encodeURIComponent(`${path}&${sorted}`);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(`${appSecret}&`),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(encoded));
+  return bytesToBase64(new Uint8Array(signature));
+}
+
+function marketValue(snapshot: Record<string, unknown>): { price: number; marketTime: string } | null {
+  const nested = ["pre_market", "after_hours", "overnight"]
+    .map((key) => snapshot[key])
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value));
+  const candidates = [snapshot, ...nested].map((value) => {
+    const rawPrice = value.price ?? value.latest_price ?? value.last_price ?? value.close;
+    const price = Number(rawPrice);
+    const rawTime = value.last_trade_time ?? value.timestamp ?? value.time;
+    const numericTime = Number(rawTime);
+    const parsedTime = Number.isFinite(numericTime)
+      ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime)
+      : new Date(String(rawTime || ""));
+    return { price, time: parsedTime.getTime() };
+  }).filter((value) => Number.isFinite(value.price) && value.price > 0);
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => (Number.isFinite(b.time) ? b.time : 0) - (Number.isFinite(a.time) ? a.time : 0));
+  const chosen = candidates[0];
+  return {
+    price: chosen.price,
+    marketTime: new Date(Number.isFinite(chosen.time) ? chosen.time : Date.now()).toISOString(),
+  };
+}
+
+function payloadRows(payload: unknown): Record<string, unknown>[] {
+  if (Array.isArray(payload)) return payload.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object");
+  if (!payload || typeof payload !== "object") return [];
+  const object = payload as Record<string, unknown>;
+  if (Array.isArray(object.data)) return payloadRows(object.data);
+  if (object.data && typeof object.data === "object") return [object.data as Record<string, unknown>];
+  return [object];
+}
+
+async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
+  const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
+  const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
+  const region = Deno.env.get("WEBULL_REGION")?.trim().toLowerCase() || "th";
+  const host = Deno.env.get("WEBULL_API_HOST")?.trim() || (region === "th" ? "api.webull.co.th" : "api.webull.com");
+  const accessToken = Deno.env.get("WEBULL_ACCESS_TOKEN")?.trim();
+  if (!appKey || !appSecret) throw new Error("Webull secrets are not configured");
+
+  const query = {
+    symbols: instrument.symbol.trim().toUpperCase(),
+    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    extend_hour_required: "true",
+    overnight_required: "true",
+  };
+  const timestamp = timestampUtc();
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const signature = await makeSignature(snapshotPath, query, appKey, appSecret, host, timestamp, nonce);
+  const headers: Record<string, string> = {
+    "x-app-key": appKey,
+    "x-timestamp": timestamp,
+    "x-signature": signature,
+    "x-signature-algorithm": "HMAC-SHA1",
+    "x-signature-version": "1.0",
+    "x-signature-nonce": nonce,
+    "x-version": "v2",
+  };
+  if (accessToken) headers["x-access-token"] = accessToken;
+
+  const url = new URL(`https://${host}${snapshotPath}`);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url, { headers });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object"
+      ? JSON.stringify(payload).slice(0, 300)
+      : `HTTP ${response.status}`;
+    throw new Error(`${instrument.symbol}: ${detail}`);
+  }
+  const rows = payloadRows(payload);
+  const row = rows.find((item) => String(item.symbol || "").toUpperCase() === instrument.symbol.toUpperCase()) || rows[0];
+  const value = row ? marketValue(row) : null;
+  if (!value) throw new Error(`${instrument.symbol}: snapshot did not contain a usable price`);
+  return { instrument, ...value };
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      try {
+        results[index] = { status: "fulfilled", value: await work(items[index]) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+Deno.serve(async (request) => {
+  if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (request.method !== "POST") return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: jsonHeaders });
+
+  try {
+    const authorization = request.headers.get("Authorization");
+    if (!authorization) return new Response(JSON.stringify({ error: "Authentication required" }), { status: 401, headers: jsonHeaders });
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authorization } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
+
+    const body = await request.json().catch(() => ({}));
+    const force = body?.force === true;
+    const [{ data: targets, error: targetError }, { data: positions, error: positionError }] = await Promise.all([
+      supabase.from("allocation_targets").select("instrument_id").eq("is_active", true),
+      supabase.from("position_balances").select("instrument_id").gt("quantity", 0),
+    ]);
+    if (targetError) throw targetError;
+    if (positionError) throw positionError;
+    const activeIds = [...new Set([...(targets || []), ...(positions || [])].map((item) => item.instrument_id).filter(Boolean))];
+    if (!activeIds.length) return new Response(JSON.stringify({ updated: 0, skipped: true, reason: "No active stocks" }), { headers: jsonHeaders });
+
+    const { data: instruments, error: instrumentError } = await supabase
+      .from("instruments")
+      .select("id,symbol,asset_type")
+      .in("id", activeIds)
+      .in("asset_type", ["stock", "etf"])
+      .order("symbol")
+      .limit(300);
+    if (instrumentError) throw instrumentError;
+    if (!instruments?.length) return new Response(JSON.stringify({ updated: 0, skipped: true, reason: "Options are excluded" }), { headers: jsonHeaders });
+
+    let pending = instruments as Instrument[];
+    if (!force) {
+      const cutoff = new Date(Date.now() - refreshWindowMs).toISOString();
+      const { data: fresh, error: freshError } = await supabase
+        .from("instrument_prices")
+        .select("instrument_id")
+        .in("instrument_id", pending.map((item) => item.id))
+        .eq("source", "webull")
+        .gte("fetched_at", cutoff);
+      if (freshError) throw freshError;
+      const freshIds = new Set((fresh || []).map((item) => item.instrument_id));
+      pending = pending.filter((item) => !freshIds.has(item.id));
+    }
+    if (!pending.length) return new Response(JSON.stringify({ updated: 0, skipped: true, checked: instruments.length }), { headers: jsonHeaders });
+
+    const snapshots = await mapLimit(pending, 6, fetchSnapshot);
+    const successes = snapshots.filter((result): result is PromiseFulfilledResult<PriceResult> => result.status === "fulfilled");
+    const failures = snapshots.flatMap((result, index) => result.status === "rejected"
+      ? [{ symbol: pending[index].symbol, message: result.reason instanceof Error ? result.reason.message : String(result.reason) }]
+      : []);
+    const writes = await Promise.all(successes.map(({ value }) => supabase.rpc("api_record_instrument_price", {
+      p_instrument_id: value.instrument.id,
+      p_price: value.price,
+      p_market_time: value.marketTime,
+      p_source: "webull",
+    })));
+    writes.forEach((result, index) => {
+      if (result.error) failures.push({ symbol: successes[index].value.instrument.symbol, message: result.error.message });
+    });
+    const updated = writes.filter((result) => !result.error).length;
+    return new Response(JSON.stringify({ updated, checked: pending.length, failures }), {
+      status: updated || !pending.length ? 200 : 502,
+      headers: jsonHeaders,
+    });
+  } catch (error) {
+    console.error("refresh-stock-prices failed", error instanceof Error ? error.message : error);
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Price refresh failed" }), { status: 500, headers: jsonHeaders });
+  }
+});

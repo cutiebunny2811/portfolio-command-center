@@ -97,7 +97,7 @@
     if (/api_remove_asset_from_portfolio/i.test(message)) {
       return "Remove Asset API is not installed yet. Run 010_remove_asset_api.sql in Supabase first.";
     }
-    if (/refresh-stock-prices|Webull price refresh|Edge Function/i.test(message)) {
+    if (/refresh-stock-prices.*not found|Failed to send a request to the Edge Function|FunctionsFetchError|404/i.test(message)) {
       return "Webull price refresh is not deployed yet. Deploy the refresh-stock-prices Supabase Edge Function and add its Webull secrets.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
@@ -346,7 +346,14 @@
     if (notify) setSync(true, "Updating Webull prices...");
     try {
       const { data, error } = await db.functions.invoke("refresh-stock-prices", { body: { force } });
-      if (error) throw new Error(`Webull price refresh: ${error.message}`);
+      if (error) {
+        let detail = error.message;
+        try {
+          const payload = await error.context?.clone?.().json();
+          detail = payload?.error || payload?.failures?.map((item) => `${item.symbol}: ${item.message}`).join("; ") || detail;
+        } catch (_) { /* Response body is optional. */ }
+        throw new Error(`Webull price refresh: ${detail}`);
+      }
       if (data?.error) throw new Error(`Webull price refresh: ${data.error}`);
       state.lastWebullRefresh = new Date();
       if (num(data?.updated) > 0) {

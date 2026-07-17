@@ -93,6 +93,9 @@
     if (/api_create_journal_entry|schema cache|function .* does not exist/i.test(message)) {
       return "Journal API is not installed yet. Run 005_journal_api.sql in Supabase first.";
     }
+    if (/api_remove_asset_from_portfolio/i.test(message)) {
+      return "Remove Asset API is not installed yet. Run 010_remove_asset_api.sql in Supabase first.";
+    }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
 
@@ -160,7 +163,7 @@
   function portfolioRows(portfolio) {
     const instruments = instrumentMap();
     const positions = new Map(
-      state.positions.filter((item) => item.portfolio_id === portfolio.id).map((item) => [item.instrument_id, item])
+      state.positions.filter((item) => item.portfolio_id === portfolio.id && num(item.quantity) > 0).map((item) => [item.instrument_id, item])
     );
     const targets = new Map(
       state.targets.filter((item) => item.portfolio_id === portfolio.id && item.is_active).map((item) => [item.instrument_id, item])
@@ -467,7 +470,7 @@
         <td><span class="cell-main mono">${percent(row.targetPercent)}</span><span class="cell-sub">${money(row.quota)} quota</span></td>
         <td><strong class="mono gold">${money(row.remaining)}</strong></td>
         <td><span class="status status--${row.statusClass}">${esc(row.status)}</span><span class="cell-sub">${row.target?.planned_tranches ? `${row.target.planned_tranches} tranches` : "No tranche split"}</span></td>
-        <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button></div></td>
+        <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
       </tr>`).join("")}</tbody>
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
   }
@@ -591,9 +594,9 @@
     const x = (index) => pad.left + index / Math.max(points.length - 1, 1) * (width - pad.left - pad.right);
     const y = (value) => pad.top + (max - value) / range * (height - pad.top - pad.bottom);
     ctx.clearRect(0, 0, width, height);
-    ctx.strokeStyle = "rgba(212, 175, 55, .18)"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = "rgba(245, 245, 245, .12)"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
     ctx.beginPath(); ctx.moveTo(pad.left, y(0)); ctx.lineTo(width - pad.right, y(0)); ctx.stroke(); ctx.setLineDash([]);
-    const final = points.at(-1), line = final >= 0 ? "#d4af37" : "#e04444";
+    const final = points.at(-1), line = final >= 0 ? "#55b98d" : "#d32323";
     const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
     gradient.addColorStop(0, final >= 0 ? "rgba(215,170,75,.22)" : "rgba(255,102,91,.16)");
     gradient.addColorStop(1, "rgba(8,7,6,0)");
@@ -681,9 +684,9 @@
     const x = (index) => pad.left + index / Math.max(points.length - 1, 1) * (width - pad.left - pad.right);
     const y = (value) => pad.top + (max - value) / range * (height - pad.top - pad.bottom);
     ctx.clearRect(0, 0, width, height);
-    ctx.strokeStyle = "rgba(212, 175, 55, .18)"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = "rgba(245, 245, 245, .12)"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
     ctx.beginPath(); ctx.moveTo(pad.left, y(0)); ctx.lineTo(width - pad.right, y(0)); ctx.stroke(); ctx.setLineDash([]);
-    const final = points.at(-1), line = final >= 0 ? "#d4af37" : "#e04444";
+    const final = points.at(-1), line = final >= 0 ? "#55b98d" : "#d32323";
     const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
     gradient.addColorStop(0, final >= 0 ? "rgba(215,170,75,.22)" : "rgba(255,102,91,.16)");
     gradient.addColorStop(1, "rgba(8,7,6,0)");
@@ -833,6 +836,24 @@
     });
   }
 
+  function openRemoveAssetDialog(instrumentId) {
+    const portfolio = currentPortfolio();
+    const instrument = instrumentMap().get(instrumentId);
+    const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentId);
+    if (num(position?.quantity) > 0) {
+      toast(`Sell the remaining ${num(position.quantity).toLocaleString("en-US", { maximumFractionDigits: 8 })} share(s) before removing ${instrument?.symbol || "this asset"}`, true);
+      return;
+    }
+    openDialog({
+      kicker: `${portfolio.name} · Safe removal`, title: `Remove ${instrument?.symbol || "asset"} from this portfolio?`, submitLabel: "Remove from portfolio", danger: true,
+      body: `<div class="warning-box">This removes the ticker from the active allocation plan. Trade history, journal entries and audit data remain in Supabase, and you can add the ticker again later.</div>`,
+      onSubmit: async () => {
+        await rpc("api_remove_asset_from_portfolio", { p_portfolio_id: portfolio.id, p_instrument_id: instrumentId });
+        closeDialog(); toast(`${instrument?.symbol || "Asset"} removed from ${portfolio.name}`); await loadData({ quiet: true });
+      }
+    });
+  }
+
   function portfolioInstrumentOptions(portfolio, positionsOnly = false) {
     const ids = new Set(portfolioRows(portfolio).filter((row) => !positionsOnly || num(row.position?.quantity) > 0).map((row) => row.id));
     return state.instruments.filter((item) => ids.has(item.id)).map((item) => `<option value="${item.id}">${esc(item.symbol)} · ${esc(item.display_name || item.asset_type)}</option>`).join("");
@@ -924,6 +945,7 @@
     else if (action === "trade-sell") openTradeDialog("sell");
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
+    else if (action === "asset-remove") openRemoveAssetDialog(target.dataset.instrumentId);
     else if (action === "journal-add") openJournalDialog();
     else if (action === "journal-edit") openJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
     else if (action === "journal-void") openVoidJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));

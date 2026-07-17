@@ -622,11 +622,11 @@
     viewRoot.innerHTML = `
       ${pageHead("Trading journal · Closed-trade performance", "P/L without the spreadsheet drift.", "Journal entries measure realized performance by portfolio. They do not edit cash, holdings or broker records.", '<button class="button button--primary" type="button" data-action="journal-add">+ Add P/L entry</button>')}
       <div class="journal-commandbar">
-        <div class="journal-commandbar__controls">
-          <label class="journal-primary-filter"><span>Portfolio</span><select id="journal-filter-primary" aria-label="Filter journal by portfolio"><option value="all">All portfolios</option>${state.portfolios.map((p) => `<option value="${p.id}" ${state.journalFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-          <button class="button button--small journal-refine-button" type="button" data-action="journal-filter-toggle" aria-expanded="${state.journalFiltersOpen}">Refine${refinedFilterCount ? `<b>${refinedFilterCount}</b>` : ""}</button>
+        <label class="journal-primary-filter"><span>Portfolio</span><select id="journal-filter-primary" aria-label="Filter journal by portfolio"><option value="all">All portfolios</option>${state.portfolios.map((p) => `<option value="${p.id}" ${state.journalFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+        <div class="journal-commandbar__meta">
+          <button class="journal-refine-link" type="button" data-action="journal-filter-toggle" aria-expanded="${state.journalFiltersOpen}">Filters${refinedFilterCount ? ` · ${refinedFilterCount}` : ""}</button>
+          <span class="journal-commandbar__count">${state.journalTotal.toLocaleString()} active ${state.journalTotal === 1 ? "entry" : "entries"}</span>
         </div>
-        <span class="journal-commandbar__count">${state.journalTotal.toLocaleString()} active ${state.journalTotal === 1 ? "entry" : "entries"}</span>
       </div>
       <form class="journal-filters" id="journal-filter-form" ${state.journalFiltersOpen ? "" : "hidden"}>
         <label><span>Outcome</span><select name="outcome"><option value="all">All outcomes</option><option value="win" ${state.journalOutcome === "win" ? "selected" : ""}>Win</option><option value="loss" ${state.journalOutcome === "loss" ? "selected" : ""}>Loss</option><option value="breakeven" ${state.journalOutcome === "breakeven" ? "selected" : ""}>Breakeven</option></select></label>

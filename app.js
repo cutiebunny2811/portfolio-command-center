@@ -49,7 +49,6 @@
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
-    journalFiltersOpen: false,
     journalBusy: false, prices: [], route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
@@ -617,24 +616,12 @@
     const pages = Math.max(Math.ceil(state.journalTotal / state.journalPageSize), 1);
     const start = state.journalTotal ? (state.journalPage - 1) * state.journalPageSize + 1 : 0;
     const end = Math.min(state.journalPage * state.journalPageSize, state.journalTotal);
-    const refinedFilterCount = [state.journalOutcome !== "all", state.journalDateFrom, state.journalDateTo, state.journalSearch].filter(Boolean).length;
-
     viewRoot.innerHTML = `
       ${pageHead("Trading journal · Closed-trade performance", "P/L without the spreadsheet drift.", "Journal entries measure realized performance by portfolio. They do not edit cash, holdings or broker records.", '<button class="button button--primary" type="button" data-action="journal-add">+ Add P/L entry</button>')}
       <div class="journal-commandbar">
         <label class="journal-primary-filter"><span>Portfolio</span><select id="journal-filter-primary" aria-label="Filter journal by portfolio"><option value="all">All portfolios</option>${state.portfolios.map((p) => `<option value="${p.id}" ${state.journalFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-        <div class="journal-commandbar__meta">
-          <button class="journal-refine-link" type="button" data-action="journal-filter-toggle" aria-expanded="${state.journalFiltersOpen}">Filters${refinedFilterCount ? ` · ${refinedFilterCount}` : ""}</button>
-          <span class="journal-commandbar__count">${state.journalTotal.toLocaleString()} active ${state.journalTotal === 1 ? "entry" : "entries"}</span>
-        </div>
+        <span class="journal-commandbar__count">${state.journalTotal.toLocaleString()} active ${state.journalTotal === 1 ? "entry" : "entries"}</span>
       </div>
-      <form class="journal-filters" id="journal-filter-form" ${state.journalFiltersOpen ? "" : "hidden"}>
-        <label><span>Outcome</span><select name="outcome"><option value="all">All outcomes</option><option value="win" ${state.journalOutcome === "win" ? "selected" : ""}>Win</option><option value="loss" ${state.journalOutcome === "loss" ? "selected" : ""}>Loss</option><option value="breakeven" ${state.journalOutcome === "breakeven" ? "selected" : ""}>Breakeven</option></select></label>
-        <label><span>From</span><input name="date_from" type="date" value="${esc(state.journalDateFrom)}"></label>
-        <label><span>To</span><input name="date_to" type="date" value="${esc(state.journalDateTo)}"></label>
-        <label class="journal-filters__search"><span>Search ledger</span><input name="search" type="search" maxlength="100" value="${esc(state.journalSearch)}" placeholder="Symbol, strategy or notes"></label>
-        <div class="journal-filters__actions"><button class="button button--primary button--small" type="submit">Apply filters</button><button class="button button--ghost button--small" type="button" data-action="journal-filter-clear">Clear</button></div>
-      </form>
       <section class="kpi-strip" aria-label="Trading performance">
         <div class="kpi"><small>Net P/L</small><strong class="${num(stats.net_pnl) > 0 ? "positive" : num(stats.net_pnl) < 0 ? "negative" : ""}">${money(stats.net_pnl)}</strong></div>
         <div class="kpi"><small>Win rate</small><strong>${percent(winRate, 0)}</strong></div>
@@ -644,7 +631,7 @@
       <section class="section journal-layout">
         <div>
           <div class="section-head"><div><span class="section-index">01 / EQUITY CURVE</span><h2>Cumulative closed P/L.</h2></div></div>
-          <div class="chart-panel">${state.journalDaily.length ? '<canvas id="equity-chart" role="img" aria-label="Cumulative profit and loss curve"></canvas>' : '<div class="empty-state"><div><strong>No P/L data in this view</strong>Adjust the filters or add a journal entry.</div></div>'}</div>
+          <div class="chart-panel">${state.journalDaily.length ? '<canvas id="equity-chart" role="img" aria-label="Cumulative profit and loss curve"></canvas>' : '<div class="empty-state"><div><strong>No P/L data in this view</strong>Choose another portfolio or add a journal entry.</div></div>'}</div>
         </div>
         <div>
           <div class="section-head"><div><span class="section-index">02 / ${year}</span><h2>Monthly tape.</h2></div></div>
@@ -656,23 +643,8 @@
         ${state.journalBusy ? `<div class="journal-loading" role="status"><span></span>Reading this page from Supabase…</div>` : entries.length ? `<div class="table-shell"><table><thead><tr><th>Date</th><th>Portfolio</th><th>Asset / strategy</th><th>Outcome</th><th>P/L</th><th>Notes</th><th>Actions</th></tr></thead><tbody>${entries.map((entry) => {
           const portfolio = state.portfolios.find((item) => item.id === entry.portfolio_id);
           return `<tr><td class="mono">${esc(entry.occurred_on)}</td><td>${esc(portfolio?.name || "—")}</td><td><span class="cell-main">${esc(entry.symbol || entry.strategy_label || "Trade")}</span><span class="cell-sub">${esc(entry.strategy_label || "Manual entry")}</span></td><td><span class="status status--${entry.outcome === "win" ? "good" : entry.outcome === "loss" ? "risk" : "warn"}">${esc(entry.outcome)}</span></td><td><strong class="mono ${num(entry.manual_pnl) >= 0 ? "positive" : "negative"}">${money(entry.manual_pnl)}</strong></td><td><span title="${esc(entry.notes || "")}">${esc((entry.notes || "—").slice(0, 48))}${(entry.notes || "").length > 48 ? "…" : ""}</span></td><td><div class="row-actions"><button class="button button--small" type="button" data-action="journal-edit" data-entry-id="${entry.id}">Edit</button><button class="button button--small" type="button" data-action="journal-void" data-entry-id="${entry.id}">Void</button></div></td></tr>`;
-        }).join("")}</tbody></table></div><div class="pagination"><span>${start.toLocaleString()}–${end.toLocaleString()} of ${state.journalTotal.toLocaleString()}</span><div><button class="button button--small" type="button" data-action="journal-page-prev" ${state.journalPage <= 1 ? "disabled" : ""}>← Prev</button> <span class="pagination__page">Page ${state.journalPage} / ${pages}</span> <button class="button button--small" type="button" data-action="journal-page-next" ${state.journalPage >= pages ? "disabled" : ""}>Next →</button></div></div>` : `<div class="empty-state"><div><strong>No journal entries in this view</strong>Adjust the filters or record a closed trade.</div></div>`}
+        }).join("")}</tbody></table></div><div class="pagination"><span>${start.toLocaleString()}–${end.toLocaleString()} of ${state.journalTotal.toLocaleString()}</span><div><button class="button button--small" type="button" data-action="journal-page-prev" ${state.journalPage <= 1 ? "disabled" : ""}>← Prev</button> <span class="pagination__page">Page ${state.journalPage} / ${pages}</span> <button class="button button--small" type="button" data-action="journal-page-next" ${state.journalPage >= pages ? "disabled" : ""}>Next →</button></div></div>` : `<div class="empty-state"><div><strong>No journal entries in this view</strong>Choose another portfolio or record a closed trade.</div></div>`}
       </section>`;
-
-    $("#journal-filter-form")?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const from = form.get("date_from") || "";
-      const to = form.get("date_to") || "";
-      if (from && to && from > to) { toast("Start date must be on or before end date", true); return; }
-      state.journalOutcome = form.get("outcome");
-      state.journalDateFrom = from;
-      state.journalDateTo = to;
-      state.journalSearch = String(form.get("search") || "").trim();
-      state.journalPage = 1;
-      state.journalFiltersOpen = false;
-      await loadJournalPage();
-    });
     $("#journal-filter-primary")?.addEventListener("change", async (event) => {
       state.journalFilter = event.target.value;
       state.journalPage = 1;
@@ -948,18 +920,10 @@
     else if (action === "journal-add") openJournalDialog();
     else if (action === "journal-edit") openJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
     else if (action === "journal-void") openVoidJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
-    else if (action === "journal-filter-toggle") {
-      state.journalFiltersOpen = !state.journalFiltersOpen;
-      renderJournalPaged();
-    }
-    else if (action === "journal-filter-clear") {
-      Object.assign(state, { journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "", journalPage: 1, journalFiltersOpen: false });
-      await loadJournalPage();
-    }
     else if (action === "journal-page-prev" || action === "journal-page-next") {
       state.journalPage += action === "journal-page-next" ? 1 : -1;
       await loadJournalPage();
-      $("#journal-filter-form")?.scrollIntoView({ block: "start" });
+      $(".journal-commandbar")?.scrollIntoView({ block: "start" });
     }
     else if (action === "page-prev" || action === "page-next") {
       state.holdingsPage += action === "page-next" ? 1 : -1;

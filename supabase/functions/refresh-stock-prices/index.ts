@@ -8,6 +8,7 @@ const corsHeaders = {
 
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const snapshotPath = "/openapi/market-data/stock/snapshot";
+const barsPath = "/openapi/market-data/stock/bars";
 const refreshWindowMs = 15 * 60_000;
 
 type Instrument = {
@@ -95,6 +96,71 @@ function payloadRows(payload: unknown): Record<string, unknown>[] {
   return [object];
 }
 
+async function signedGet(
+  path: string,
+  query: Record<string, string>,
+  appKey: string,
+  appSecret: string,
+  host: string,
+  accessToken?: string,
+): Promise<{ response: Response; payload: unknown }> {
+  const timestamp = timestampUtc();
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const signature = await makeSignature(path, query, appKey, appSecret, host, timestamp, nonce);
+  const headers: Record<string, string> = {
+    "x-app-key": appKey,
+    "x-timestamp": timestamp,
+    "x-signature": signature,
+    "x-signature-algorithm": "HMAC-SHA1",
+    "x-signature-version": "1.0",
+    "x-signature-nonce": nonce,
+    "x-version": "v2",
+  };
+  if (accessToken) headers["x-access-token"] = accessToken;
+  const url = new URL(`https://${host}${path}`);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url, { headers });
+  const payload = await response.json().catch(() => null);
+  return { response, payload };
+}
+
+async function fetchLatestRegularClose(
+  instrument: Instrument,
+  appKey: string,
+  appSecret: string,
+  host: string,
+  accessToken?: string,
+): Promise<PriceResult> {
+  const query = {
+    symbol: instrument.symbol.trim().toUpperCase(),
+    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    timespan: "D",
+    count: "5",
+    real_time_required: "false",
+  };
+  const { response, payload } = await signedGet(barsPath, query, appKey, appSecret, host, accessToken);
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
+    throw new Error(`${instrument.symbol}: historical close fallback failed: ${detail}`);
+  }
+  const bars = payloadRows(payload).map((bar) => {
+    const price = Number(bar.close);
+    const rawTime = bar.time ?? bar.timestamp;
+    const numericTime = Number(rawTime);
+    const time = Number.isFinite(numericTime)
+      ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime).getTime()
+      : new Date(String(rawTime || "")).getTime();
+    return { price, time };
+  }).filter((bar) => Number.isFinite(bar.price) && bar.price > 0);
+  bars.sort((a, b) => (Number.isFinite(b.time) ? b.time : 0) - (Number.isFinite(a.time) ? a.time : 0));
+  if (!bars.length) throw new Error(`${instrument.symbol}: historical close fallback returned no usable bars`);
+  return {
+    instrument,
+    price: bars[0].price,
+    marketTime: new Date(Number.isFinite(bars[0].time) ? bars[0].time : Date.now()).toISOString(),
+  };
+}
+
 async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
   const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
   const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
@@ -106,31 +172,20 @@ async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
   const query = {
     symbols: instrument.symbol.trim().toUpperCase(),
     category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
-    extend_hour_required: "true",
-    overnight_required: "true",
+    // Regular-session data is available on the standard market-data entitlement.
+    // Requesting either extended or overnight quotes can make the entire snapshot
+    // fail outside regular hours when the Webull account has no matching add-on.
+    extend_hour_required: "false",
+    overnight_required: "false",
   };
-  const timestamp = timestampUtc();
-  const nonce = crypto.randomUUID().replaceAll("-", "");
-  const signature = await makeSignature(snapshotPath, query, appKey, appSecret, host, timestamp, nonce);
-  const headers: Record<string, string> = {
-    "x-app-key": appKey,
-    "x-timestamp": timestamp,
-    "x-signature": signature,
-    "x-signature-algorithm": "HMAC-SHA1",
-    "x-signature-version": "1.0",
-    "x-signature-nonce": nonce,
-    "x-version": "v2",
-  };
-  if (accessToken) headers["x-access-token"] = accessToken;
-
-  const url = new URL(`https://${host}${snapshotPath}`);
-  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
-  const response = await fetch(url, { headers });
-  const payload = await response.json().catch(() => null);
+  const { response, payload } = await signedGet(snapshotPath, query, appKey, appSecret, host, accessToken);
   if (!response.ok) {
     const detail = payload && typeof payload === "object"
       ? JSON.stringify(payload).slice(0, 300)
       : `HTTP ${response.status}`;
+    if (/night trading permissions/i.test(detail)) {
+      return fetchLatestRegularClose(instrument, appKey, appSecret, host, accessToken);
+    }
     throw new Error(`${instrument.symbol}: ${detail}`);
   }
   const rows = payloadRows(payload);

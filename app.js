@@ -49,7 +49,8 @@
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
-    journalBusy: false, prices: [], route: "overview", selectedPortfolioId: null,
+    journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
+    route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
   };
@@ -96,6 +97,9 @@
     if (/api_remove_asset_from_portfolio/i.test(message)) {
       return "Remove Asset API is not installed yet. Run 010_remove_asset_api.sql in Supabase first.";
     }
+    if (/refresh-stock-prices|Webull price refresh|Edge Function/i.test(message)) {
+      return "Webull price refresh is not deployed yet. Deploy the refresh-stock-prices Supabase Edge Function and add its Webull secrets.";
+    }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
 
@@ -113,6 +117,23 @@
       if (!map.has(price.instrument_id)) map.set(price.instrument_id, price);
     });
     return map;
+  }
+
+  function latestWebullPriceTime() {
+    const times = state.prices
+      .filter((item) => item.source === "webull")
+      .map((item) => new Date(item.market_time || item.fetched_at).getTime())
+      .filter(Number.isFinite);
+    return times.length ? new Date(Math.max(...times)) : null;
+  }
+
+  function priceFreshnessLabel() {
+    const latest = latestWebullPriceTime();
+    if (!latest) return "Webull prices not synced yet";
+    const minutes = Math.max(Math.floor((Date.now() - latest.getTime()) / 60_000), 0);
+    if (minutes < 1) return "Webull prices updated just now";
+    if (minutes === 1) return "Webull prices updated 1 minute ago";
+    return `Webull prices updated ${minutes} minutes ago`;
   }
 
   function portfolioStats(portfolio) {
@@ -317,6 +338,43 @@
     }
   }
 
+  async function refreshStockPrices({ force = false, notify = false } = {}) {
+    if (localPreviewEnabled || !state.user || state.priceRefreshBusy) return null;
+    const eligible = state.instruments.some((item) => ["stock", "etf"].includes(String(item.asset_type).toLowerCase()));
+    if (!eligible) return null;
+    state.priceRefreshBusy = true;
+    if (notify) setSync(true, "Updating Webull prices...");
+    try {
+      const { data, error } = await db.functions.invoke("refresh-stock-prices", { body: { force } });
+      if (error) throw new Error(`Webull price refresh: ${error.message}`);
+      if (data?.error) throw new Error(`Webull price refresh: ${data.error}`);
+      state.lastWebullRefresh = new Date();
+      if (num(data?.updated) > 0) {
+        state.prices = await query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000));
+      }
+      setSync(true, `Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+      if (notify) {
+        const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
+        if (failed) toast(`${data.updated || 0} prices updated; ${failed} could not be read`, true);
+        else if (data?.skipped) toast("Stock prices are already current");
+        else toast(`${data?.updated || 0} stock prices updated from Webull`);
+      }
+      render();
+      return data;
+    } catch (error) {
+      console.warn(error);
+      if (notify) toast(friendlyError(error), true);
+      return null;
+    } finally {
+      state.priceRefreshBusy = false;
+    }
+  }
+
+  async function refreshDashboard() {
+    await loadData();
+    await refreshStockPrices({ force: true, notify: true });
+  }
+
   async function loadData({ quiet = false } = {}) {
     if (!state.user || state.loading) return;
     if (!quiet) setLoading(true);
@@ -362,6 +420,7 @@
     authShell.hidden = true;
     appShell.hidden = false;
     await loadData();
+    await refreshStockPrices();
   }
 
   function renderNav() {
@@ -454,6 +513,7 @@
 
   function holdingsTable(portfolio) {
     let rows = portfolioRows(portfolio);
+    const prices = latestPriceMap();
     const queryText = state.holdingsQuery.trim().toLowerCase();
     if (queryText) rows = rows.filter((row) => `${row.instrument.symbol} ${row.instrument.display_name || ""}`.toLowerCase().includes(queryText));
     const pages = Math.max(1, Math.ceil(rows.length / state.holdingsPageSize));
@@ -463,15 +523,18 @@
     if (!slice.length) return `<div class="empty-state"><div><strong>${queryText ? "No matching assets" : "No assets yet"}</strong>${queryText ? "Try another symbol or company name." : "Use Add to plan, then record buys and sells as they happen."}</div></div>`;
     return `<div class="table-shell"><table>
       <thead><tr><th>Asset</th><th>Shares / avg cost</th><th>Amount used</th><th>Target</th><th>Money left</th><th>Plan</th><th>Actions</th></tr></thead>
-      <tbody>${slice.map((row) => `<tr>
+      <tbody>${slice.map((row) => {
+        const market = prices.get(row.id);
+        return `<tr>
         <td><span class="cell-main">${esc(row.instrument.symbol)}</span><span class="cell-sub">${esc(row.instrument.display_name || row.instrument.asset_type)}</span></td>
-        <td><span class="cell-main mono">${num(row.position?.quantity).toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${money(row.position?.average_cost, 4)}</span></td>
+        <td><span class="cell-main mono">${num(row.position?.quantity).toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${money(row.position?.average_cost, 4)}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
         <td><strong class="mono">${money(row.deployed)}</strong>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td><span class="cell-main mono">${percent(row.targetPercent)}</span><span class="cell-sub">${money(row.quota)} quota</span></td>
         <td><strong class="mono gold">${money(row.remaining)}</strong></td>
         <td><span class="status status--${row.statusClass}">${esc(row.status)}</span><span class="cell-sub">${row.target?.planned_tranches ? `${row.target.planned_tranches} tranches` : "No tranche split"}</span></td>
         <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
-      </tr>`).join("")}</tbody>
+      </tr>`;
+      }).join("")}</tbody>
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
   }
 
@@ -502,7 +565,7 @@
       </section>
       <section class="section">
         <div class="section-head"><div><span class="section-index">02 / ASSETS</span><h2>Everything in this portfolio.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
-        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><button class="button button--small" type="button" data-action="refresh">Refresh data</button></div>
+        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${portfolio.kind === "options" ? "Options use manual prices" : esc(priceFreshnessLabel())}</span><button class="button button--small" type="button" data-action="${portfolio.kind === "options" ? "refresh" : "price-refresh"}">${portfolio.kind === "options" ? "Refresh data" : "Update prices"}</button></div></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
       </section>`;
     const search = $("#holding-search");
@@ -937,6 +1000,7 @@
     const action = target.dataset.action;
     if (action === "close-dialog") closeDialog();
     else if (action === "refresh") await loadData();
+    else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
     else if (action === "account") openAccountDialog();
     else if (action === "budget-edit") openBudgetDialog();
     else if (action === "cash-add") openCashDialog();
@@ -990,7 +1054,7 @@
   });
 
   document.addEventListener("click", handleClick);
-  $("#refresh-button").addEventListener("click", () => loadData());
+  $("#refresh-button").addEventListener("click", refreshDashboard);
   dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeDialog(); });
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) {
@@ -1002,6 +1066,10 @@
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => { if (state.route === "journal") drawEquityCurvePaged(state.journalDaily); }, 120);
+  });
+  window.setInterval(() => refreshStockPrices(), 15 * 60_000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshStockPrices();
   });
 
   db.auth.onAuthStateChange((event, session) => {

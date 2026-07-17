@@ -21,6 +21,31 @@ The existing project already uses schema/API migrations 001–004. Run the journ
 
 Migration 007 keeps large journals responsive by returning only one ledger page at a time while calculating filtered KPIs, monthly totals, and daily equity data inside Postgres.
 
+## Webull stock prices
+
+`supabase/functions/refresh-stock-prices` refreshes active stock and ETF prices through the Webull Snapshot API. Options are intentionally excluded. The dashboard calls it when the app opens, when the user requests a refresh, and every 15 minutes while the app remains open. The Edge Function ignores prices that are already less than 15 minutes old unless a manual refresh is requested.
+
+Keep Webull credentials in Supabase Edge Function Secrets only. Do not copy the local `.env` file into this repository or into the browser application.
+
+Required secrets:
+
+```text
+WEBULL_APP_KEY
+WEBULL_APP_SECRET
+WEBULL_REGION=th
+WEBULL_API_HOST=api.webull.co.th
+```
+
+`WEBULL_ACCESS_TOKEN` is optional and should be added only if the Webull application requires 2FA token authentication for market-data calls.
+
+Deploy with the Supabase CLI after linking the project:
+
+```bash
+supabase functions deploy refresh-stock-prices --project-ref zzynqlqnzdhkffvqvpzt
+```
+
+The function uses the signed-in dashboard user's JWT and existing RLS policies. It reads only active stock/ETF instruments and writes each result through `api_record_instrument_price`; it cannot place or modify broker orders.
+
 ## Deploy
 
 This is a static app. Publish the repository root with GitHub Pages from the `main` branch.

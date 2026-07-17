@@ -369,6 +369,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
 .toolbar__filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.price-sync { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.price-sync .meta { text-align: right; }
 .toolbar input { width: min(320px, 70vw); }
 .toolbar select { width: auto; }
 .table-shell { overflow: auto; border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule-strong); }
@@ -381,6 +383,7 @@ tbody tr:hover { background: var(--red-wash); }
 tbody tr:last-child td { border-bottom: 0; }
 .cell-main { display: block; color: var(--paper); font-weight: 700; }
 .cell-sub { display: block; margin-top: 3px; color: var(--paper-faint); font: 9px/1.2 var(--mono); }
+.cell-sub.price-live { color: var(--green); }
 .status { display: inline-flex; align-items: center; gap: 7px; color: var(--paper-dim); font: 600 9px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--paper-faint); }
 .status--good::before { background: var(--green); }
@@ -515,6 +518,8 @@ tbody tr:last-child td { border-bottom: 0; }
   .toolbar { align-items: stretch; }
   .toolbar__filters { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
   .toolbar input { width: 100%; grid-column: 1 / -1; }
+  .price-sync { width: 100%; justify-content: space-between; }
+  .price-sync .meta { text-align: left; }
   .journal-commandbar { min-height: 92px; align-items: end; gap: 12px; }
   .journal-primary-filter { width: 122px; }
   .journal-commandbar__count { max-width: 82px; text-align: right; line-height: 1.35; }

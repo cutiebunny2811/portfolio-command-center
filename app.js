@@ -39,7 +39,7 @@
     options: "Options"
   };
   const localPreviewParams = new URLSearchParams(location.search);
-  const localPreviewEnabled = ["127.0.0.1", "localhost"].includes(location.hostname)
+  const localPreviewEnabled = (["127.0.0.1", "localhost"].includes(location.hostname) || location.protocol === "file:")
     && localPreviewParams.get("preview") === "1";
   const localStressEnabled = localPreviewEnabled && localPreviewParams.get("stress") === "1";
 
@@ -119,8 +119,9 @@
       portfolio.allocation_basis === "maximum_loss" ? num(item.maximum_loss) : num(item.cost_basis)
     ), 0);
     const budget = num(portfolio.fixed_budget);
-    const remaining = Math.max(budget - deployed, 0);
-    const utilization = budget > 0 ? deployed / budget * 100 : 0;
+    const capital = Math.max(cash + deployed, 0);
+    const remaining = Math.max(cash, 0);
+    const utilization = capital > 0 ? deployed / capital * 100 : 0;
     const prices = latestPriceMap();
     const instruments = instrumentMap();
     const marketValue = positions.reduce((sum, item) => {
@@ -128,16 +129,31 @@
       const instrument = instruments.get(item.instrument_id);
       return sum + (price ? num(price.price) * num(item.quantity) * num(instrument?.multiplier || 1) : 0);
     }, 0);
-    return { positions, cash, deployed, budget, remaining, utilization, marketValue };
+    return { positions, cash, deployed, budget, capital, remaining, utilization, marketValue };
   }
 
   function combinedStats() {
     const stats = state.portfolios.map(portfolioStats);
     return {
       budget: stats.reduce((sum, item) => sum + item.budget, 0),
+      capital: stats.reduce((sum, item) => sum + item.capital, 0),
       cash: stats.reduce((sum, item) => sum + item.cash, 0),
       deployed: stats.reduce((sum, item) => sum + item.deployed, 0),
       pnl: num(state.journalOverview?.summary?.net_pnl)
+    };
+  }
+
+  function isCashInstrument(instrument) {
+    return String(instrument?.symbol || "").trim().toUpperCase() === "CASH";
+  }
+
+  function allocationSummary(portfolio, rows = portfolioRows(portfolio)) {
+    const planned = rows.reduce((sum, row) => sum + num(row.targetPercent), 0);
+    return {
+      planned,
+      unallocated: Math.max(100 - planned, 0),
+      isComplete: Math.abs(planned - 100) < .01,
+      isOver: planned > 100.001
     };
   }
 
@@ -158,21 +174,23 @@
       const target = targets.get(id) || null;
       const capacity = capacities.get(id) || null;
       const instrument = instruments.get(id) || { id, symbol: "—", display_name: "Unknown instrument", multiplier: 1 };
+      if (isCashInstrument(instrument)) return null;
       const deployed = portfolio.allocation_basis === "maximum_loss"
         ? num(position?.maximum_loss)
         : num(position?.cost_basis);
-      const currentPercent = num(portfolio.fixed_budget) > 0 ? deployed / num(portfolio.fixed_budget) * 100 : 0;
+      const stats = portfolioStats(portfolio);
+      const currentPercent = stats.capital > 0 ? deployed / stats.capital * 100 : 0;
       const targetPercent = num(target?.target_percent);
-      const maximumPercent = target?.maximum_percent == null ? targetPercent : num(target.maximum_percent);
-      const remaining = capacity ? num(capacity.actionable_buy_amount) : Math.max(num(portfolio.fixed_budget) * targetPercent / 100 - deployed, 0);
+      const quota = stats.capital * targetPercent / 100;
+      const remaining = Math.max(Math.min(quota - deployed, stats.cash), 0);
       let status = "Unplanned", statusClass = "warn";
       if (target) {
-        if (maximumPercent > 0 && currentPercent > maximumPercent + .001) { status = "Over limit"; statusClass = "risk"; }
-        else if (targetPercent > 0 && currentPercent < targetPercent * .9) { status = "Capacity"; statusClass = "warn"; }
-        else { status = "On plan"; statusClass = "good"; }
+        if (targetPercent > 0 && currentPercent > targetPercent + .001) { status = "Over target"; statusClass = "risk"; }
+        else if (targetPercent > 0 && currentPercent < targetPercent * .98) { status = "Can add"; statusClass = "warn"; }
+        else { status = "On target"; statusClass = "good"; }
       }
-      return { id, instrument, position, target, capacity, deployed, currentPercent, targetPercent, maximumPercent, remaining, status, statusClass };
-    }).sort((a, b) => b.deployed - a.deployed || a.instrument.symbol.localeCompare(b.instrument.symbol));
+      return { id, instrument, position, target, capacity, deployed, currentPercent, targetPercent, quota, remaining, status, statusClass };
+    }).filter(Boolean).sort((a, b) => b.deployed - a.deployed || a.instrument.symbol.localeCompare(b.instrument.symbol));
   }
 
   async function query(label, promise) {
@@ -348,13 +366,12 @@
     const switcher = $("#portfolio-switcher");
     nav.innerHTML = state.portfolios.map((portfolio) => {
       const stats = portfolioStats(portfolio);
-      return `<button type="button" class="${portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">
+      return `<button type="button" class="${state.route === "portfolio" && portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">
         <i></i><span>${esc(portfolio.name)}</span><small>${Math.round(stats.utilization)}%</small>
       </button>`;
     }).join("");
     switcher.innerHTML = state.portfolios.map((portfolio) => `<button type="button" class="${portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">${esc(portfolio.name)}</button>`).join("");
-    $$('[data-route]').forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
-    $$(".mobile-nav button").forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
+    $$(".brand-button[data-route], .nav-item[data-route], .mobile-nav [data-route]").forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
   }
 
   function render() {
@@ -377,67 +394,57 @@
     const total = combinedStats();
     const recent = state.journalOverview?.entries || [];
     const instruments = instrumentMap();
-    const capacityItems = state.capacities.map((capacity) => {
-      const portfolio = state.portfolios.find((item) => item.id === capacity.portfolio_id);
-      return { ...capacity, portfolio, instrument: instruments.get(capacity.instrument_id) };
-    }).filter((item) => item.portfolio && item.instrument).sort((a, b) => num(b.actionable_buy_amount) - num(a.actionable_buy_amount)).slice(0, 8);
 
     viewRoot.innerHTML = `
-      ${pageHead("All portfolios · Independent capital pools", "Capital discipline at a glance.", "Combined visibility without combining allocation math. Every limit, cash balance and remaining buy capacity stays inside its own portfolio.", '<button class="button button--primary" type="button" data-action="journal-add">+ Add P/L entry</button>')}
+      ${pageHead("All portfolios · One clear view", "Know where every dollar is.", "Each portfolio keeps its own money and 100% allocation plan. This overview combines visibility, never the portfolio math.")}
       <section class="hero-ledger" aria-label="Combined summary">
-        <div class="hero-metric hero-metric--lead"><small>Total fixed capital<br>4 isolated budgets</small><strong>${money(total.budget)}</strong></div>
-        <div class="hero-metric"><small>Capital deployed<br>Cost / max loss</small><strong>${money(total.deployed)}</strong></div>
-        <div class="hero-metric"><small>Available cash<br>Across all portfolios</small><strong>${money(total.cash)}</strong></div>
-        <div class="hero-metric"><small>Journal net P/L<br>Manual closed trades</small><strong class="${total.pnl > 0 ? "positive" : total.pnl < 0 ? "negative" : ""}">${money(total.pnl)}</strong></div>
+        <div class="hero-metric hero-metric--lead"><small>Total capital<br>Across 4 portfolios</small><strong>${money(total.capital)}</strong></div>
+        <div class="hero-metric"><small>Amount invested<br>Cost / max loss</small><strong>${money(total.deployed)}</strong></div>
+        <div class="hero-metric"><small>Money remaining<br>Ready to allocate</small><strong>${money(total.cash)}</strong></div>
       </section>
 
       <section class="section">
-        <div class="section-head"><div><span class="section-index">01 / PORTFOLIOS</span><h2>Four mandates. Four limits.</h2></div><p>Select a portfolio to see its positions, target capacity and cash workflow.</p></div>
+        <div class="section-head"><div><span class="section-index">01 / PORTFOLIOS</span><h2>Four portfolios. Kept separate.</h2></div><p>Open one to record a buy or sell, adjust its targets, and see what remains.</p></div>
         <div class="portfolio-grid">
           ${state.portfolios.map((portfolio, index) => {
             const stats = portfolioStats(portfolio);
+            const plan = allocationSummary(portfolio);
             return `<button class="portfolio-card" type="button" data-open-portfolio="${portfolio.id}">
               <div class="portfolio-card__title"><span>0${index + 1}</span><h3>${esc(portfolio.name)}</h3></div>
               <div class="portfolio-card__numbers">
-                <div><small>Fixed budget</small><strong>${money(stats.budget)}</strong></div>
-                <div><small>Deployed</small><strong>${money(stats.deployed)}</strong></div>
-                <div><small>Cash</small><strong>${money(stats.cash)}</strong></div>
+                <div><small>Total capital</small><strong>${money(stats.capital)}</strong></div>
+                <div><small>Invested</small><strong>${money(stats.deployed)}</strong></div>
+                <div><small>Remaining</small><strong>${money(stats.cash)}</strong></div>
               </div>
-              <div><div class="meter ${stats.utilization > 100 ? "is-risk" : ""}" style="--meter:${clamp(stats.utilization, 0, 100)}%"><i></i></div><p class="meta">${percent(stats.utilization)} utilized · ${stats.positions.length} active position${stats.positions.length === 1 ? "" : "s"}</p></div>
+              <div><div class="meter ${plan.isOver ? "is-risk" : plan.isComplete ? "is-complete" : ""}" style="--meter:${clamp(plan.planned, 0, 100)}%"><i></i></div><p class="meta">${percent(plan.planned)} planned · ${percent(plan.unallocated)} stays as cash</p></div>
             </button>`;
           }).join("")}
         </div>
       </section>
 
-      <section class="section split-grid">
+      <section class="section journal-brief">
         <div>
-          <div class="section-head"><div><span class="section-index">02 / CAPACITY</span><h2>Next capital available.</h2></div></div>
-          ${capacityItems.length ? `<div class="ledger-list">${capacityItems.map((item) => `<div class="ledger-row">
-            <div class="ledger-row__main"><strong>${esc(item.instrument.symbol)} · ${esc(item.portfolio.name)}</strong><small>Target ${percent(item.target_percent)} · Deployed ${money(item.deployed_amount)}</small></div>
-            <div class="ledger-row__value gold">${money(item.actionable_buy_amount)}<small>buy capacity</small></div>
-          </div>`).join("")}</div>` : `<div class="empty-state"><div><strong>No allocation targets yet</strong>Add an asset and target inside a portfolio to calculate buy capacity.</div></div>`}
-        </div>
-        <div>
-          <div class="section-head"><div><span class="section-index">03 / JOURNAL</span><h2>Latest P/L.</h2></div><button class="button button--small" type="button" data-route="journal">View all</button></div>
+          <div class="section-head"><div><span class="section-index">02 / TRADING P/L</span><h2>Latest outcomes.</h2></div><button class="button button--small" type="button" data-route="journal">View all P/L</button></div>
           ${recent.length ? `<div class="ledger-list">${recent.map((entry) => {
             const portfolio = state.portfolios.find((item) => item.id === entry.portfolio_id);
             const instrument = instruments.get(entry.instrument_id);
             return `<div class="ledger-row"><div class="ledger-row__main"><strong>${esc(instrument?.symbol || entry.strategy_label || "Trade")}</strong><small>${esc(portfolio?.name || "Portfolio")} · ${esc(entry.occurred_on)}</small></div><div class="ledger-row__value ${num(entry.manual_pnl) >= 0 ? "positive" : "negative"}">${money(entry.manual_pnl)}</div></div>`;
-          }).join("")}</div>` : `<div class="empty-state"><div><strong>No P/L entries yet</strong>Record a closed trade without changing cash or position balances.</div></div>`}
+          }).join("")}</div>` : `<div class="empty-state"><div><strong>No P/L entries yet</strong>Your latest closed-trade results will appear here.</div></div>`}
         </div>
       </section>`;
   }
 
   function allocationMap(portfolio, rows) {
-    const top = [...rows].sort((a, b) => Math.max(b.currentPercent, b.targetPercent) - Math.max(a.currentPercent, a.targetPercent)).slice(0, 8);
-    if (!top.length) return `<div class="empty-state"><div><strong>No assets planned</strong>Add an asset to start this portfolio's allocation map.</div></div>`;
+    const top = [...rows].sort((a, b) => b.targetPercent - a.targetPercent || b.deployed - a.deployed).slice(0, 8);
+    if (!top.length) return `<div class="empty-state"><div><strong>No assets planned yet</strong>Add a ticker and choose its share of this portfolio.</div></div>`;
     return `<div class="allocation-map">${top.map((row) => {
-      const scale = Math.max(row.maximumPercent || row.targetPercent || 1, row.currentPercent, 1);
+      const progress = row.quota > 0 ? row.deployed / row.quota * 100 : 0;
+      const tranches = num(row.target?.planned_tranches);
       return `<div class="allocation-row">
         <div class="allocation-row__symbol"><strong>${esc(row.instrument.symbol)}</strong><small>${esc(row.instrument.display_name || row.instrument.asset_type)}</small></div>
-        <div class="allocation-track" style="--current:${clamp(row.currentPercent / scale * 100, 0, 100)}%;--target:${clamp(row.targetPercent / scale * 100, 0, 100)}%"><i></i><b></b></div>
-        <div class="allocation-row__number">${percent(row.currentPercent)}<small>current</small></div>
-        <div class="allocation-row__number gold">${money(row.remaining)}<small>can add</small></div>
+        <div class="allocation-progress"><div class="allocation-track ${progress > 100 ? "is-risk" : ""}" style="--current:${clamp(progress, 0, 100)}%"><i></i></div><small>${money(row.deployed)} of ${money(row.quota)}${tranches ? ` · ${tranches} tranches at ~${money(row.quota / tranches)}` : ""}</small></div>
+        <div class="allocation-row__number">${percent(row.targetPercent)}<small>target</small></div>
+        <div class="allocation-row__number gold">${money(row.remaining)}<small>left to buy</small></div>
       </div>`;
     }).join("")}</div>`;
   }
@@ -450,18 +457,17 @@
     state.holdingsPage = clamp(state.holdingsPage, 1, pages);
     const start = (state.holdingsPage - 1) * state.holdingsPageSize;
     const slice = rows.slice(start, start + state.holdingsPageSize);
-    if (!slice.length) return `<div class="empty-state"><div><strong>${queryText ? "No matching assets" : "No holdings yet"}</strong>${queryText ? "Try another symbol or company name." : "Use Add asset to create a target or opening position."}</div></div>`;
+    if (!slice.length) return `<div class="empty-state"><div><strong>${queryText ? "No matching assets" : "No assets yet"}</strong>${queryText ? "Try another symbol or company name." : "Use Add to plan, then record buys and sells as they happen."}</div></div>`;
     return `<div class="table-shell"><table>
-      <thead><tr><th>Asset</th><th>Quantity / avg</th><th>Deployed</th><th>Current</th><th>Target / max</th><th>Can add now</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Asset</th><th>Shares / avg cost</th><th>Amount used</th><th>Target</th><th>Money left</th><th>Plan</th><th>Actions</th></tr></thead>
       <tbody>${slice.map((row) => `<tr>
         <td><span class="cell-main">${esc(row.instrument.symbol)}</span><span class="cell-sub">${esc(row.instrument.display_name || row.instrument.asset_type)}</span></td>
         <td><span class="cell-main mono">${num(row.position?.quantity).toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${money(row.position?.average_cost, 4)}</span></td>
         <td><strong class="mono">${money(row.deployed)}</strong>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
-        <td class="mono">${percent(row.currentPercent)}</td>
-        <td><span class="cell-main mono">${percent(row.targetPercent)} / ${percent(row.maximumPercent)}</span><span class="cell-sub">${row.target?.planned_tranches ? `${row.target.planned_tranches} planned tranches` : "No tranche plan"}</span></td>
+        <td><span class="cell-main mono">${percent(row.targetPercent)}</span><span class="cell-sub">${money(row.quota)} quota</span></td>
         <td><strong class="mono gold">${money(row.remaining)}</strong></td>
-        <td><span class="status status--${row.statusClass}">${esc(row.status)}</span></td>
-        <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Target</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button></div></td>
+        <td><span class="status status--${row.statusClass}">${esc(row.status)}</span><span class="cell-sub">${row.target?.planned_tranches ? `${row.target.planned_tranches} tranches` : "No tranche split"}</span></td>
+        <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button></div></td>
       </tr>`).join("")}</tbody>
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
   }
@@ -470,25 +476,30 @@
     const portfolio = currentPortfolio();
     const stats = portfolioStats(portfolio);
     const rows = portfolioRows(portfolio);
+    const plan = allocationSummary(portfolio, rows);
     viewRoot.innerHTML = `
-      ${pageHead(`${portfolio.name} · ${portfolio.allocation_basis === "maximum_loss" ? "Maximum loss basis" : "Cost basis"}`, portfolio.name, "Allocation, cash and trade fills below apply only to this portfolio. Recording a fill never places a broker order.", `
-        <button class="button button--ghost" type="button" data-action="budget-edit">Edit budget</button>
-        <button class="button button--ghost" type="button" data-action="cash-add">Cash movement</button>
-        <button class="button button--ghost" type="button" data-action="trade-add">Record fill</button>
-        <button class="button button--primary" type="button" data-action="asset-add">+ Add asset</button>`)}
+      ${pageHead(`${portfolio.name} · ${portfolio.allocation_basis === "maximum_loss" ? "Maximum loss basis" : "Cost basis"}`, portfolio.name, "Record what you bought or sold, then use the 100% plan to see how much room remains for each ticker.", `
+        <button class="button button--ghost" type="button" data-action="cash-add">Add / withdraw money</button>
+        <button class="button button--ghost" type="button" data-action="trade-sell">Sell</button>
+        <button class="button button--ghost" type="button" data-action="trade-buy">Buy</button>
+        <button class="button button--primary" type="button" data-action="asset-add">+ Add to plan</button>`)}
       <section class="kpi-strip" aria-label="Portfolio summary">
-        <div class="kpi"><small>Fixed portfolio budget</small><strong>${money(stats.budget)}</strong></div>
-        <div class="kpi"><small>${portfolio.kind === "options" ? "Maximum loss deployed" : "Cost deployed"}</small><strong>${money(stats.deployed)}</strong></div>
-        <div class="kpi"><small>Cash available</small><strong>${money(stats.cash)}</strong></div>
-        <div class="kpi"><small>Budget capacity left</small><strong class="gold">${money(stats.remaining)}</strong></div>
+        <div class="kpi"><small>Total capital</small><strong>${money(stats.capital)}</strong></div>
+        <div class="kpi"><small>Amount used</small><strong>${money(stats.deployed)}</strong></div>
+        <div class="kpi"><small>Money remaining</small><strong class="gold">${money(stats.cash)}</strong></div>
+      </section>
+      <section class="plan-summary ${plan.isOver ? "is-risk" : plan.isComplete ? "is-complete" : ""}">
+        <div><span class="section-index">ALLOCATION PLAN</span><strong>${percent(plan.planned)} / 100%</strong></div>
+        <div class="meter" style="--meter:${clamp(plan.planned, 0, 100)}%"><i></i></div>
+        <p>${plan.isOver ? `Plan is ${percent(plan.planned - 100)} over 100%. Reduce a target.` : plan.isComplete ? "Plan complete. Every dollar has a job." : `${percent(plan.unallocated)} is unallocated and stays as cash.`}</p>
       </section>
       <section class="section">
-        <div class="section-head"><div><span class="section-index">01 / ALLOCATION MAP</span><h2>Planned versus deployed.</h2></div><p>Top eight assets are visualized here. The full searchable ledger below scales to hundreds.</p></div>
+        <div class="section-head"><div><span class="section-index">01 / BUYING PLAN</span><h2>How much is left for each ticker.</h2></div><p>Up to eight targets are shown here. Cash is simply the unallocated part of the plan.</p></div>
         ${allocationMap(portfolio, rows)}
       </section>
       <section class="section">
-        <div class="section-head"><div><span class="section-index">02 / ASSET LEDGER</span><h2>Every position and target.</h2></div><p>${rows.length} assets in this portfolio · 25 rows per page</p></div>
-        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search symbol or company" aria-label="Search assets"></div><button class="button button--small" type="button" data-action="refresh">Refresh from Supabase</button></div>
+        <div class="section-head"><div><span class="section-index">02 / ASSETS</span><h2>Everything in this portfolio.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
+        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><button class="button button--small" type="button" data-action="refresh">Refresh data</button></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
       </section>`;
     const search = $("#holding-search");
@@ -580,9 +591,9 @@
     const x = (index) => pad.left + index / Math.max(points.length - 1, 1) * (width - pad.left - pad.right);
     const y = (value) => pad.top + (max - value) / range * (height - pad.top - pad.bottom);
     ctx.clearRect(0, 0, width, height);
-    ctx.strokeStyle = "#2f2922"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = "rgba(212, 175, 55, .18)"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
     ctx.beginPath(); ctx.moveTo(pad.left, y(0)); ctx.lineTo(width - pad.right, y(0)); ctx.stroke(); ctx.setLineDash([]);
-    const final = points.at(-1), line = final >= 0 ? "#d7aa4b" : "#ff665b";
+    const final = points.at(-1), line = final >= 0 ? "#d4af37" : "#e04444";
     const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
     gradient.addColorStop(0, final >= 0 ? "rgba(215,170,75,.22)" : "rgba(255,102,91,.16)");
     gradient.addColorStop(1, "rgba(8,7,6,0)");
@@ -670,9 +681,9 @@
     const x = (index) => pad.left + index / Math.max(points.length - 1, 1) * (width - pad.left - pad.right);
     const y = (value) => pad.top + (max - value) / range * (height - pad.top - pad.bottom);
     ctx.clearRect(0, 0, width, height);
-    ctx.strokeStyle = "#2f2922"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = "rgba(212, 175, 55, .18)"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
     ctx.beginPath(); ctx.moveTo(pad.left, y(0)); ctx.lineTo(width - pad.right, y(0)); ctx.stroke(); ctx.setLineDash([]);
-    const final = points.at(-1), line = final >= 0 ? "#d7aa4b" : "#ff665b";
+    const final = points.at(-1), line = final >= 0 ? "#d4af37" : "#e04444";
     const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
     gradient.addColorStop(0, final >= 0 ? "rgba(215,170,75,.22)" : "rgba(255,102,91,.16)");
     gradient.addColorStop(1, "rgba(8,7,6,0)");
@@ -764,43 +775,33 @@
   }
 
   function optionFields() {
-    return `<div id="option-fields"><div class="field-row field-row--3"><label class="field"><span>Option type</span><select name="option_type"><option value="call">Call</option><option value="put">Put</option></select></label><label class="field"><span>Strike</span><input name="strike" type="number" min="0" step="0.01" required></label><label class="field"><span>Expiry</span><input name="expiry" type="date" required></label></div><div class="field-row field-row--3"><label class="field"><span>Multiplier</span><input name="multiplier" type="number" min="1" step="1" value="100" required></label><label class="field"><span>Maximum loss</span><input name="maximum_loss" type="number" min="0" step="0.01" placeholder="Defaults to premium"></label><label class="field"><span>Notional value</span><input name="notional" type="number" min="0" step="0.01" placeholder="Exposure only"></label></div></div>`;
+    return `<div id="option-fields"><div class="field-row field-row--3"><label class="field"><span>Option type</span><select name="option_type"><option value="call">Call</option><option value="put">Put</option></select></label><label class="field"><span>Strike</span><input name="strike" type="number" min="0" step="0.01" required></label><label class="field"><span>Expiry</span><input name="expiry" type="date" required></label></div><label class="field"><span>Multiplier</span><input name="multiplier" type="number" min="1" step="1" value="100" required></label></div>`;
   }
 
   function openAssetDialog() {
     const portfolio = currentPortfolio();
     const isOptions = portfolio.kind === "options";
     openDialog({
-      kicker: `${portfolio.name} · Opening state`, title: "Add asset or target", submitLabel: "Save asset",
+      kicker: `${portfolio.name} · 100% plan`, title: "Add a ticker to the plan", submitLabel: "Add to plan",
       body: `<div class="field-row"><label class="field"><span>${isOptions ? "Underlying symbol" : "Ticker symbol"}</span><input name="symbol" maxlength="20" placeholder="NVDA" required></label><label class="field"><span>Display name</span><input name="display_name" maxlength="160" placeholder="NVIDIA Corporation"></label></div>
-        ${isOptions ? `<input name="asset_type" type="hidden" value="option">${optionFields()}` : `<div class="field-row"><label class="field"><span>Asset type</span><select name="asset_type"><option value="stock">Stock</option><option value="etf">ETF</option></select></label><label class="field"><span>Exchange</span><input name="exchange" maxlength="30" placeholder="NASDAQ"></label></div>`}
-        <div class="field-row field-row--3"><label class="field"><span>Current quantity</span><input name="quantity" type="number" min="0" step="0.00000001" value="0" required></label><label class="field"><span>Average cost</span><input name="average_cost" type="number" min="0" step="0.0001" value="0" required></label><label class="field"><span>As of date</span><input name="as_of" type="date" value="${today()}" required></label></div>
-        <div class="field-row field-row--3"><label class="field"><span>Target %</span><input name="target" type="number" min="0" max="100" step="0.01" required></label><label class="field"><span>Maximum %</span><input name="maximum" type="number" min="0" max="100" step="0.01"></label><label class="field"><span>Planned tranches</span><input name="tranches" type="number" min="1" max="20" step="1"></label></div>
-        <div class="field-row"><label class="field"><span>Current market price (optional)</span><input name="current_price" type="number" min="0" step="0.0001"></label><label class="field"><span>Notes</span><input name="notes" maxlength="500"></label></div>
-        <div class="warning-box">Quantity 0 creates a planning target only. A positive quantity creates the current opening position; this snapshot locks once trade executions exist.</div>`,
+        ${isOptions ? `<input name="asset_type" type="hidden" value="option">${optionFields()}` : `<label class="field"><span>Asset type</span><select name="asset_type"><option value="stock">Stock</option><option value="etf">ETF</option></select></label>`}
+        <div class="field-row"><label class="field"><span>Target % of this portfolio</span><input name="target" type="number" min="0.01" max="100" step="0.01" required></label><label class="field"><span>Split into how many buys?</span><input name="tranches" type="number" min="1" max="20" step="1" value="3" required></label></div>
+        <label class="field"><span>Notes (optional)</span><input name="notes" maxlength="500" placeholder="Why this ticker belongs in the plan"></label>
+        <p class="form-hint">This only creates a plan. Use Buy after an order has filled; cash and average cost will update from that transaction.</p>`,
       onSubmit: async (form) => {
         const assetType = form.get("asset_type");
         const instrumentId = await rpc("api_upsert_instrument", {
           p_asset_type: assetType, p_symbol: String(form.get("symbol")).toUpperCase().trim(), p_display_name: form.get("display_name") || null,
-          p_exchange: form.get("exchange") || null, p_currency: "USD", p_option_type: isOptions ? form.get("option_type") : null,
+          p_exchange: null, p_currency: "USD", p_option_type: isOptions ? form.get("option_type") : null,
           p_strike: isOptions ? num(form.get("strike")) : null, p_expiry: isOptions ? form.get("expiry") : null,
           p_multiplier: isOptions ? num(form.get("multiplier")) : 1
         });
-        const quantity = num(form.get("quantity"));
-        if (quantity > 0) await rpc("api_set_opening_position", {
-          p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_quantity: quantity, p_average_cost: num(form.get("average_cost")),
-          p_as_of_date: form.get("as_of"), p_maximum_loss: isOptions && form.get("maximum_loss") !== "" ? num(form.get("maximum_loss")) : null,
-          p_notional_value: isOptions && form.get("notional") !== "" ? num(form.get("notional")) : null, p_notes: form.get("notes") || null
-        });
         await rpc("api_set_allocation_target", {
           p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_target_percent: num(form.get("target")),
-          p_maximum_percent: form.get("maximum") === "" ? null : num(form.get("maximum")),
+          p_maximum_percent: null,
           p_planned_tranches: form.get("tranches") === "" ? null : num(form.get("tranches")), p_notes: form.get("notes") || null
         });
-        if (form.get("current_price") !== "") await rpc("api_record_instrument_price", {
-          p_instrument_id: instrumentId, p_price: num(form.get("current_price")), p_market_time: new Date().toISOString(), p_source: "manual"
-        });
-        closeDialog(); toast("Asset and allocation saved"); await loadData({ quiet: true });
+        closeDialog(); toast("Ticker added to the plan"); await loadData({ quiet: true });
       }
     });
   }
@@ -810,11 +811,11 @@
     const instrument = instrumentMap().get(instrumentId);
     const target = state.targets.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentId);
     openDialog({
-      kicker: `${portfolio.name} · ${instrument?.symbol || "Asset"}`, title: "Edit allocation target", submitLabel: "Update target",
-      body: `<div class="field-row field-row--3"><label class="field"><span>Target %</span><input name="target" type="number" min="0" max="100" step="0.01" value="${num(target?.target_percent)}" required></label><label class="field"><span>Maximum %</span><input name="maximum" type="number" min="0" max="100" step="0.01" value="${target?.maximum_percent ?? ""}"></label><label class="field"><span>Planned tranches</span><input name="tranches" type="number" min="1" max="20" step="1" value="${target?.planned_tranches ?? ""}"></label></div><label class="field"><span>Plan notes</span><textarea name="notes" maxlength="2000">${esc(target?.notes || "")}</textarea></label><p class="form-hint">All active targets in this portfolio must total 100% or less.</p>`,
+      kicker: `${portfolio.name} · ${instrument?.symbol || "Asset"}`, title: "Edit buying plan", submitLabel: "Update plan",
+      body: `<div class="field-row"><label class="field"><span>Target %</span><input name="target" type="number" min="0" max="100" step="0.01" value="${num(target?.target_percent)}" required></label><label class="field"><span>Planned buys</span><input name="tranches" type="number" min="1" max="20" step="1" value="${target?.planned_tranches ?? 3}" required></label></div><label class="field"><span>Plan notes</span><textarea name="notes" maxlength="2000">${esc(target?.notes || "")}</textarea></label><p class="form-hint">Ticker targets should total 100%. Anything unallocated stays as cash automatically.</p>`,
       onSubmit: async (form) => {
-        await rpc("api_set_allocation_target", { p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_target_percent: num(form.get("target")), p_maximum_percent: form.get("maximum") === "" ? null : num(form.get("maximum")), p_planned_tranches: form.get("tranches") === "" ? null : num(form.get("tranches")), p_notes: form.get("notes") || null });
-        closeDialog(); toast("Allocation target updated"); await loadData({ quiet: true });
+        await rpc("api_set_allocation_target", { p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_target_percent: num(form.get("target")), p_maximum_percent: null, p_planned_tranches: num(form.get("tranches")), p_notes: form.get("notes") || null });
+        closeDialog(); toast("Buying plan updated"); await loadData({ quiet: true });
       }
     });
   }
@@ -832,25 +833,29 @@
     });
   }
 
-  function portfolioInstrumentOptions(portfolio) {
-    const ids = new Set(portfolioRows(portfolio).map((row) => row.id));
+  function portfolioInstrumentOptions(portfolio, positionsOnly = false) {
+    const ids = new Set(portfolioRows(portfolio).filter((row) => !positionsOnly || num(row.position?.quantity) > 0).map((row) => row.id));
     return state.instruments.filter((item) => ids.has(item.id)).map((item) => `<option value="${item.id}">${esc(item.symbol)} · ${esc(item.display_name || item.asset_type)}</option>`).join("");
   }
 
-  function openTradeDialog() {
+  function openTradeDialog(sidePreset = "buy") {
     const portfolio = currentPortfolio();
-    const options = portfolioInstrumentOptions(portfolio);
-    if (!options) { toast("Add an asset to this portfolio before recording a fill", true); openAssetDialog(); return; }
+    const options = portfolioInstrumentOptions(portfolio, sidePreset === "sell");
+    if (!options) {
+      toast(sidePreset === "sell" ? "There is no open position to sell" : "Add a ticker to the plan first", true);
+      if (sidePreset === "buy") openAssetDialog();
+      return;
+    }
     const isOptions = portfolio.kind === "options";
     openDialog({
-      kicker: `${portfolio.name} · Draft → Confirm`, title: "Record a broker fill", submitLabel: "Preview fill",
-      body: `<div class="warning-box">This records a completed broker fill. It does not connect to a broker and cannot place a live order.</div><label class="field"><span>Asset</span><select name="instrument">${options}</select></label><div class="field-row field-row--3"><label class="field"><span>Side</span><select name="side"><option value="buy">Buy</option><option value="sell">Sell</option></select></label><label class="field"><span>Quantity</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" required></label><label class="field"><span>Fill price</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Tranche #</span><input name="tranche" type="number" min="1" max="20" step="1"></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Executed at</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
+      kicker: `${portfolio.name} · Saved to Supabase`, title: `Record a ${sidePreset}`, submitLabel: `Review ${sidePreset}`,
+      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" required></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
         const draft = await rpc("api_create_trade_draft", {
           p_portfolio_id: portfolio.id, p_instrument_id: form.get("instrument"), p_side: form.get("side"),
           p_quantity: num(form.get("quantity")), p_price: num(form.get("price")), p_idempotency_key: uid("web-trade"),
           p_fee: num(form.get("fee")), p_executed_at: new Date(form.get("executed")).toISOString(),
-          p_tranche_number: form.get("tranche") === "" ? null : num(form.get("tranche")),
+          p_tranche_number: form.get("tranche") ? num(form.get("tranche")) : null,
           p_underlying_price: isOptions && form.get("underlying_price") !== "" ? num(form.get("underlying_price")) : null, p_campaign_id: null
         });
         openDraftConfirmation("trade fill", draft, (id, token) => rpc("api_confirm_trade_draft", { p_draft_id: id, p_confirmation_token: token }));
@@ -897,6 +902,7 @@
     if (routeButton) {
       state.route = routeButton.dataset.route;
       window.scrollTo(0, 0);
+      renderNav();
       if (state.route === "journal") await loadJournalPage();
       else render();
       return;
@@ -914,7 +920,8 @@
     else if (action === "budget-edit") openBudgetDialog();
     else if (action === "cash-add") openCashDialog();
     else if (action === "asset-add") openAssetDialog();
-    else if (action === "trade-add") openTradeDialog();
+    else if (action === "trade-add" || action === "trade-buy") openTradeDialog("buy");
+    else if (action === "trade-sell") openTradeDialog("sell");
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
     else if (action === "journal-add") openJournalDialog();

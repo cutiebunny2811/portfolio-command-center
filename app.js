@@ -38,14 +38,19 @@
     speculative: "Speculative",
     options: "Options"
   };
+  const localPreviewParams = new URLSearchParams(location.search);
   const localPreviewEnabled = ["127.0.0.1", "localhost"].includes(location.hostname)
-    && new URLSearchParams(location.search).get("preview") === "1";
+    && localPreviewParams.get("preview") === "1";
+  const localStressEnabled = localPreviewEnabled && localPreviewParams.get("stress") === "1";
 
   const state = {
     user: null,
     portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [],
-    journal: [], prices: [], route: "overview", selectedPortfolioId: null,
-    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, journalFilter: "all",
+    journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
+    journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
+    journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
+    journalBusy: false, prices: [], route: "overview", selectedPortfolioId: null,
+    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
   };
 
@@ -82,6 +87,9 @@
 
   function friendlyError(error) {
     const message = error?.message || String(error || "Unknown error");
+    if (/api_get_journal_view/i.test(message)) {
+      return "Scalable Journal API is not installed yet. Run 007_journal_scaling.sql in Supabase first.";
+    }
     if (/api_create_journal_entry|schema cache|function .* does not exist/i.test(message)) {
       return "Journal API is not installed yet. Run 005_journal_api.sql in Supabase first.";
     }
@@ -125,12 +133,11 @@
 
   function combinedStats() {
     const stats = state.portfolios.map(portfolioStats);
-    const journal = state.journal.filter((item) => !item.is_void);
     return {
       budget: stats.reduce((sum, item) => sum + item.budget, 0),
       cash: stats.reduce((sum, item) => sum + item.cash, 0),
       deployed: stats.reduce((sum, item) => sum + item.deployed, 0),
-      pnl: journal.reduce((sum, item) => sum + num(item.manual_pnl), 0)
+      pnl: num(state.journalOverview?.summary?.net_pnl)
     };
   }
 
@@ -174,25 +181,141 @@
     return data || [];
   }
 
+  function emptyJournalView() {
+    return {
+      entries: [], total_count: 0, daily: [], monthly: [],
+      summary: {
+        performance_count: 0, net_pnl: 0, win_count: 0, loss_count: 0,
+        breakeven_count: 0, gross_win: 0, gross_loss: 0, avg_win: 0, avg_loss: 0
+      }
+    };
+  }
+
+  function normalizeJournalView(value) {
+    const empty = emptyJournalView();
+    return {
+      ...empty,
+      ...(value || {}),
+      entries: Array.isArray(value?.entries) ? value.entries : [],
+      daily: Array.isArray(value?.daily) ? value.daily : [],
+      monthly: Array.isArray(value?.monthly) ? value.monthly : [],
+      summary: { ...empty.summary, ...(value?.summary || {}) }
+    };
+  }
+
+  function localJournalView({ page = 1, pageSize = 50, portfolioId = null, dateFrom = null, dateTo = null, outcome = null, search = null } = {}) {
+    const instruments = instrumentMap();
+    const term = String(search || "").trim().toLowerCase();
+    const filtered = state.journalPreviewSource.filter((item) => {
+      const symbol = instruments.get(item.instrument_id)?.symbol || "";
+      return !item.is_void
+        && (!portfolioId || item.portfolio_id === portfolioId)
+        && (!dateFrom || item.occurred_on >= dateFrom)
+        && (!dateTo || item.occurred_on <= dateTo)
+        && (!outcome || item.outcome === outcome)
+        && (!term || `${symbol} ${item.strategy_label || ""} ${item.notes || ""}`.toLowerCase().includes(term));
+    }).sort((a, b) => b.occurred_on.localeCompare(a.occurred_on) || b.created_at.localeCompare(a.created_at));
+    const performance = filtered.filter((item) => item.manual_pnl != null);
+    const wins = performance.filter((item) => num(item.manual_pnl) > 0);
+    const losses = performance.filter((item) => num(item.manual_pnl) < 0);
+    const grossWin = wins.reduce((sum, item) => sum + num(item.manual_pnl), 0);
+    const grossLoss = Math.abs(losses.reduce((sum, item) => sum + num(item.manual_pnl), 0));
+    const daily = new Map(), monthly = new Map();
+    performance.forEach((item) => {
+      daily.set(item.occurred_on, num(daily.get(item.occurred_on)) + num(item.manual_pnl));
+      const month = `${item.occurred_on.slice(0, 7)}-01`;
+      const current = monthly.get(month) || { month, pnl: 0, count: 0 };
+      current.pnl += num(item.manual_pnl); current.count += 1; monthly.set(month, current);
+    });
+    const start = (page - 1) * pageSize;
+    return normalizeJournalView({
+      entries: filtered.slice(start, start + pageSize).map((item) => ({ ...item, symbol: instruments.get(item.instrument_id)?.symbol || null })),
+      total_count: filtered.length,
+      summary: {
+        performance_count: performance.length,
+        net_pnl: performance.reduce((sum, item) => sum + num(item.manual_pnl), 0),
+        win_count: wins.length,
+        loss_count: losses.length,
+        breakeven_count: performance.filter((item) => num(item.manual_pnl) === 0).length,
+        gross_win: grossWin,
+        gross_loss: grossLoss,
+        avg_win: wins.length ? grossWin / wins.length : 0,
+        avg_loss: losses.length ? -grossLoss / losses.length : 0
+      },
+      daily: [...daily].sort(([a], [b]) => a.localeCompare(b)).map(([date, pnl]) => ({ date, pnl })),
+      monthly: [...monthly.values()].sort((a, b) => a.month.localeCompare(b.month))
+    });
+  }
+
+  async function fetchJournalView({ page = 1, pageSize = 50, portfolioId = null, dateFrom = null, dateTo = null, outcome = null, search = null } = {}) {
+    if (localPreviewEnabled) return localJournalView({ page, pageSize, portfolioId, dateFrom, dateTo, outcome, search });
+    return normalizeJournalView(await rpc("api_get_journal_view", {
+      p_page: page,
+      p_page_size: pageSize,
+      p_portfolio_id: portfolioId,
+      p_date_from: dateFrom,
+      p_date_to: dateTo,
+      p_outcome: outcome,
+      p_search: search
+    }));
+  }
+
+  function applyJournalView(view) {
+    state.journal = view.entries;
+    state.journalSummary = view.summary;
+    state.journalDaily = view.daily;
+    state.journalMonthly = view.monthly;
+    state.journalTotal = num(view.total_count);
+  }
+
+  async function loadJournalPage({ renderAfter = true } = {}) {
+    state.journalBusy = true;
+    if (renderAfter && state.route === "journal") renderJournalPaged();
+    try {
+      const view = await fetchJournalView({
+        page: state.journalPage,
+        pageSize: state.journalPageSize,
+        portfolioId: state.journalFilter === "all" ? null : state.journalFilter,
+        dateFrom: state.journalDateFrom || null,
+        dateTo: state.journalDateTo || null,
+        outcome: state.journalOutcome === "all" ? null : state.journalOutcome,
+        search: state.journalSearch || null
+      });
+      applyJournalView(view);
+      const pages = Math.max(Math.ceil(state.journalTotal / state.journalPageSize), 1);
+      if (state.journalPage > pages) {
+        state.journalPage = pages;
+        return await loadJournalPage({ renderAfter });
+      }
+    } catch (error) {
+      console.error(error);
+      toast(friendlyError(error), true);
+    } finally {
+      state.journalBusy = false;
+      if (renderAfter && state.route === "journal") renderJournalPaged();
+    }
+  }
+
   async function loadData({ quiet = false } = {}) {
     if (!state.user || state.loading) return;
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, journal, prices] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
         query("Instruments", db.from("instruments").select("*").order("symbol")),
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
         query("Position capacity", db.from("position_capacity").select("*")),
-        query("Journal", db.from("journal_entries").select("*").order("occurred_on", { ascending: false }).limit(2500)),
-        query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000))
+        query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
+        fetchJournalView({ page: 1, pageSize: 6 })
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, journal, prices });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview });
       if (!state.selectedPortfolioId || !portfolios.some((item) => item.id === state.selectedPortfolioId)) {
         state.selectedPortfolioId = portfolios[0]?.id || null;
       }
+      if (state.route === "journal") await loadJournalPage({ renderAfter: false });
       state.lastSync = new Date();
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
@@ -241,7 +364,7 @@
       return;
     }
     if (state.route === "portfolio") renderPortfolio();
-    else if (state.route === "journal") renderJournal();
+    else if (state.route === "journal") renderJournalPaged();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -252,8 +375,7 @@
 
   function renderOverview() {
     const total = combinedStats();
-    const activeJournal = state.journal.filter((item) => !item.is_void);
-    const recent = activeJournal.slice(0, 6);
+    const recent = state.journalOverview?.entries || [];
     const instruments = instrumentMap();
     const capacityItems = state.capacities.map((capacity) => {
       const portfolio = state.portfolios.find((item) => item.id === capacity.portfolio_id);
@@ -447,6 +569,112 @@
     const sorted = [...entries].sort((a, b) => a.occurred_on.localeCompare(b.occurred_on) || a.created_at.localeCompare(b.created_at));
     const points = [0];
     sorted.forEach((entry) => points.push(points.at(-1) + num(entry.manual_pnl)));
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(rect.width, 280), height = 220, ratio = window.devicePixelRatio || 1;
+    canvas.width = width * ratio; canvas.height = height * ratio;
+    canvas.style.height = `${height}px`;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(ratio, ratio);
+    const min = Math.min(...points, 0), max = Math.max(...points, 0), range = max - min || 1;
+    const pad = { top: 18, right: 12, bottom: 28, left: 12 };
+    const x = (index) => pad.left + index / Math.max(points.length - 1, 1) * (width - pad.left - pad.right);
+    const y = (value) => pad.top + (max - value) / range * (height - pad.top - pad.bottom);
+    ctx.clearRect(0, 0, width, height);
+    ctx.strokeStyle = "#2f2922"; ctx.lineWidth = 1; ctx.setLineDash([4, 5]);
+    ctx.beginPath(); ctx.moveTo(pad.left, y(0)); ctx.lineTo(width - pad.right, y(0)); ctx.stroke(); ctx.setLineDash([]);
+    const final = points.at(-1), line = final >= 0 ? "#d7aa4b" : "#ff665b";
+    const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
+    gradient.addColorStop(0, final >= 0 ? "rgba(215,170,75,.22)" : "rgba(255,102,91,.16)");
+    gradient.addColorStop(1, "rgba(8,7,6,0)");
+    ctx.beginPath(); ctx.moveTo(x(0), y(points[0]));
+    points.slice(1).forEach((value, index) => ctx.lineTo(x(index + 1), y(value)));
+    ctx.lineTo(x(points.length - 1), height - pad.bottom); ctx.lineTo(x(0), height - pad.bottom); ctx.closePath();
+    ctx.fillStyle = gradient; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x(0), y(points[0]));
+    points.slice(1).forEach((value, index) => ctx.lineTo(x(index + 1), y(value)));
+    ctx.strokeStyle = line; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = line; ctx.beginPath(); ctx.arc(x(points.length - 1), y(final), 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#6e655b"; ctx.font = "10px JetBrains Mono";
+    ctx.textAlign = "left"; ctx.fillText(money(min, 0), pad.left, height - 6);
+    ctx.textAlign = "right"; ctx.fillText(money(max, 0), width - pad.right, 11);
+  }
+
+  function renderJournalPaged() {
+    const entries = state.journal;
+    const stats = state.journalSummary || emptyJournalView().summary;
+    const performanceCount = num(stats.performance_count);
+    const winRate = performanceCount ? num(stats.win_count) / performanceCount * 100 : 0;
+    const profitFactor = num(stats.gross_loss) ? num(stats.gross_win) / num(stats.gross_loss) : num(stats.gross_win) ? Infinity : 0;
+    const year = new Date().getFullYear();
+    const monthly = new Map(state.journalMonthly.map((item) => [String(item.month).slice(0, 7), item]));
+    const months = Array.from({ length: 12 }, (_, month) => {
+      const key = `${year}-${String(month + 1).padStart(2, "0")}`;
+      const item = monthly.get(key);
+      return { month, pnl: num(item?.pnl), count: num(item?.count) };
+    });
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const pages = Math.max(Math.ceil(state.journalTotal / state.journalPageSize), 1);
+    const start = state.journalTotal ? (state.journalPage - 1) * state.journalPageSize + 1 : 0;
+    const end = Math.min(state.journalPage * state.journalPageSize, state.journalTotal);
+
+    viewRoot.innerHTML = `
+      ${pageHead("Trading journal · Closed-trade performance", "P/L without the spreadsheet drift.", "Server-paged history keeps the ledger fast while Supabase calculates complete filtered statistics.", '<button class="button button--primary" type="button" data-action="journal-add">+ Add P/L entry</button>')}
+      <form class="journal-filters" id="journal-filter-form">
+        <label><span>Portfolio</span><select name="portfolio"><option value="all">All portfolios</option>${state.portfolios.map((p) => `<option value="${p.id}" ${state.journalFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+        <label><span>Outcome</span><select name="outcome"><option value="all">All outcomes</option><option value="win" ${state.journalOutcome === "win" ? "selected" : ""}>Win</option><option value="loss" ${state.journalOutcome === "loss" ? "selected" : ""}>Loss</option><option value="breakeven" ${state.journalOutcome === "breakeven" ? "selected" : ""}>Breakeven</option></select></label>
+        <label><span>From</span><input name="date_from" type="date" value="${esc(state.journalDateFrom)}"></label>
+        <label><span>To</span><input name="date_to" type="date" value="${esc(state.journalDateTo)}"></label>
+        <label class="journal-filters__search"><span>Search ledger</span><input name="search" type="search" maxlength="100" value="${esc(state.journalSearch)}" placeholder="Symbol, strategy or notes"></label>
+        <div class="journal-filters__actions"><button class="button button--primary button--small" type="submit">Apply filters</button><button class="button button--ghost button--small" type="button" data-action="journal-filter-clear">Clear</button></div>
+      </form>
+      <div class="journal-result-line"><span>${state.journalTotal.toLocaleString()} matching entries</span><span>Server-paged · ${state.journalPageSize} rows at a time</span></div>
+      <section class="kpi-strip" aria-label="Trading performance">
+        <div class="kpi"><small>Net P/L</small><strong class="${num(stats.net_pnl) > 0 ? "positive" : num(stats.net_pnl) < 0 ? "negative" : ""}">${money(stats.net_pnl)}</strong></div>
+        <div class="kpi"><small>Win rate</small><strong>${percent(winRate, 0)}</strong></div>
+        <div class="kpi"><small>Profit factor</small><strong>${profitFactor === Infinity ? "∞" : profitFactor ? profitFactor.toFixed(2) : "—"}</strong></div>
+        <div class="kpi"><small>Avg win / loss</small><strong>${compactMoney(stats.avg_win)} / ${compactMoney(stats.avg_loss)}</strong></div>
+      </section>
+      <section class="section journal-layout">
+        <div>
+          <div class="section-head"><div><span class="section-index">01 / EQUITY CURVE</span><h2>Cumulative closed P/L.</h2></div></div>
+          <div class="chart-panel">${state.journalDaily.length ? '<canvas id="equity-chart" role="img" aria-label="Cumulative profit and loss curve"></canvas>' : '<div class="empty-state"><div><strong>No P/L data in this view</strong>Adjust the filters or add a journal entry.</div></div>'}</div>
+        </div>
+        <div>
+          <div class="section-head"><div><span class="section-index">02 / ${year}</span><h2>Monthly tape.</h2></div></div>
+          <div class="month-grid">${months.map((item) => `<div class="month-cell"><small>${monthNames[item.month]} · ${item.count}t</small><strong class="${item.pnl > 0 ? "positive" : item.pnl < 0 ? "negative" : ""}">${item.count ? money(item.pnl) : "—"}</strong></div>`).join("")}</div>
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><div><span class="section-index">03 / JOURNAL LEDGER</span><h2>Trade outcomes and notes.</h2></div><p>Voided entries stay in Supabase audit history and disappear from performance totals.</p></div>
+        ${state.journalBusy ? `<div class="journal-loading" role="status"><span></span>Reading this page from Supabase…</div>` : entries.length ? `<div class="table-shell"><table><thead><tr><th>Date</th><th>Portfolio</th><th>Asset / strategy</th><th>Outcome</th><th>P/L</th><th>Notes</th><th>Actions</th></tr></thead><tbody>${entries.map((entry) => {
+          const portfolio = state.portfolios.find((item) => item.id === entry.portfolio_id);
+          return `<tr><td class="mono">${esc(entry.occurred_on)}</td><td>${esc(portfolio?.name || "—")}</td><td><span class="cell-main">${esc(entry.symbol || entry.strategy_label || "Trade")}</span><span class="cell-sub">${esc(entry.strategy_label || "Manual entry")}</span></td><td><span class="status status--${entry.outcome === "win" ? "good" : entry.outcome === "loss" ? "risk" : "warn"}">${esc(entry.outcome)}</span></td><td><strong class="mono ${num(entry.manual_pnl) >= 0 ? "positive" : "negative"}">${money(entry.manual_pnl)}</strong></td><td><span title="${esc(entry.notes || "")}">${esc((entry.notes || "—").slice(0, 48))}${(entry.notes || "").length > 48 ? "…" : ""}</span></td><td><div class="row-actions"><button class="button button--small" type="button" data-action="journal-edit" data-entry-id="${entry.id}">Edit</button><button class="button button--small" type="button" data-action="journal-void" data-entry-id="${entry.id}">Void</button></div></td></tr>`;
+        }).join("")}</tbody></table></div><div class="pagination"><span>${start.toLocaleString()}–${end.toLocaleString()} of ${state.journalTotal.toLocaleString()}</span><div><button class="button button--small" type="button" data-action="journal-page-prev" ${state.journalPage <= 1 ? "disabled" : ""}>← Prev</button> <span class="pagination__page">Page ${state.journalPage} / ${pages}</span> <button class="button button--small" type="button" data-action="journal-page-next" ${state.journalPage >= pages ? "disabled" : ""}>Next →</button></div></div>` : `<div class="empty-state"><div><strong>No journal entries in this view</strong>Adjust the filters or record a closed trade.</div></div>`}
+      </section>`;
+
+    $("#journal-filter-form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const from = form.get("date_from") || "";
+      const to = form.get("date_to") || "";
+      if (from && to && from > to) { toast("Start date must be on or before end date", true); return; }
+      state.journalFilter = form.get("portfolio");
+      state.journalOutcome = form.get("outcome");
+      state.journalDateFrom = from;
+      state.journalDateTo = to;
+      state.journalSearch = String(form.get("search") || "").trim();
+      state.journalPage = 1;
+      await loadJournalPage();
+    });
+    if (!state.journalBusy) requestAnimationFrame(() => drawEquityCurvePaged(state.journalDaily));
+  }
+
+  function drawEquityCurvePaged(dailyRows) {
+    const canvas = $("#equity-chart");
+    if (!canvas || !dailyRows.length) return;
+    const sorted = [...dailyRows].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const points = [0];
+    sorted.forEach((item) => points.push(points.at(-1) + num(item.pnl)));
     const rect = canvas.getBoundingClientRect();
     const width = Math.max(rect.width, 280), height = 220, ratio = window.devicePixelRatio || 1;
     canvas.width = width * ratio; canvas.height = height * ratio;
@@ -682,7 +910,13 @@
 
   async function handleClick(event) {
     const routeButton = event.target.closest("[data-route]");
-    if (routeButton) { state.route = routeButton.dataset.route; window.scrollTo(0, 0); render(); return; }
+    if (routeButton) {
+      state.route = routeButton.dataset.route;
+      window.scrollTo(0, 0);
+      if (state.route === "journal") await loadJournalPage();
+      else render();
+      return;
+    }
     const portfolioButton = event.target.closest("[data-portfolio-id]");
     if (portfolioButton) { state.selectedPortfolioId = portfolioButton.dataset.portfolioId; state.route = "portfolio"; state.holdingsPage = 1; state.holdingsQuery = ""; window.scrollTo(0, 0); render(); return; }
     const openPortfolio = event.target.closest("[data-open-portfolio]");
@@ -702,6 +936,15 @@
     else if (action === "journal-add") openJournalDialog();
     else if (action === "journal-edit") openJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
     else if (action === "journal-void") openVoidJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
+    else if (action === "journal-filter-clear") {
+      Object.assign(state, { journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "", journalPage: 1 });
+      await loadJournalPage();
+    }
+    else if (action === "journal-page-prev" || action === "journal-page-next") {
+      state.journalPage += action === "journal-page-next" ? 1 : -1;
+      await loadJournalPage();
+      $("#journal-filter-form")?.scrollIntoView({ block: "start" });
+    }
     else if (action === "page-prev" || action === "page-next") {
       state.holdingsPage += action === "page-next" ? 1 : -1;
       $("#holdings-region").innerHTML = holdingsTable(currentPortfolio());
@@ -749,7 +992,7 @@
   let resizeTimer;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (state.route === "journal") drawEquityCurve(journalEntries()); }, 120);
+    resizeTimer = setTimeout(() => { if (state.route === "journal") drawEquityCurvePaged(state.journalDaily); }, 120);
   });
 
   db.auth.onAuthStateChange((event, session) => {
@@ -801,7 +1044,30 @@
       ["j6", "p-swing", "i-nvda", "2026-05-22", 540, "Continuation", "Two tranches"],
       ["j7", "p-long", "i-meta", "2026-04-11", 220, "Trim", "Portfolio rebalance"]
     ].map(([id, portfolio_id, instrument_id, occurred_on, manual_pnl, strategy_label, notes]) => ({ id, portfolio_id, instrument_id, occurred_on, manual_pnl, strategy_label, notes, outcome: manual_pnl > 0 ? "win" : "loss", source: "manual", is_void: false, created_at: `${occurred_on}T12:00:00Z` }));
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journal, prices: [], selectedPortfolioId: "p-long" });
+    if (localStressEnabled) {
+      const portfolioIds = portfolios.map((item) => item.id);
+      for (let index = 0; index < 10_000; index += 1) {
+        const date = new Date(Date.UTC(2021, 0, 1 + (index % 1_825))).toISOString().slice(0, 10);
+        const pnl = index % 3 === 0 ? -(40 + index % 260) : 60 + index % 540;
+        const instrument = instruments[index % instruments.length];
+        journal.push({
+          id: `stress-${index}`,
+          portfolio_id: portfolioIds[index % portfolioIds.length],
+          instrument_id: instrument.id,
+          occurred_on: date,
+          manual_pnl: pnl,
+          strategy_label: index % 2 ? "Stress breakout" : "Stress pullback",
+          notes: `Generated local performance row ${index + 1}`,
+          outcome: pnl > 0 ? "win" : "loss",
+          source: "manual",
+          is_void: false,
+          created_at: `${date}T12:00:00Z`
+        });
+      }
+    }
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], selectedPortfolioId: "p-long" });
+    state.journalOverview = localJournalView({ page: 1, pageSize: 6 });
+    applyJournalView(localJournalView({ page: 1, pageSize: state.journalPageSize }));
     authShell.hidden = true;
     appShell.hidden = false;
     setSync(true, "Local preview");

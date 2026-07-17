@@ -49,6 +49,7 @@
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
+    journalFiltersOpen: false,
     journalBusy: false, prices: [], route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
@@ -616,18 +617,24 @@
     const pages = Math.max(Math.ceil(state.journalTotal / state.journalPageSize), 1);
     const start = state.journalTotal ? (state.journalPage - 1) * state.journalPageSize + 1 : 0;
     const end = Math.min(state.journalPage * state.journalPageSize, state.journalTotal);
+    const refinedFilterCount = [state.journalOutcome !== "all", state.journalDateFrom, state.journalDateTo, state.journalSearch].filter(Boolean).length;
 
     viewRoot.innerHTML = `
-      ${pageHead("Trading journal · Closed-trade performance", "P/L without the spreadsheet drift.", "Server-paged history keeps the ledger fast while Supabase calculates complete filtered statistics.", '<button class="button button--primary" type="button" data-action="journal-add">+ Add P/L entry</button>')}
-      <form class="journal-filters" id="journal-filter-form">
-        <label><span>Portfolio</span><select name="portfolio"><option value="all">All portfolios</option>${state.portfolios.map((p) => `<option value="${p.id}" ${state.journalFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+      ${pageHead("Trading journal · Closed-trade performance", "P/L without the spreadsheet drift.", "Journal entries measure realized performance by portfolio. They do not edit cash, holdings or broker records.", '<button class="button button--primary" type="button" data-action="journal-add">+ Add P/L entry</button>')}
+      <div class="journal-commandbar">
+        <div class="journal-commandbar__controls">
+          <label class="journal-primary-filter"><span>Portfolio</span><select id="journal-filter-primary" aria-label="Filter journal by portfolio"><option value="all">All portfolios</option>${state.portfolios.map((p) => `<option value="${p.id}" ${state.journalFilter === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+          <button class="button button--small journal-refine-button" type="button" data-action="journal-filter-toggle" aria-expanded="${state.journalFiltersOpen}">Refine${refinedFilterCount ? `<b>${refinedFilterCount}</b>` : ""}</button>
+        </div>
+        <span class="journal-commandbar__count">${state.journalTotal.toLocaleString()} active ${state.journalTotal === 1 ? "entry" : "entries"}</span>
+      </div>
+      <form class="journal-filters" id="journal-filter-form" ${state.journalFiltersOpen ? "" : "hidden"}>
         <label><span>Outcome</span><select name="outcome"><option value="all">All outcomes</option><option value="win" ${state.journalOutcome === "win" ? "selected" : ""}>Win</option><option value="loss" ${state.journalOutcome === "loss" ? "selected" : ""}>Loss</option><option value="breakeven" ${state.journalOutcome === "breakeven" ? "selected" : ""}>Breakeven</option></select></label>
         <label><span>From</span><input name="date_from" type="date" value="${esc(state.journalDateFrom)}"></label>
         <label><span>To</span><input name="date_to" type="date" value="${esc(state.journalDateTo)}"></label>
         <label class="journal-filters__search"><span>Search ledger</span><input name="search" type="search" maxlength="100" value="${esc(state.journalSearch)}" placeholder="Symbol, strategy or notes"></label>
         <div class="journal-filters__actions"><button class="button button--primary button--small" type="submit">Apply filters</button><button class="button button--ghost button--small" type="button" data-action="journal-filter-clear">Clear</button></div>
       </form>
-      <div class="journal-result-line"><span>${state.journalTotal.toLocaleString()} matching entries</span><span>Server-paged · ${state.journalPageSize} rows at a time</span></div>
       <section class="kpi-strip" aria-label="Trading performance">
         <div class="kpi"><small>Net P/L</small><strong class="${num(stats.net_pnl) > 0 ? "positive" : num(stats.net_pnl) < 0 ? "negative" : ""}">${money(stats.net_pnl)}</strong></div>
         <div class="kpi"><small>Win rate</small><strong>${percent(winRate, 0)}</strong></div>
@@ -658,11 +665,16 @@
       const from = form.get("date_from") || "";
       const to = form.get("date_to") || "";
       if (from && to && from > to) { toast("Start date must be on or before end date", true); return; }
-      state.journalFilter = form.get("portfolio");
       state.journalOutcome = form.get("outcome");
       state.journalDateFrom = from;
       state.journalDateTo = to;
       state.journalSearch = String(form.get("search") || "").trim();
+      state.journalPage = 1;
+      state.journalFiltersOpen = false;
+      await loadJournalPage();
+    });
+    $("#journal-filter-primary")?.addEventListener("change", async (event) => {
+      state.journalFilter = event.target.value;
       state.journalPage = 1;
       await loadJournalPage();
     });
@@ -936,8 +948,12 @@
     else if (action === "journal-add") openJournalDialog();
     else if (action === "journal-edit") openJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
     else if (action === "journal-void") openVoidJournalDialog(state.journal.find((item) => item.id === target.dataset.entryId));
+    else if (action === "journal-filter-toggle") {
+      state.journalFiltersOpen = !state.journalFiltersOpen;
+      renderJournalPaged();
+    }
     else if (action === "journal-filter-clear") {
-      Object.assign(state, { journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "", journalPage: 1 });
+      Object.assign(state, { journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "", journalPage: 1, journalFiltersOpen: false });
       await loadJournalPage();
     }
     else if (action === "journal-page-prev" || action === "journal-page-next") {

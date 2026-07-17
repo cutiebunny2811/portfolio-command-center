@@ -12,7 +12,14 @@ Private portfolio allocation and trading P/L dashboard backed by Supabase.
 
 ## Supabase migrations
 
-The existing project already uses schema/API migrations 001–004. Before using the combined journal, run [`supabase/005_journal_api.sql`](supabase/005_journal_api.sql), then check it with [`supabase/006_verify_journal_api.sql`](supabase/006_verify_journal_api.sql) in the Supabase SQL Editor.
+The existing project already uses schema/API migrations 001–004. Run the journal migrations in order:
+
+1. [`supabase/005_journal_api.sql`](supabase/005_journal_api.sql)
+2. [`supabase/006_verify_journal_api.sql`](supabase/006_verify_journal_api.sql)
+3. [`supabase/007_journal_scaling.sql`](supabase/007_journal_scaling.sql)
+4. [`supabase/008_verify_journal_scaling.sql`](supabase/008_verify_journal_scaling.sql)
+
+Migration 007 keeps large journals responsive by returning only one ledger page at a time while calculating filtered KPIs, monthly totals, and daily equity data inside Postgres.
 
 ## Deploy
 

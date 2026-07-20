@@ -50,6 +50,8 @@
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
+    watchlist: [], watchlistReady: true, watchlistBars: [], watchlistChartBusy: false,
+    selectedWatchlistInstrumentId: null, watchlistRange: "6M",
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
@@ -99,6 +101,9 @@
     }
     if (/refresh-stock-prices.*not found|Failed to send a request to the Edge Function|FunctionsFetchError|404/i.test(message)) {
       return "Webull price refresh is not deployed yet. Deploy the refresh-stock-prices Supabase Edge Function and add its Webull secrets.";
+    }
+    if (/watchlist_items|api_add_watchlist_item|api_remove_watchlist_item/i.test(message)) {
+      return "Watchlist is not installed yet. Run 011_watchlist.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -221,6 +226,20 @@
     const { data, error } = await promise;
     if (error) throw new Error(`${label}: ${error.message}`);
     return data || [];
+  }
+
+  async function optionalWatchlistQuery() {
+    if (localPreviewEnabled) return state.watchlist;
+    const { data, error } = await db.from("watchlist_items").select("*").order("created_at");
+    if (!error) {
+      state.watchlistReady = true;
+      return data || [];
+    }
+    if (/watchlist_items|schema cache|does not exist/i.test(error.message)) {
+      state.watchlistReady = false;
+      return [];
+    }
+    throw new Error(`Watchlist: ${error.message}`);
   }
 
   function emptyJournalView() {
@@ -387,7 +406,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview, watchlist] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -395,9 +414,14 @@
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
         query("Position capacity", db.from("position_capacity").select("*")),
         query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
-        fetchJournalView({ page: 1, pageSize: 6 })
+        fetchJournalView({ page: 1, pageSize: 6 }),
+        optionalWatchlistQuery()
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview, watchlist });
+      if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
+        state.selectedWatchlistInstrumentId = watchlist[0]?.instrument_id || null;
+        state.watchlistBars = [];
+      }
       if (!state.selectedPortfolioId || !portfolios.some((item) => item.id === state.selectedPortfolioId)) {
         state.selectedPortfolioId = portfolios[0]?.id || null;
       }
@@ -451,6 +475,7 @@
     }
     if (state.route === "portfolio") renderPortfolio();
     else if (state.route === "journal") renderJournalPaged();
+    else if (state.route === "watchlist") renderWatchlist();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -586,6 +611,244 @@
       state.holdingsQuery = search.value;
       state.holdingsPage = 1;
       $("#holdings-region").innerHTML = holdingsTable(portfolio);
+    });
+  }
+
+  const watchlistRangeCounts = { "1M": 32, "6M": 190, "1Y": 370, "2Y": 760 };
+
+  function watchlistRows() {
+    const instruments = instrumentMap();
+    const prices = latestPriceMap();
+    return state.watchlist.map((item) => ({
+      ...item,
+      instrument: instruments.get(item.instrument_id),
+      price: prices.get(item.instrument_id)
+    })).filter((item) => item.instrument);
+  }
+
+  function compactNumber(value) {
+    return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(num(value));
+  }
+
+  function movingAverage(bars, period) {
+    let sum = 0;
+    return bars.map((bar, index) => {
+      sum += num(bar.close);
+      if (index >= period) sum -= num(bars[index - period].close);
+      return index >= period - 1 ? sum / period : null;
+    });
+  }
+
+  function drawWatchlistChart() {
+    const canvas = $("#watchlist-chart");
+    if (!canvas || !state.watchlistBars.length) return;
+    const bars = state.watchlistBars;
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    const width = Math.max(canvas.clientWidth, 320);
+    const height = Math.max(canvas.clientHeight, 360);
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(ratio, ratio);
+    ctx.clearRect(0, 0, width, height);
+
+    const plot = { left: 10, right: width - 68, top: 26, bottom: height - 112 };
+    const volume = { top: height - 88, bottom: height - 30 };
+    const lows = bars.map((bar) => num(bar.low));
+    const highs = bars.map((bar) => num(bar.high));
+    const minPrice = Math.min(...lows);
+    const maxPrice = Math.max(...highs);
+    const pricePad = Math.max((maxPrice - minPrice) * .06, maxPrice * .006);
+    const low = minPrice - pricePad;
+    const high = maxPrice + pricePad;
+    const maxVolume = Math.max(...bars.map((bar) => num(bar.volume)), 1);
+    const x = (index) => plot.left + (index + .5) / bars.length * (plot.right - plot.left);
+    const y = (price) => plot.bottom - (price - low) / Math.max(high - low, .0001) * (plot.bottom - plot.top);
+    const candleWidth = clamp((plot.right - plot.left) / bars.length * .62, 1, 11);
+
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    for (let step = 0; step <= 5; step += 1) {
+      const price = high - (high - low) * step / 5;
+      const py = y(price);
+      ctx.strokeStyle = "rgba(245,245,245,.09)";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(plot.left, py); ctx.lineTo(plot.right, py); ctx.stroke();
+      ctx.fillStyle = "#77746d";
+      ctx.fillText(price.toFixed(price >= 100 ? 2 : 3), plot.right + 9, py);
+    }
+
+    bars.forEach((bar, index) => {
+      const rising = num(bar.close) >= num(bar.open);
+      const color = rising ? "#55b98d" : "#d32323";
+      const cx = x(index);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx, y(bar.high)); ctx.lineTo(cx, y(bar.low)); ctx.stroke();
+      const bodyTop = Math.min(y(bar.open), y(bar.close));
+      const bodyHeight = Math.max(Math.abs(y(bar.open) - y(bar.close)), 1);
+      ctx.fillStyle = color;
+      ctx.fillRect(cx - candleWidth / 2, bodyTop, candleWidth, bodyHeight);
+      const volumeHeight = num(bar.volume) / maxVolume * (volume.bottom - volume.top);
+      ctx.globalAlpha = .45;
+      ctx.fillRect(cx - candleWidth / 2, volume.bottom - volumeHeight, candleWidth, volumeHeight);
+      ctx.globalAlpha = 1;
+    });
+
+    [[20, "#d4af37"], [50, "#f5f5f5"], [200, "#a50000"]].forEach(([period, color]) => {
+      const values = movingAverage(bars, period);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = period === 20 ? 1.6 : 1.2;
+      ctx.beginPath();
+      let started = false;
+      values.forEach((value, index) => {
+        if (value == null) return;
+        if (!started) { ctx.moveTo(x(index), y(value)); started = true; }
+        else ctx.lineTo(x(index), y(value));
+      });
+      if (started) ctx.stroke();
+    });
+
+    const labelIndexes = [0, Math.floor((bars.length - 1) / 2), bars.length - 1];
+    ctx.fillStyle = "#77746d";
+    ctx.textBaseline = "top";
+    labelIndexes.forEach((index, labelIndex) => {
+      const date = new Date(bars[index].time);
+      ctx.textAlign = labelIndex === 0 ? "left" : labelIndex === 2 ? "right" : "center";
+      ctx.fillText(date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: labelIndex === 2 ? "numeric" : undefined }), x(index), height - 19);
+    });
+  }
+
+  function renderWatchlist() {
+    const rows = watchlistRows();
+    const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
+    const bars = state.watchlistBars;
+    const first = bars[0];
+    const last = bars[bars.length - 1];
+    const rangeChange = first && last ? num(last.close) - num(first.close) : 0;
+    const rangeChangePercent = first && num(first.close) ? rangeChange / num(first.close) * 100 : 0;
+    const dailyChange = bars.length > 1 ? num(last?.close) - num(bars[bars.length - 2]?.close) : 0;
+    const dailyChangePercent = bars.length > 1 && num(bars[bars.length - 2]?.close) ? dailyChange / num(bars[bars.length - 2]?.close) * 100 : 0;
+
+    viewRoot.innerHTML = `
+      ${pageHead("Webull market data · Stocks and ETFs", "Watch the names that matter.", "A separate research list. Nothing here changes portfolio cash, positions or allocation.", `<button class="button button--primary" type="button" data-action="watchlist-add">+ Add ticker</button>`)}
+      ${!state.watchlistReady ? `<div class="warning-box watchlist-setup"><strong>One setup step remains.</strong> Run <code>011_watchlist.sql</code> in Supabase, then refresh this page.</div>` : ""}
+      <section class="watchlist-workbench" aria-label="Watchlist and Webull chart">
+        <aside class="watchlist-rail">
+          <div class="watchlist-rail__head"><div><span class="section-index">01 / WATCHLIST</span><h2>Your market tape.</h2></div><span class="meta">${rows.length} symbols</span></div>
+          ${rows.length ? `<div class="watchlist-list">${rows.map((item) => {
+            const isSelected = item.instrument_id === selected?.instrument_id;
+            return `<button type="button" class="watchlist-row ${isSelected ? "is-active" : ""}" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
+              <span><strong>${esc(item.instrument.symbol)}</strong><small>${esc(item.instrument.display_name || item.instrument.asset_type)}</small></span>
+              <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
+              <i aria-hidden="true">↗</i>
+            </button>`;
+          }).join("")}</div>` : `<div class="empty-state"><div><strong>Your watchlist is empty</strong>Add a US stock or ETF to open its Webull chart here.</div></div>`}
+        </aside>
+        <article class="market-chart-panel">
+          ${selected ? `<header class="market-chart-head">
+            <div><span class="section-index">02 / WEBULL DAILY BARS</span><h2>${esc(selected.instrument.symbol)}</h2><p>${esc(selected.instrument.display_name || selected.instrument.asset_type)}</p></div>
+            <div class="market-chart-quote"><strong>${last ? money(last.close, 4) : selected.price ? money(selected.price.price, 4) : "—"}</strong><span class="${dailyChange >= 0 ? "positive" : "negative"}">${dailyChange > 0 ? "+" : ""}${dailyChange.toFixed(2)} · ${dailyChange > 0 ? "+" : ""}${dailyChangePercent.toFixed(2)}%</span></div>
+          </header>
+          <div class="market-chart-toolbar">
+            <div class="range-switch" aria-label="Chart range">${Object.keys(watchlistRangeCounts).map((range) => `<button type="button" class="${range === state.watchlistRange ? "is-active" : ""}" data-action="watchlist-range" data-range="${range}">${range}</button>`).join("")}</div>
+            <div class="chart-legend"><span class="ma20">MA20</span><span class="ma50">MA50</span><span class="ma200">MA200</span></div>
+          </div>
+          ${state.watchlistChartBusy ? `<div class="watchlist-chart-state"><span></span><p>Reading ${esc(selected.instrument.symbol)} bars from Webull…</p></div>` : bars.length ? `<canvas id="watchlist-chart" role="img" aria-label="${esc(selected.instrument.symbol)} daily candlestick chart with volume and moving averages"></canvas>` : `<div class="watchlist-chart-state"><p>Select a range to load Webull bars.</p></div>`}
+          <footer class="market-chart-foot">
+            <div><small>${state.watchlistRange} MOVE</small><strong class="${rangeChange >= 0 ? "positive" : "negative"}">${rangeChange > 0 ? "+" : ""}${rangeChangePercent.toFixed(2)}%</strong></div>
+            <div><small>LATEST VOLUME</small><strong>${last ? compactNumber(last.volume) : "—"}</strong></div>
+            <div><small>DATA SOURCE</small><strong>WEBULL · DAILY</strong></div>
+            <button class="button button--small button--remove" type="button" data-action="watchlist-remove" data-instrument-id="${selected.instrument_id}">Remove</button>
+          </footer>` : `<div class="market-chart-empty"><span>WEBULL / 00</span><h2>Add a ticker to begin.</h2><p>The chart is independent from your four portfolios and excludes options.</p></div>`}
+        </article>
+      </section>`;
+    requestAnimationFrame(drawWatchlistChart);
+  }
+
+  function previewBars(symbol, count) {
+    let seed = [...symbol].reduce((sum, char) => sum + char.charCodeAt(0), 0) || 100;
+    let close = 80 + seed % 170;
+    const rows = [];
+    for (let index = count - 1; index >= 0; index -= 1) {
+      seed = (seed * 9301 + 49297) % 233280;
+      const change = (seed / 233280 - .47) * close * .035;
+      const open = close;
+      close = Math.max(open + change, 2);
+      const date = new Date(); date.setUTCDate(date.getUTCDate() - index);
+      rows.push({ time: date.toISOString(), open, close, high: Math.max(open, close) * 1.012, low: Math.min(open, close) * .988, volume: 800000 + seed * 70 });
+    }
+    return rows;
+  }
+
+  async function loadWatchlistBars(instrumentId = state.selectedWatchlistInstrumentId, range = state.watchlistRange) {
+    if (!instrumentId || state.watchlistChartBusy) return;
+    state.selectedWatchlistInstrumentId = instrumentId;
+    state.watchlistRange = range;
+    state.watchlistChartBusy = true;
+    state.watchlistBars = [];
+    renderWatchlist();
+    try {
+      if (localPreviewEnabled) {
+        const symbol = instrumentMap().get(instrumentId)?.symbol || "DEMO";
+        state.watchlistBars = previewBars(symbol, watchlistRangeCounts[range]);
+      } else {
+        const { data, error } = await db.functions.invoke("refresh-stock-prices", {
+          body: { action: "chart", instrument_id: instrumentId, count: watchlistRangeCounts[range] }
+        });
+        if (error) {
+          let detail = error.message;
+          try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+          throw new Error(detail);
+        }
+        if (data?.error) throw new Error(data.error);
+        state.watchlistBars = Array.isArray(data?.bars) ? data.bars : [];
+        if (!state.watchlistBars.length) throw new Error("Webull returned no chart bars");
+      }
+    } catch (error) {
+      toast(`Webull chart: ${friendlyError(error)}`, true);
+    } finally {
+      state.watchlistChartBusy = false;
+      if (state.route === "watchlist") renderWatchlist();
+    }
+  }
+
+  function openWatchlistDialog() {
+    if (!state.watchlistReady) {
+      toast("Run 011_watchlist.sql in Supabase first", true);
+      return;
+    }
+    openDialog({
+      kicker: "Watchlist · Webull market data", title: "Add a ticker to watch", submitLabel: "Add to watchlist",
+      body: `<div class="field-row"><label class="field"><span>Ticker symbol</span><input name="symbol" maxlength="20" placeholder="AAPL" required></label><label class="field"><span>Display name (optional)</span><input name="display_name" maxlength="160" placeholder="Apple Inc."></label></div><label class="field"><span>Asset type</span><select name="asset_type"><option value="stock">Stock</option><option value="etf">ETF</option></select></label><label class="field"><span>Research note (optional)</span><textarea name="notes" maxlength="500" placeholder="What are you watching for?"></textarea></label><p class="form-hint">Watchlist items are separate from portfolio holdings. Options are intentionally excluded from Webull chart sync.</p>`,
+      onSubmit: async (form) => {
+        const instrumentId = await rpc("api_upsert_instrument", {
+          p_asset_type: form.get("asset_type"), p_symbol: String(form.get("symbol")).toUpperCase().trim(),
+          p_display_name: form.get("display_name") || null, p_exchange: null, p_currency: "USD",
+          p_option_type: null, p_strike: null, p_expiry: null, p_multiplier: 1
+        });
+        await rpc("api_add_watchlist_item", { p_instrument_id: instrumentId, p_notes: form.get("notes") || null });
+        closeDialog();
+        await loadData({ quiet: true });
+        state.selectedWatchlistInstrumentId = instrumentId;
+        await refreshStockPrices({ force: true });
+        toast(`${String(form.get("symbol")).toUpperCase()} added to watchlist`);
+        await loadWatchlistBars(instrumentId, state.watchlistRange);
+      }
+    });
+  }
+
+  function openRemoveWatchlistDialog(instrumentId) {
+    const instrument = instrumentMap().get(instrumentId);
+    openDialog({
+      kicker: "Watchlist · Research only", title: `Remove ${instrument?.symbol || "ticker"}?`, submitLabel: "Remove", danger: true,
+      body: `<div class="warning-box">This only removes the ticker from Watchlist. Portfolio positions, allocation plans, trades and journal history stay unchanged.</div>`,
+      onSubmit: async () => {
+        await rpc("api_remove_watchlist_item", { p_instrument_id: instrumentId });
+        closeDialog(); state.watchlistBars = []; toast(`${instrument?.symbol || "Ticker"} removed from watchlist`); await loadData({ quiet: true });
+        if (state.selectedWatchlistInstrumentId) await loadWatchlistBars();
+      }
     });
   }
 
@@ -1001,7 +1264,12 @@
       window.scrollTo(0, 0);
       renderNav();
       if (state.route === "journal") await loadJournalPage();
-      else render();
+      else {
+        render();
+        if (state.route === "watchlist" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
+          await loadWatchlistBars();
+        }
+      }
       return;
     }
     const portfolioButton = event.target.closest("[data-portfolio-id]");
@@ -1014,6 +1282,10 @@
     if (action === "close-dialog") closeDialog();
     else if (action === "refresh") await loadData();
     else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
+    else if (action === "watchlist-add") openWatchlistDialog();
+    else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId, state.watchlistRange);
+    else if (action === "watchlist-range") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.range);
+    else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "account") openAccountDialog();
     else if (action === "budget-edit") openBudgetDialog();
     else if (action === "cash-add") openCashDialog();
@@ -1078,7 +1350,10 @@
   let resizeTimer;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (state.route === "journal") drawEquityCurvePaged(state.journalDaily); }, 120);
+    resizeTimer = setTimeout(() => {
+      if (state.route === "journal") drawEquityCurvePaged(state.journalDaily);
+      if (state.route === "watchlist") drawWatchlistChart();
+    }, 120);
   });
   window.setInterval(() => refreshStockPrices(), 15 * 60_000);
   document.addEventListener("visibilitychange", () => {
@@ -1155,7 +1430,12 @@
         });
       }
     }
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], selectedPortfolioId: "p-long" });
+    const watchlist = [
+      { id: "w-nvda", instrument_id: "i-nvda", notes: "AI infrastructure leader" },
+      { id: "w-googl", instrument_id: "i-googl", notes: "Cloud and search" },
+      { id: "w-rklb", instrument_id: "i-rklb", notes: "Space systems" }
+    ];
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     state.journalOverview = localJournalView({ page: 1, pageSize: 6 });
     applyJournalView(localJournalView({ page: 1, pageSize: state.journalPageSize }));
     authShell.hidden = true;

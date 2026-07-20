@@ -105,6 +105,38 @@ function payloadRows(payload: unknown): Record<string, unknown>[] {
   return [object];
 }
 
+function historicalBarRows(payload: unknown): Record<string, unknown>[] {
+  const visited = new Set<object>();
+  function walk(value: unknown): Record<string, unknown>[] {
+    if (!value || typeof value !== "object") return [];
+    if (visited.has(value as object)) return [];
+    visited.add(value as object);
+    if (Array.isArray(value)) {
+      const objects = value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+      if (objects.some((item) => item.open != null && item.high != null && item.low != null && item.close != null)) return objects;
+      for (const item of value) {
+        const found = walk(item);
+        if (found.length) return found;
+      }
+      return [];
+    }
+    const object = value as Record<string, unknown>;
+    if (object.open != null && object.high != null && object.low != null && object.close != null) return [object];
+    const preferred = ["bars", "data", "items", "list", "results", "records"];
+    for (const key of preferred) {
+      if (!(key in object)) continue;
+      const found = walk(object[key]);
+      if (found.length) return found;
+    }
+    for (const nested of Object.values(object)) {
+      const found = walk(nested);
+      if (found.length) return found;
+    }
+    return [];
+  }
+  return walk(payload);
+}
+
 async function signedGet(
   path: string,
   query: Record<string, string>,
@@ -191,7 +223,7 @@ async function fetchHistoricalBars(instrument: Instrument, count: number): Promi
     throw new Error(`${instrument.symbol}: Webull bars failed: ${detail}`);
   }
 
-  const bars = payloadRows(payload).map((bar): ChartBar | null => {
+  const bars = historicalBarRows(payload).map((bar): ChartBar | null => {
     const open = Number(bar.open);
     const high = Number(bar.high);
     const low = Number(bar.low);

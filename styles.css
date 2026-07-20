@@ -544,3 +544,25 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+/* Integrated position ledger: price, P/L and allocation in one scan. */
+.holdings-table { min-width: 1180px; }
+.holdings-table th:first-child, .holdings-table td:first-child { position: sticky; left: 0; }
+.holdings-table th:first-child { z-index: 3; }
+.holdings-table td:first-child { z-index: 1; background: var(--ink); }
+.holdings-table tbody tr:hover td:first-child { background: #190909; }
+.holdings-table th:nth-child(5), .holdings-table td:nth-child(5) { min-width: 280px; }
+.pnl-cell strong { display: block; font-size: 13px; }
+.allocation-cell { white-space: normal; }
+.allocation-cell__top { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 16px; margin-bottom: 9px; }
+.allocation-cell__top strong, .allocation-cell__top > span { display: flex; align-items: baseline; gap: 6px; color: var(--paper); font-size: 12px; }
+.allocation-cell__top > span { color: var(--paper-dim); }
+.allocation-cell__top small { color: var(--paper-faint); font: 7px/1 var(--mono); letter-spacing: .05em; text-transform: uppercase; }
+.allocation-cell .allocation-track { height: 6px; }
+.allocation-cell__meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 7px; color: var(--paper-faint); font: 8px/1.25 var(--mono); }
+.allocation-cell__meta .gold { color: var(--gold-bright); }
+
+@media (max-width: 760px) {
+  .holdings-table { min-width: 1060px; }
+  .holdings-table th, .holdings-table td { padding-top: 12px; padding-bottom: 12px; }
+  .holdings-table th:nth-child(5), .holdings-table td:nth-child(5) { min-width: 250px; }
+}

@@ -829,7 +829,7 @@
         state.watchlistBars = previewBars(symbol, watchlistRangeCounts[range]);
       } else {
         const { data, error } = await db.functions.invoke("refresh-stock-prices", {
-          body: { action: "chart", instrument_id: instrumentId, count: watchlistRangeCounts[range], timespan: new URLSearchParams(window.location.search).get("chartProbe") || "D" }
+          body: { action: "chart", instrument_id: instrumentId, count: watchlistRangeCounts[range] }
         });
         if (error) {
           let detail = error.message;
@@ -838,7 +838,6 @@
         }
         if (data?.error) throw new Error(data.error);
         state.watchlistBars = Array.isArray(data?.bars) ? data.bars : [];
-        if (new URLSearchParams(window.location.search).get("chartProbe")) toast(`Webull ${data?.timespan || "unknown"}: ${state.watchlistBars.length} bars`);
         if (!state.watchlistBars.length) {
           const responsePreview = data == null ? "empty response" : JSON.stringify(data).slice(0, 500);
           throw new Error(`Webull returned no chart bars · ${responsePreview}`);
@@ -1492,5 +1491,4 @@
     else await showApp(data.session.user);
   })();
 })();
-
 

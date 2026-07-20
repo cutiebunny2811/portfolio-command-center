@@ -23,6 +23,15 @@ type PriceResult = {
   marketTime: string;
 };
 
+type ChartBar = {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
 function timestampUtc(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -161,6 +170,53 @@ async function fetchLatestRegularClose(
   };
 }
 
+async function fetchHistoricalBars(instrument: Instrument, count: number): Promise<ChartBar[]> {
+  const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
+  const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
+  const region = Deno.env.get("WEBULL_REGION")?.trim().toLowerCase() || "th";
+  const host = Deno.env.get("WEBULL_API_HOST")?.trim() || (region === "th" ? "api.webull.co.th" : "api.webull.com");
+  const accessToken = Deno.env.get("WEBULL_ACCESS_TOKEN")?.trim();
+  if (!appKey || !appSecret) throw new Error("Webull secrets are not configured");
+
+  const query = {
+    symbol: instrument.symbol.trim().toUpperCase(),
+    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    timespan: "D",
+    count: String(Math.min(Math.max(Math.trunc(count), 10), 800)),
+    real_time_required: "false",
+  };
+  const { response, payload } = await signedGet(barsPath, query, appKey, appSecret, host, accessToken);
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
+    throw new Error(`${instrument.symbol}: Webull bars failed: ${detail}`);
+  }
+
+  const bars = payloadRows(payload).map((bar): ChartBar | null => {
+    const open = Number(bar.open);
+    const high = Number(bar.high);
+    const low = Number(bar.low);
+    const close = Number(bar.close);
+    const volume = Number(bar.volume ?? bar.vol ?? 0);
+    const rawTime = bar.time ?? bar.timestamp ?? bar.date;
+    const numericTime = Number(rawTime);
+    const parsed = Number.isFinite(numericTime)
+      ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime)
+      : new Date(String(rawTime || ""));
+    if (![open, high, low, close].every((value) => Number.isFinite(value) && value > 0) || !Number.isFinite(parsed.getTime())) return null;
+    return {
+      time: parsed.toISOString(),
+      open,
+      high,
+      low,
+      close,
+      volume: Number.isFinite(volume) && volume > 0 ? volume : 0,
+    };
+  }).filter((bar): bar is ChartBar => Boolean(bar));
+  bars.sort((a, b) => a.time.localeCompare(b.time));
+  if (!bars.length) throw new Error(`${instrument.symbol}: Webull returned no usable daily bars`);
+  return bars;
+}
+
 async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
   const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
   const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
@@ -229,14 +285,38 @@ Deno.serve(async (request) => {
     if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
 
     const body = await request.json().catch(() => ({}));
+    if (body?.action === "chart") {
+      const instrumentId = String(body?.instrument_id || "");
+      if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });
+      const { data: instrument, error: instrumentError } = await supabase
+        .from("instruments")
+        .select("id,symbol,asset_type")
+        .eq("id", instrumentId)
+        .in("asset_type", ["stock", "etf"])
+        .maybeSingle();
+      if (instrumentError) throw instrumentError;
+      if (!instrument) return new Response(JSON.stringify({ error: "Stock or ETF not found" }), { status: 404, headers: jsonHeaders });
+      const bars = await fetchHistoricalBars(instrument as Instrument, Number(body?.count || 190));
+      return new Response(JSON.stringify({
+        symbol: instrument.symbol,
+        source: "webull",
+        timespan: "D",
+        fetched_at: new Date().toISOString(),
+        bars,
+      }), { headers: jsonHeaders });
+    }
+
     const force = body?.force === true;
-    const [{ data: targets, error: targetError }, { data: positions, error: positionError }] = await Promise.all([
+    const [{ data: targets, error: targetError }, { data: positions, error: positionError }, watchlistResult] = await Promise.all([
       supabase.from("allocation_targets").select("instrument_id").eq("is_active", true),
       supabase.from("position_balances").select("instrument_id").gt("quantity", 0),
+      supabase.from("watchlist_items").select("instrument_id"),
     ]);
     if (targetError) throw targetError;
     if (positionError) throw positionError;
-    const activeIds = [...new Set([...(targets || []), ...(positions || [])].map((item) => item.instrument_id).filter(Boolean))];
+    // Keep the existing portfolio price refresh working before migration 011 is installed.
+    const watchlist = watchlistResult.error ? [] : (watchlistResult.data || []);
+    const activeIds = [...new Set([...(targets || []), ...(positions || []), ...watchlist].map((item) => item.instrument_id).filter(Boolean))];
     if (!activeIds.length) return new Response(JSON.stringify({ updated: 0, skipped: true, reason: "No active stocks" }), { headers: jsonHeaders });
 
     const { data: instruments, error: instrumentError } = await supabase

@@ -566,3 +566,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .holdings-table th, .holdings-table td { padding-top: 12px; padding-bottom: 12px; }
   .holdings-table th:nth-child(5), .holdings-table td:nth-child(5) { min-width: 250px; }
 }
+
+
+/* Authentication and dashboard are mutually exclusive document states. */
+body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }

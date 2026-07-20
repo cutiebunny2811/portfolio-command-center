@@ -107,6 +107,118 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
+  <script src="app.js?v=20260721-3"></script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0B0B0B">
+  <meta name="description" content="Private portfolio allocation and trading P/L command center.">
+  <title>Portfolio Command Center</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg?v=20260718-2" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=20260721-3">
+</head>
+<body>
+  <a class="skip-link" href="#view-root">Skip to dashboard</a>
+
+  <section id="auth-shell" class="auth-shell" aria-labelledby="auth-title">
+    <div class="auth-brand" aria-hidden="true">
+      <span class="auth-brand__index">PCC / 01</span>
+      <div class="auth-brand__statement">
+        <span>CAPITAL</span>
+        <span>WITH</span>
+        <span class="gold">DISCIPLINE.</span>
+      </div>
+      <p>Four portfolios. One operating view. No mixed allocation math.</p>
+    </div>
+    <form id="login-form" class="auth-panel">
+      <div>
+        <p class="eyebrow">Secure workspace</p>
+        <h1 id="auth-title">Sign in to your command center.</h1>
+        <p class="lede">Your portfolio data lives in Supabase. This device stores only the authenticated session, never a second financial ledger.</p>
+      </div>
+      <label class="field">
+        <span>Email</span>
+        <input id="login-email" name="email" type="email" autocomplete="email" required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button class="button button--primary button--wide" type="submit">Enter dashboard</button>
+      <small class="auth-note">Private access · Supabase Auth + Row Level Security</small>
+    </form>
+  </section>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <header class="topbar">
+      <button class="brand-button" type="button" data-route="overview" aria-label="Open overview">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 44 44"><rect class="brand-mark__frame" x="1" y="1" width="42" height="42" rx="11"/><path class="brand-mark__axis" d="M10 9v25h25"/><rect class="brand-mark__bar" x="13" y="25" width="4" height="6" rx="1"/><rect class="brand-mark__bar brand-mark__bar--ruby" x="20" y="21" width="4" height="10" rx="1"/><rect class="brand-mark__bar" x="27" y="16" width="4" height="15" rx="1"/><path class="brand-mark__chart" d="m11 28 7-7 6 4 10-12"/><circle class="brand-mark__point" cx="34" cy="13" r="2.2"/></svg></span>
+        <span><strong>Portfolio Command</strong><small>Allocation + P/L</small></span>
+      </button>
+      <div class="topbar__status">
+        <span id="sync-status" class="sync-status"><i></i> Supabase connected</span>
+        <button id="refresh-button" class="icon-button" type="button" title="Refresh data" aria-label="Refresh data">↻</button>
+        <button id="account-button" class="account-button" type="button" data-action="account">Account</button>
+      </div>
+    </header>
+
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="sidebar__main">
+        <p class="nav-label">Workspace</p>
+        <button class="nav-item" type="button" data-route="overview"><span>01</span> Overview</button>
+        <button class="nav-item" type="button" data-route="portfolio"><span>02</span> Portfolios</button>
+        <button class="nav-item" type="button" data-route="journal"><span>03</span> Trading P/L</button>
+        <button class="nav-item" type="button" data-route="watchlist"><span>04</span> Watchlist</button>
+      </div>
+      <div>
+        <p class="nav-label">Portfolios</p>
+        <nav id="portfolio-nav" class="portfolio-nav" aria-label="Portfolio selection"></nav>
+      </div>
+      <div class="sidebar__foot">
+        <p>USD · Weighted average</p>
+        <p>Long options · Max loss basis</p>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <div id="portfolio-switcher" class="portfolio-switcher" aria-label="Portfolio selection"></div>
+      <div id="view-root" tabindex="-1"></div>
+    </main>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <button type="button" data-route="watchlist"><span>⌁</span>Watch</button>
+      <button type="button" data-route="overview"><span>⌂</span>Overview</button>
+      <button type="button" data-route="portfolio"><span>◫</span>Portfolio</button>
+      <button type="button" data-route="journal"><span>↗</span>P/L</button>
+    </nav>
+  </div>
+
+  <dialog id="dialog" class="dialog">
+    <form id="dialog-form" method="dialog">
+      <header class="dialog__head">
+        <div><p id="dialog-kicker" class="eyebrow"></p><h2 id="dialog-title"></h2></div>
+        <button class="icon-button" type="button" data-action="close-dialog" aria-label="Close dialog">×</button>
+      </header>
+      <div id="dialog-body" class="dialog__body"></div>
+      <p id="dialog-error" class="form-error" role="alert"></p>
+      <footer id="dialog-actions" class="dialog__actions"></footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="loading" class="loading" hidden><span></span><p>Reading portfolio ledger…</p></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
   <script src="app.js?v=20260721-2"></script>
 </body>
 </html>

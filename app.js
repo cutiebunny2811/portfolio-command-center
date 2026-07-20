@@ -829,7 +829,7 @@
         state.watchlistBars = previewBars(symbol, watchlistRangeCounts[range]);
       } else {
         const { data, error } = await db.functions.invoke("refresh-stock-prices", {
-          body: { action: "chart", instrument_id: instrumentId, count: watchlistRangeCounts[range] }
+          body: { action: "chart", instrument_id: instrumentId, count: watchlistRangeCounts[range], timespan: new URLSearchParams(window.location.search).get("chartProbe") || "D" }
         });
         if (error) {
           let detail = error.message;
@@ -1491,3 +1491,4 @@
     else await showApp(data.session.user);
   })();
 })();
+

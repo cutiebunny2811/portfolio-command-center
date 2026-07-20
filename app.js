@@ -528,17 +528,27 @@
     const start = (state.holdingsPage - 1) * state.holdingsPageSize;
     const slice = rows.slice(start, start + state.holdingsPageSize);
     if (!slice.length) return `<div class="empty-state"><div><strong>${queryText ? "No matching assets" : "No assets yet"}</strong>${queryText ? "Try another symbol or company name." : "Use Add to plan, then record buys and sells as they happen."}</div></div>`;
-    return `<div class="table-shell"><table>
-      <thead><tr><th>Asset</th><th>Shares / avg cost</th><th>Amount used</th><th>Target</th><th>Money left</th><th>Plan</th><th>Actions</th></tr></thead>
+    return `<div class="table-shell"><table class="holdings-table">
+      <thead><tr><th>Asset</th><th>Position / price</th><th>Market value</th><th>Unrealized P/L</th><th>Allocation</th><th>Actions</th></tr></thead>
       <tbody>${slice.map((row) => {
         const market = prices.get(row.id);
+        const quantity = num(row.position?.quantity);
+        const multiplier = num(row.instrument?.multiplier || 1);
+        const costBasis = row.deployed;
+        const hasMarket = quantity > 0 && num(market?.price) > 0;
+        const marketValue = hasMarket ? num(market.price) * quantity * multiplier : 0;
+        const unrealized = hasMarket ? marketValue - costBasis : 0;
+        const unrealizedPercent = hasMarket && costBasis > 0 ? unrealized / costBasis * 100 : 0;
+        const pnlClass = unrealized >= 0 ? "positive" : "negative";
+        const pnlSign = unrealized > 0 ? "+" : "";
+        const allocationProgress = row.targetPercent > 0 ? row.currentPercent / row.targetPercent * 100 : 0;
+        const tranches = num(row.target?.planned_tranches);
         return `<tr>
         <td><span class="cell-main">${esc(row.instrument.symbol)}</span><span class="cell-sub">${esc(row.instrument.display_name || row.instrument.asset_type)}</span></td>
-        <td><span class="cell-main mono">${num(row.position?.quantity).toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${money(row.position?.average_cost, 4)}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
-        <td><strong class="mono">${money(row.deployed)}</strong>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
-        <td><span class="cell-main mono">${percent(row.targetPercent)}</span><span class="cell-sub">${money(row.quota)} quota</span></td>
-        <td><strong class="mono gold">${money(row.remaining)}</strong></td>
-        <td><span class="status status--${row.statusClass}">${esc(row.status)}</span><span class="cell-sub">${row.target?.planned_tranches ? `${row.target.planned_tranches} tranches` : "No tranche split"}</span></td>
+        <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
+        <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
+        <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
+        <td class="allocation-cell"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track ${allocationProgress > 100 ? "is-risk" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="gold">${money(row.remaining)} left</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div></td>
         <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
       </tr>`;
       }).join("")}</tbody>
@@ -567,11 +577,7 @@
         <p>${plan.isOver ? `Plan is ${percent(plan.planned - 100)} over 100%. Reduce a target.` : plan.isComplete ? "Plan complete. Every dollar has a job." : `${percent(plan.unallocated)} is unallocated and stays as cash.`}</p>
       </section>
       <section class="section">
-        <div class="section-head"><div><span class="section-index">01 / BUYING PLAN</span><h2>How much is left for each ticker.</h2></div><p>Up to eight targets are shown here. Cash is simply the unallocated part of the plan.</p></div>
-        ${allocationMap(portfolio, rows)}
-      </section>
-      <section class="section">
-        <div class="section-head"><div><span class="section-index">02 / ASSETS</span><h2>Everything in this portfolio.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
+        <div class="section-head"><div><span class="section-index">01 / ASSETS</span><h2>Positions, P/L and allocation.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
         <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${portfolio.kind === "options" ? "Options use manual prices" : esc(priceFreshnessLabel())}</span><button class="button button--small" type="button" data-action="${portfolio.kind === "options" ? "refresh" : "price-refresh"}">${portfolio.kind === "options" ? "Refresh data" : "Update prices"}</button></div></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
       </section>`;

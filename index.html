@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260721-2">
+  <link rel="stylesheet" href="styles.css?v=20260721-3">
 </head>
 <body>
   <a class="skip-link" href="#view-root">Skip to dashboard</a>
@@ -65,6 +65,7 @@
         <button class="nav-item" type="button" data-route="overview"><span>01</span> Overview</button>
         <button class="nav-item" type="button" data-route="portfolio"><span>02</span> Portfolios</button>
         <button class="nav-item" type="button" data-route="journal"><span>03</span> Trading P/L</button>
+        <button class="nav-item" type="button" data-route="watchlist"><span>04</span> Watchlist</button>
       </div>
       <div>
         <p class="nav-label">Portfolios</p>
@@ -82,6 +83,7 @@
     </main>
 
     <nav class="mobile-nav" aria-label="Mobile navigation">
+      <button type="button" data-route="watchlist"><span>⌁</span>Watch</button>
       <button type="button" data-route="overview"><span>⌂</span>Overview</button>
       <button type="button" data-route="portfolio"><span>◫</span>Portfolio</button>
       <button type="button" data-route="journal"><span>↗</span>P/L</button>
@@ -105,6 +107,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
-  <script src="app.js?v=20260721-1"></script>
+  <script src="app.js?v=20260721-2"></script>
 </body>
 </html>

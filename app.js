@@ -51,7 +51,7 @@
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
-    selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M",
+    selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
@@ -426,6 +426,8 @@
         optionalWatchlistQuery()
       ]);
       Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview, watchlist });
+      state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
+      if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
         state.selectedWatchlistInstrumentId = watchlist[0]?.instrument_id || null;
         state.watchlistBars = [];
@@ -472,7 +474,8 @@
         <i></i><span>${esc(portfolio.name)}</span><small>${Math.round(stats.utilization)}%</small>
       </button>`;
     }).join("");
-    switcher.innerHTML = state.portfolios.map((portfolio) => `<button type="button" class="${portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">${esc(portfolio.name)}</button>`).join("");
+    switcher.hidden = state.route !== "portfolio";
+    switcher.innerHTML = state.route === "portfolio" ? state.portfolios.map((portfolio) => `<button type="button" class="${portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">${esc(portfolio.name)}</button>`).join("") : "";
     $$(".brand-button[data-route], .nav-item[data-route], .mobile-nav [data-route]").forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
   }
 
@@ -644,6 +647,34 @@
     })).filter((item) => item.instrument);
   }
 
+  function rememberWatchlistInstrument(instrumentId) {
+    state.watchlistRecentIds = [instrumentId, ...state.watchlistRecentIds.filter((id) => id !== instrumentId)].slice(0, 6);
+  }
+
+  function watchlistVisibleRows(rows) {
+    const query = state.watchlistSearch.trim().toLowerCase();
+    const matches = query ? rows.filter((item) => [item.instrument.symbol, item.instrument.display_name, item.instrument.asset_type].some((value) => String(value || "").toLowerCase().includes(query))) : rows;
+    if (query) return { query, matchCount: matches.length, rows: matches.slice(0, 8) };
+    const byId = new Map(rows.map((item) => [item.instrument_id, item]));
+    const quickIds = [state.selectedWatchlistInstrumentId, ...state.watchlistRecentIds].filter(Boolean);
+    const quickRows = quickIds.map((id) => byId.get(id)).filter(Boolean);
+    return { query: "", matchCount: rows.length, rows: [...new Map(quickRows.map((item) => [item.instrument_id, item])).values()].slice(0, 6) };
+  }
+
+  function watchlistRowsMarkup(rows, selected) {
+    const visible = watchlistVisibleRows(rows);
+    const label = visible.query ? `${visible.matchCount} match${visible.matchCount === 1 ? "" : "es"}` : "Quick view";
+    if (!visible.rows.length) return `<div class="watchlist-list-empty">No ticker matches “${esc(state.watchlistSearch)}”.</div>`;
+    return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Showing first 8" : "Last viewed / newest"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
+      const isSelected = item.instrument_id === selected?.instrument_id;
+      return `<button type="button" class="watchlist-row ${isSelected ? "is-active" : ""}" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
+        <span><strong>${esc(item.instrument.symbol)}</strong><small>${esc(item.instrument.display_name || item.instrument.asset_type)}</small></span>
+        <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
+        <i aria-hidden="true">↗</i>
+      </button>`;
+    }).join("")}</div>`;
+  }
+
   function compactNumber(value) {
     return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(num(value));
   }
@@ -789,14 +820,7 @@
       <section class="watchlist-workbench" aria-label="Watchlist and Webull chart">
         <aside class="watchlist-rail">
           <div class="watchlist-rail__head"><div><span class="section-index">01 / WATCHLIST</span><h2>Your market tape.</h2></div><span class="meta">${rows.length} symbols</span></div>
-          ${rows.length ? `<div class="watchlist-list">${rows.map((item) => {
-            const isSelected = item.instrument_id === selected?.instrument_id;
-            return `<button type="button" class="watchlist-row ${isSelected ? "is-active" : ""}" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
-              <span><strong>${esc(item.instrument.symbol)}</strong><small>${esc(item.instrument.display_name || item.instrument.asset_type)}</small></span>
-              <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
-              <i aria-hidden="true">↗</i>
-            </button>`;
-          }).join("")}</div>` : `<div class="empty-state"><div><strong>Your watchlist is empty</strong>Add a US stock or ETF to open its Webull chart here.</div></div>`}
+          ${rows.length ? `<label class="watchlist-search"><span>Search all ${rows.length} symbols</span><input type="search" autocomplete="off" data-watchlist-search placeholder="Ticker or company" value="${esc(state.watchlistSearch)}"></label><div id="watchlist-list-region">${watchlistRowsMarkup(rows, selected)}</div>` : `<div class="empty-state"><div><strong>Your watchlist is empty</strong>Add a US stock or ETF to open its Webull chart here.</div></div>`}
         </aside>
         <article class="market-chart-panel">
           ${selected ? `<header class="market-chart-head">
@@ -843,6 +867,7 @@
   async function loadWatchlistBars(instrumentId = state.selectedWatchlistInstrumentId, range = state.watchlistRange, timeframe = state.watchlistTimeframe) {
     if (!instrumentId || state.watchlistChartBusy) return;
     state.selectedWatchlistInstrumentId = instrumentId;
+    rememberWatchlistInstrument(instrumentId);
     state.watchlistTimeframe = watchlistChartOptions[timeframe] ? timeframe : "1D";
     const chartOption = currentWatchlistChartOption();
     state.watchlistRange = chartOption.ranges[range] ? range : chartOption.defaultRange;
@@ -1411,6 +1436,15 @@
   });
 
   document.addEventListener("click", handleClick);
+  document.addEventListener("input", (event) => {
+    const search = event.target.closest("[data-watchlist-search]");
+    if (!search || state.route !== "watchlist") return;
+    state.watchlistSearch = search.value;
+    const rows = watchlistRows();
+    const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || null;
+    const region = $("#watchlist-list-region");
+    if (region) region.innerHTML = watchlistRowsMarkup(rows, selected);
+  });
   $("#refresh-button").addEventListener("click", refreshDashboard);
   dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeDialog(); });
   dialog.addEventListener("click", (event) => {

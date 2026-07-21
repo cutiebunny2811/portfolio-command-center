@@ -32,6 +32,42 @@ type ChartBar = {
   volume: number;
 };
 
+type ChartTimespan = "D" | "M60" | "M240";
+
+function chartTimespan(value: unknown): ChartTimespan {
+  const normalized = String(value || "D").trim().toUpperCase();
+  if (normalized === "D" || normalized === "M60" || normalized === "M240") return normalized;
+  throw new Error("Unsupported chart timespan");
+}
+
+function utcDay(value: string): string {
+  return value.slice(0, 10);
+}
+
+// Webull's D endpoint can remain at the previous completed daily candle while
+// the market is open. Build a provisional current-day candle from hourly bars
+// so the daily chart is live without replacing its historical data source.
+function mergeLiveDailyBar(dailyBars: ChartBar[], hourlyBars: ChartBar[], snapshot: PriceResult | null): ChartBar[] {
+  if (!dailyBars.length || !hourlyBars.length) return dailyBars;
+  const latestHourly = hourlyBars[hourlyBars.length - 1];
+  const day = utcDay(latestHourly.time);
+  const session = hourlyBars.filter((bar) => utcDay(bar.time) === day);
+  if (!session.length) return dailyBars;
+
+  const snapshotPrice = snapshot && utcDay(snapshot.marketTime) === day ? snapshot.price : null;
+  const close = snapshotPrice ?? latestHourly.close;
+  const liveBar: ChartBar = {
+    time: dailyBars.find((bar) => utcDay(bar.time) === day)?.time || latestHourly.time,
+    open: session[0].open,
+    high: Math.max(...session.map((bar) => bar.high), close),
+    low: Math.min(...session.map((bar) => bar.low), close),
+    close,
+    volume: session.reduce((sum, bar) => sum + bar.volume, 0),
+  };
+  return [...dailyBars.filter((bar) => utcDay(bar.time) !== day), liveBar]
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+
 function timestampUtc(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -202,7 +238,7 @@ async function fetchLatestRegularClose(
   };
 }
 
-async function fetchHistoricalBars(instrument: Instrument, count: number): Promise<ChartBar[]> {
+async function fetchHistoricalBars(instrument: Instrument, count: number, timespan: ChartTimespan = "D"): Promise<ChartBar[]> {
   const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
   const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
   const region = Deno.env.get("WEBULL_REGION")?.trim().toLowerCase() || "th";
@@ -213,7 +249,7 @@ async function fetchHistoricalBars(instrument: Instrument, count: number): Promi
   const query = {
     symbol: instrument.symbol.trim().toUpperCase(),
     category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
-    timespan: "D",
+    timespan,
     count: String(Math.min(Math.max(Math.trunc(count), 10), 800)),
     real_time_required: "false",
   };
@@ -245,7 +281,10 @@ async function fetchHistoricalBars(instrument: Instrument, count: number): Promi
     };
   }).filter((bar): bar is ChartBar => Boolean(bar));
   bars.sort((a, b) => a.time.localeCompare(b.time));
-  if (!bars.length) throw new Error(`${instrument.symbol}: Webull returned no usable daily bars`);
+  if (!bars.length) {
+    const preview = JSON.stringify(payload).slice(0, 1200);
+    throw new Error(`${instrument.symbol}: Webull returned no usable ${timespan} bars: ${preview}`);
+  }
   return bars;
 }
 
@@ -328,13 +367,27 @@ Deno.serve(async (request) => {
         .maybeSingle();
       if (instrumentError) throw instrumentError;
       if (!instrument) return new Response(JSON.stringify({ error: "Stock or ETF not found" }), { status: 404, headers: jsonHeaders });
-      const bars = await fetchHistoricalBars(instrument as Instrument, Number(body?.count || 190));
+      const timespan = chartTimespan(body?.timespan);
+      const chartInstrument = instrument as Instrument;
+      const bars = await fetchHistoricalBars(chartInstrument, Number(body?.count || 190), timespan);
+      let snapshot: PriceResult | null = null;
+      let liveBars = bars;
+      if (timespan === "D") {
+        const [hourlyResult, snapshotResult] = await Promise.allSettled([
+          fetchHistoricalBars(chartInstrument, 16, "M60"),
+          fetchSnapshot(chartInstrument),
+        ]);
+        if (snapshotResult.status === "fulfilled") snapshot = snapshotResult.value;
+        if (hourlyResult.status === "fulfilled") liveBars = mergeLiveDailyBar(bars, hourlyResult.value, snapshot);
+      }
       return new Response(JSON.stringify({
         symbol: instrument.symbol,
         source: "webull",
-        timespan: "D",
+        timespan,
         fetched_at: new Date().toISOString(),
-        bars,
+        live_price: snapshot?.price ?? null,
+        live_market_time: snapshot?.marketTime ?? null,
+        bars: liveBars,
       }), { headers: jsonHeaders });
     }
 

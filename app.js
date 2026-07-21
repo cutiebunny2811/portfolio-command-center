@@ -1343,7 +1343,7 @@
     const isOptions = portfolio.kind === "options";
     openDialog({
       kicker: `${portfolio.name} · Saved to Supabase`, title: `Record a ${sidePreset}`, submitLabel: `Review ${sidePreset}`,
-      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" required></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
+      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" aria-describedby="trade-quantity-hint" required>${sidePreset === "sell" ? '<button class="button button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div>${sidePreset === "sell" ? '<small id="trade-quantity-hint" class="trade-quantity-hint"></small>' : ""}</label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
         const instrumentId = form.get("instrument");
         const draft = await rpc("api_create_trade_draft", {
@@ -1364,6 +1364,30 @@
         openDraftConfirmation("trade fill", draft, (id, token) => rpc("api_confirm_trade_draft", { p_draft_id: id, p_confirmation_token: token }));
       }
     });
+    if (sidePreset === "sell") {
+      const body = $("#dialog-body");
+      const instrumentSelect = $('[name="instrument"]', body);
+      const quantityInput = $('[name="quantity"]', body);
+      const sellAllButton = $("[data-trade-sell-all]", body);
+      const quantityHint = $("#trade-quantity-hint", body);
+      const syncSellAll = () => {
+        const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentSelect.value);
+        const available = num(position?.quantity);
+        const instrument = instrumentMap().get(instrumentSelect.value);
+        const unit = instrument?.asset_type === "option" ? "contracts" : "shares";
+        sellAllButton.disabled = available <= 0;
+        sellAllButton.textContent = available > 0 ? `Sell all · ${formatTradeQuantity(available)}` : "Sell all";
+        quantityHint.textContent = available > 0 ? `${formatTradeQuantity(available)} ${unit} currently held` : "No open quantity available";
+      };
+      instrumentSelect.addEventListener("change", syncSellAll);
+      sellAllButton.addEventListener("click", () => {
+        const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentSelect.value);
+        quantityInput.value = num(position?.quantity) || "";
+        quantityInput.dispatchEvent(new Event("input", { bubbles: true }));
+        $('[name="price"]', body)?.focus();
+      });
+      syncSellAll();
+    }
   }
 
   function openJournalDialog(entry = null) {

@@ -193,6 +193,35 @@
     };
   }
 
+  function allocationTone(progress) {
+    if (progress >= 80) return "risk";
+    if (progress >= 40) return "warn";
+    return "good";
+  }
+
+  function formatTradeQuantity(value) {
+    return num(value).toLocaleString("en-US", { maximumFractionDigits: 4 });
+  }
+
+  function trimRecommendation(row, market) {
+    const quantity = num(row.position?.quantity);
+    const excess = Math.max(row.deployed - row.quota, 0);
+    if (excess <= .005 || quantity <= 0 || row.deployed <= 0) return null;
+    const basisPerUnit = row.deployed / quantity;
+    if (basisPerUnit <= 0) return null;
+    const precision = row.instrument.asset_type === "option" ? 0 : 4;
+    const factor = 10 ** precision;
+    const trimQuantity = Math.min(quantity, Math.ceil(excess / basisPerUnit * factor) / factor);
+    const marketPrice = num(market?.price);
+    const multiplier = num(row.instrument.multiplier || 1);
+    return {
+      excess,
+      quantity: trimQuantity,
+      estimatedProceeds: marketPrice > 0 ? trimQuantity * marketPrice * multiplier : null,
+      unit: row.instrument.asset_type === "option" ? "contract(s)" : "share(s)"
+    };
+  }
+
   function portfolioRows(portfolio) {
     const instruments = instrumentMap();
     const positions = new Map(
@@ -219,13 +248,17 @@
       const targetPercent = num(target?.target_percent);
       const quota = stats.capital * targetPercent / 100;
       const remaining = Math.max(Math.min(quota - deployed, stats.cash), 0);
+      const overage = Math.max(deployed - quota, 0);
+      const targetProgress = targetPercent > 0 ? currentPercent / targetPercent * 100 : deployed > 0 ? 100 : 0;
       let status = "Unplanned", statusClass = "warn";
       if (target) {
         if (targetPercent > 0 && currentPercent > targetPercent + .001) { status = "Over target"; statusClass = "risk"; }
-        else if (targetPercent > 0 && currentPercent < targetPercent * .98) { status = "Can add"; statusClass = "warn"; }
+        else if (targetProgress >= 80) { status = "Near target"; statusClass = "risk"; }
+        else if (targetProgress >= 40) { status = "Building"; statusClass = "warn"; }
+        else if (targetPercent > 0) { status = "Room to add"; statusClass = "good"; }
         else { status = "On target"; statusClass = "good"; }
       }
-      return { id, instrument, position, target, capacity, deployed, currentPercent, targetPercent, quota, remaining, status, statusClass };
+      return { id, instrument, position, target, capacity, deployed, currentPercent, targetPercent, quota, remaining, overage, targetProgress, status, statusClass };
     }).filter(Boolean).sort((a, b) => b.deployed - a.deployed || a.instrument.symbol.localeCompare(b.instrument.symbol));
   }
 
@@ -546,12 +579,13 @@
     if (!top.length) return `<div class="empty-state"><div><strong>No assets planned yet</strong>Add a ticker and choose its share of this portfolio.</div></div>`;
     return `<div class="allocation-map">${top.map((row) => {
       const progress = row.quota > 0 ? row.deployed / row.quota * 100 : 0;
+      const tone = allocationTone(progress);
       const tranches = num(row.target?.planned_tranches);
       return `<div class="allocation-row">
         <div class="allocation-row__symbol"><strong>${esc(row.instrument.symbol)}</strong><small>${esc(row.instrument.display_name || row.instrument.asset_type)}</small></div>
-        <div class="allocation-progress"><div class="allocation-track ${progress > 100 ? "is-risk" : ""}" style="--current:${clamp(progress, 0, 100)}%"><i></i></div><small>${money(row.deployed)} of ${money(row.quota)}${tranches ? ` · ${tranches} tranches at ~${money(row.quota / tranches)}` : ""}</small></div>
+        <div class="allocation-progress"><div class="allocation-track is-${tone} ${progress > 100 ? "is-over" : ""}" style="--current:${clamp(progress, 0, 100)}%"><i></i></div><small>${money(row.deployed)} of ${money(row.quota)}${tranches ? ` · ${tranches} tranches at ~${money(row.quota / tranches)}` : ""}</small></div>
         <div class="allocation-row__number">${percent(row.targetPercent)}<small>target</small></div>
-        <div class="allocation-row__number gold">${money(row.remaining)}<small>left to buy</small></div>
+        <div class="allocation-row__number ${row.overage > 0 ? "negative" : "gold"}">${money(row.overage > 0 ? row.overage : row.remaining)}<small>${row.overage > 0 ? "over target" : "left to buy"}</small></div>
       </div>`;
     }).join("")}</div>`;
   }
@@ -580,13 +614,15 @@
         const pnlClass = unrealized >= 0 ? "positive" : "negative";
         const pnlSign = unrealized > 0 ? "+" : "";
         const allocationProgress = row.targetPercent > 0 ? row.currentPercent / row.targetPercent * 100 : 0;
+        const allocationState = allocationTone(allocationProgress);
+        const trim = trimRecommendation(row, market);
         const tranches = num(row.target?.planned_tranches);
         return `<tr>
         <td><span class="cell-main">${esc(row.instrument.symbol)}</span><span class="cell-sub">${esc(row.instrument.display_name || row.instrument.asset_type)}</span></td>
         <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
         <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
-        <td class="allocation-cell"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track ${allocationProgress > 100 ? "is-risk" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="gold">${money(row.remaining)} left</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div></td>
+        <td class="allocation-cell ${trim ? "is-over" : ""}"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track is-${allocationState} ${allocationProgress > 100 ? "is-over" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="${trim ? "negative" : "gold"}">${trim ? `${money(trim.excess)} over` : `${money(row.remaining)} left`}</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div>${trim ? `<div class="allocation-cell__advice"><strong>Suggested trim</strong><span>Sell ~${formatTradeQuantity(trim.quantity)} ${trim.unit}${trim.estimatedProceeds != null ? ` · about ${money(trim.estimatedProceeds)} at market` : ""} to return near ${percent(row.targetPercent)}.</span></div>` : ""}</td>
         <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
       </tr>`;
       }).join("")}</tbody>
@@ -1183,9 +1219,15 @@
   }
 
   function openDraftConfirmation(kind, draft, confirmFn) {
+    const warningCode = draft.preview?.warning;
+    const warningText = draft.clientWarning || (warningCode === "OVER_ALLOCATION_TARGET"
+      ? "This trade is above the allocation target. It is allowed as a tactical overweight; trim guidance will appear in the portfolio after confirmation."
+      : warningCode === "NO_ALLOCATION_TARGET"
+        ? "This ticker has no active allocation target."
+        : warningCode ? warningCode.replaceAll("_", " ") : "");
     openDialog({
       kicker: "Draft ready · Expires in 15 minutes", title: `Confirm ${kind}`, submitLabel: "Confirm and post",
-      body: `<div class="preview-grid">${previewCells(draft.preview || {})}</div>${draft.preview?.warning ? `<div class="warning-box">${esc(draft.preview.warning.replaceAll("_", " "))}</div>` : ""}<p class="form-hint">The server will recalculate these values and apply the change atomically after confirmation.</p>`,
+      body: `<div class="preview-grid">${previewCells(draft.preview || {})}</div>${warningText ? `<div class="warning-box warning-box--allocation">${esc(warningText)}</div>` : ""}<p class="form-hint">The server will recalculate these values and apply the change atomically after confirmation.</p>`,
       onSubmit: async () => {
         await confirmFn(draft.draft_id, draft.confirmation_token);
         closeDialog(); toast(`${kind} confirmed`); await loadData({ quiet: true });
@@ -1303,13 +1345,22 @@
       kicker: `${portfolio.name} · Saved to Supabase`, title: `Record a ${sidePreset}`, submitLabel: `Review ${sidePreset}`,
       body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" required></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
+        const instrumentId = form.get("instrument");
         const draft = await rpc("api_create_trade_draft", {
-          p_portfolio_id: portfolio.id, p_instrument_id: form.get("instrument"), p_side: form.get("side"),
+          p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_side: form.get("side"),
           p_quantity: num(form.get("quantity")), p_price: num(form.get("price")), p_idempotency_key: uid("web-trade"),
           p_fee: num(form.get("fee")), p_executed_at: new Date(form.get("executed")).toISOString(),
           p_tranche_number: form.get("tranche") ? num(form.get("tranche")) : null,
           p_underlying_price: isOptions && form.get("underlying_price") !== "" ? num(form.get("underlying_price")) : null, p_campaign_id: null
         });
+        if (form.get("side") === "buy") {
+          const row = portfolioRows(portfolio).find((item) => item.id === instrumentId);
+          const deployedAfter = num(draft.preview?.deployed_after);
+          if (row?.target && deployedAfter > row.quota + .005) {
+            const newPercent = portfolioStats(portfolio).capital > 0 ? deployedAfter / portfolioStats(portfolio).capital * 100 : 0;
+            draft.clientWarning = `${row.instrument.symbol} will be ${percent(newPercent)} of this portfolio, ${money(deployedAfter - row.quota)} above its ${percent(row.targetPercent)} target. This tactical overweight is allowed.`;
+          }
+        }
         openDraftConfirmation("trade fill", draft, (id, token) => rpc("api_confirm_trade_draft", { p_draft_id: id, p_confirmation_token: token }));
       }
     });

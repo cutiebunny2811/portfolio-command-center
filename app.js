@@ -52,6 +52,7 @@
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
+    smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 10,
     loading: false, lastSync: null
@@ -282,6 +283,20 @@
     throw new Error(`Watchlist: ${error.message}`);
   }
 
+  async function optionalSmartMoneyQuery() {
+    if (localPreviewEnabled) return state.smartMoneyEvents;
+    const { data, error } = await db.from("smart_money_events").select("*").order("filed_at", { ascending: false }).limit(500);
+    if (!error) {
+      state.smartMoneyReady = true;
+      return data || [];
+    }
+    if (/smart_money_events|schema cache|does not exist/i.test(error.message)) {
+      state.smartMoneyReady = false;
+      return [];
+    }
+    throw new Error(`Smart Money: ${error.message}`);
+  }
+
   function emptyJournalView() {
     return {
       entries: [], total_count: 0, daily: [], monthly: [],
@@ -447,7 +462,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, smartMoneyEvents] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -457,9 +472,10 @@
         query("Sell history", db.from("executions").select("id,portfolio_id,instrument_id,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").eq("side", "sell").order("executed_at", { ascending: false }).limit(200)),
         query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
         fetchJournalView({ page: 1, pageSize: 6 }),
-        optionalWatchlistQuery()
+        optionalWatchlistQuery(),
+        optionalSmartMoneyQuery()
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, smartMoneyEvents });
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
@@ -523,6 +539,7 @@
     if (state.route === "portfolio") renderPortfolio();
     else if (state.route === "journal") renderJournalPaged();
     else if (state.route === "watchlist") renderWatchlist();
+    else if (state.route === "smart-money") renderSmartMoney();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -685,6 +702,107 @@
       state.holdingsPage = 1;
       $("#holdings-region").innerHTML = holdingsTable(portfolio);
     });
+  }
+
+  function smartMoneyCodeLabel(code) {
+    return ({
+      P: "Open-market purchase", S: "Open-market sale", A: "Grant / award",
+      M: "Option exercise", F: "Tax withholding", G: "Gift", D: "Disposition to issuer"
+    })[String(code || "").toUpperCase()] || "Ownership change";
+  }
+
+  function smartMoneyDate(value, withTime = false) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return esc(value);
+    return date.toLocaleString("en-US", withTime
+      ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
+      : { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function smartMoneyVisibleEvents() {
+    const instruments = instrumentMap();
+    const watchIds = new Set(state.watchlist.map((item) => item.instrument_id));
+    const cutoff = Date.now() - state.smartMoneyWindow * 86_400_000;
+    const queryText = state.smartMoneySearch.trim().toLowerCase();
+    return state.smartMoneyEvents.map((event) => ({ ...event, instrument: instruments.get(event.instrument_id) }))
+      .filter((event) => event.instrument && watchIds.has(event.instrument_id))
+      .filter((event) => !event.filed_at || new Date(event.filed_at).getTime() >= cutoff)
+      .filter((event) => state.smartMoneySide === "all" || event.side === state.smartMoneySide)
+      .filter((event) => !queryText || [event.instrument.symbol, event.instrument.display_name, event.filer_name, event.filer_title, event.relationship]
+        .some((value) => String(value || "").toLowerCase().includes(queryText)))
+      .sort((a, b) => new Date(b.filed_at || 0) - new Date(a.filed_at || 0));
+  }
+
+  function smartMoneyEventMarkup(event) {
+    const side = ["buy", "sell"].includes(event.side) ? event.side : "other";
+    const shares = num(event.shares);
+    const price = num(event.price);
+    const value = num(event.transaction_value) || Math.abs(shares * price);
+    const sourceUrl = /^https:\/\/www\.sec\.gov\//i.test(event.sec_url || "") ? event.sec_url : "";
+    const role = [event.filer_title, event.relationship].filter(Boolean).join(" · ") || "Reporting owner";
+    return `<article class="smart-event smart-event--${side}">
+      <div class="smart-event__rail"><span>${side === "buy" ? "BUY" : side === "sell" ? "SELL" : esc(event.transaction_code || "OTHER")}</span><i></i></div>
+      <div class="smart-event__body">
+        <header class="smart-event__head">
+          <div><span class="smart-event__ticker">${esc(event.instrument.symbol)}</span><strong>${esc(event.filer_name || "Unknown reporting owner")}</strong><small>${esc(role)}</small></div>
+          <div class="smart-event__value"><strong>${value ? compactMoney(value) : "—"}</strong><small>${esc(smartMoneyCodeLabel(event.transaction_code))}</small></div>
+        </header>
+        <div class="smart-event__facts">
+          <div><small>TRANSACTION</small><strong>${shares ? `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(shares)} shares` : "Not reported"}${price ? ` @ ${money(price, 2)}` : ""}</strong></div>
+          <div><small>TRADED</small><strong>${smartMoneyDate(event.transaction_date)}</strong></div>
+          <div><small>FILED</small><strong>${smartMoneyDate(event.filed_at, true)}</strong></div>
+          <div><small>OWNED AFTER</small><strong>${event.post_transaction_shares == null ? "—" : new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(num(event.post_transaction_shares))}</strong></div>
+        </div>
+      </div>
+      <div class="smart-event__source">${sourceUrl ? `<a href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">SEC filing ↗</a>` : `<span>SEC link pending</span>`}</div>
+    </article>`;
+  }
+
+  function renderSmartMoney() {
+    const events = smartMoneyVisibleEvents();
+    const visibleEvents = events.slice(0, 50);
+    const unfiltered = state.smartMoneyEvents.filter((event) => state.watchlist.some((item) => item.instrument_id === event.instrument_id));
+    const dayCutoff = Date.now() - 86_400_000;
+    const newToday = unfiltered.filter((event) => new Date(event.filed_at || 0).getTime() >= dayCutoff).length;
+    const openBuys = unfiltered.filter((event) => event.side === "buy" && String(event.transaction_code).toUpperCase() === "P").length;
+    const openSells = unfiltered.filter((event) => event.side === "sell" && String(event.transaction_code).toUpperCase() === "S").length;
+    const activeSymbols = new Set(unfiltered.map((event) => event.instrument_id)).size;
+    const symbolCounts = [...unfiltered.reduce((map, event) => map.set(event.instrument_id, (map.get(event.instrument_id) || 0) + 1), new Map()).entries()]
+      .sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const instruments = instrumentMap();
+
+    viewRoot.innerHTML = `
+      ${pageHead("Watchlist intelligence · SEC Form 4", "Follow the people closest to the company.", "A filing-first tape of insider ownership changes across every name you watch. Transaction codes stay visible so grants, exercises and open-market trades never look the same.", `<span class="smart-status"><i></i>${localPreviewEnabled ? "SAMPLE DATA" : state.smartMoneyReady ? "COLLECTOR READY" : "SETUP REQUIRED"}</span>`) }
+      ${!state.smartMoneyReady ? `<div class="warning-box smart-money-setup"><strong>Smart Money schema is not installed yet.</strong> Run <code>014_smart_money.sql</code> in Supabase. The page is ready; live filings begin after the Massive collector is deployed.</div>` : ""}
+      <section class="smart-ledger" aria-label="Smart Money summary">
+        <div class="smart-ledger__lead"><small>NEW FILINGS / 24H</small><strong>${newToday}</strong><span>Across ${state.watchlist.length} watched symbols</span></div>
+        <div><small>OPEN-MARKET BUYS</small><strong class="positive">${openBuys}</strong><span>Transaction code P</span></div>
+        <div><small>OPEN-MARKET SALES</small><strong class="negative">${openSells}</strong><span>Transaction code S</span></div>
+        <div><small>WATCHLIST NAMES ACTIVE</small><strong>${activeSymbols}</strong><span>Inside the loaded filing window</span></div>
+      </section>
+      <section class="smart-commandbar" aria-label="Smart Money filters">
+        <label><span>SEARCH WATCHLIST OR INSIDER</span><input type="search" data-smart-money-search value="${esc(state.smartMoneySearch)}" placeholder="Ticker, company or reporting owner"></label>
+        <div><span>TRANSACTION</span><div class="smart-filter-group">${[["all", "All"], ["buy", "Buys"], ["sell", "Sales"], ["other", "Other"]].map(([value, label]) => `<button type="button" class="${state.smartMoneySide === value ? "is-active" : ""}" data-action="smart-money-side" data-side="${value}">${label}</button>`).join("")}</div></div>
+        <div><span>WINDOW</span><div class="smart-filter-group">${[7, 30, 90].map((days) => `<button type="button" class="${state.smartMoneyWindow === days ? "is-active" : ""}" data-action="smart-money-window" data-days="${days}">${days}D</button>`).join("")}</div></div>
+      </section>
+      <section class="smart-money-layout">
+        <div class="smart-feed">
+          <div class="section-head smart-feed__head"><div><span class="section-index">01 / OWNERSHIP TAPE</span><h2>Who moved what.</h2></div><p>${events.length > 50 ? `Showing newest 50 of ${events.length}` : `${events.length} matching transactions`} · newest filing first</p></div>
+          ${visibleEvents.length ? visibleEvents.map(smartMoneyEventMarkup).join("") : `<div class="smart-empty"><span>FORM 4 / 00</span><h2>No matching filings.</h2><p>${state.smartMoneyReady ? "Try a longer window or clear the filters. New public filings will appear here after the collector runs." : "Install the schema and connect the collector to begin scanning your Watchlist."}</p></div>`}
+        </div>
+        <aside class="smart-context" aria-label="Smart Money context">
+          <div><span class="section-index">02 / SIGNAL HYGIENE</span><h2>Read the code, not just the color.</h2><p>A Form 4 reports ownership changes. It is evidence of an action, not automatically a trading signal.</p></div>
+          <dl class="smart-code-list">
+            <div><dt>P</dt><dd><strong>Purchase</strong><span>Open-market or private purchase</span></dd></div>
+            <div><dt>S</dt><dd><strong>Sale</strong><span>Open-market or private sale</span></dd></div>
+            <div><dt>M</dt><dd><strong>Exercise</strong><span>Option conversion, not a fresh buy</span></dd></div>
+            <div><dt>A / F</dt><dd><strong>Award / tax</strong><span>Compensation or tax withholding</span></dd></div>
+          </dl>
+          <div class="smart-active-names"><small>MOST FILINGS IN WATCHLIST</small>${symbolCounts.length ? symbolCounts.map(([id, count]) => `<div><strong>${esc(instruments.get(id)?.symbol || "—")}</strong><span>${count} filing transaction${count === 1 ? "" : "s"}</span></div>`).join("") : `<p>Waiting for the first matched filing.</p>`}</div>
+          <p class="smart-disclaimer">Form 4 can be filed after the transaction date. Always compare <strong>traded</strong> with <strong>filed</strong> before interpreting timing.</p>
+        </aside>
+      </section>`;
   }
 
   const watchlistChartOptions = {
@@ -1478,6 +1596,8 @@
     }
     else if (action === "watchlist-range") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.range, state.watchlistTimeframe);
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
+    else if (action === "smart-money-side") { state.smartMoneySide = target.dataset.side || "all"; renderSmartMoney(); }
+    else if (action === "smart-money-window") { state.smartMoneyWindow = num(target.dataset.days) || 30; renderSmartMoney(); }
     else if (action === "account") openAccountDialog();
     else if (action === "budget-edit") openBudgetDialog();
     else if (action === "cash-add") openCashDialog();
@@ -1537,6 +1657,15 @@
 
   document.addEventListener("click", handleClick);
   document.addEventListener("input", (event) => {
+    const smartSearch = event.target.closest("[data-smart-money-search]");
+    if (smartSearch && state.route === "smart-money") {
+      state.smartMoneySearch = smartSearch.value;
+      renderSmartMoney();
+      const nextSearch = $("[data-smart-money-search]");
+      nextSearch?.focus();
+      nextSearch?.setSelectionRange(state.smartMoneySearch.length, state.smartMoneySearch.length);
+      return;
+    }
     const search = event.target.closest("[data-watchlist-search]");
     if (!search || state.route !== "watchlist") return;
     state.watchlistSearch = search.value;
@@ -1652,7 +1781,15 @@
       { id: "w-googl", instrument_id: "i-googl", notes: "Cloud and search" },
       { id: "w-rklb", instrument_id: "i-rklb", notes: "Space systems" }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    const smartMoneyEvents = [
+      { id: "sm-1", instrument_id: "i-rklb", filer_name: "Alex Morgan", filer_title: "Chief Operating Officer", relationship: "Officer", transaction_code: "P", side: "buy", transaction_date: "2026-07-21", filed_at: "2026-07-22T01:45:00Z", shares: 18500, price: 24.12, transaction_value: 446220, post_transaction_shares: 142800, sec_url: "" },
+      { id: "sm-2", instrument_id: "i-nvda", filer_name: "Jordan Lee", filer_title: "Director", relationship: "Director", transaction_code: "S", side: "sell", transaction_date: "2026-07-20", filed_at: "2026-07-21T20:16:00Z", shares: 3200, price: 203.46, transaction_value: 651072, post_transaction_shares: 78440, sec_url: "" },
+      { id: "sm-3", instrument_id: "i-googl", filer_name: "Taylor Chen", filer_title: "Senior Vice President", relationship: "Officer", transaction_code: "M", side: "other", transaction_date: "2026-07-18", filed_at: "2026-07-21T15:09:00Z", shares: 12000, price: 78.4, transaction_value: 940800, post_transaction_shares: 96300, sec_url: "" },
+      { id: "sm-4", instrument_id: "i-nvda", filer_name: "Morgan Reed", filer_title: "Chief Financial Officer", relationship: "Officer", transaction_code: "P", side: "buy", transaction_date: "2026-07-17", filed_at: "2026-07-18T22:41:00Z", shares: 750, price: 198.2, transaction_value: 148650, post_transaction_shares: 21850, sec_url: "" },
+      { id: "sm-5", instrument_id: "i-rklb", filer_name: "Casey Patel", filer_title: "Director", relationship: "Director", transaction_code: "A", side: "other", transaction_date: "2026-07-16", filed_at: "2026-07-18T12:30:00Z", shares: 9000, price: 0, transaction_value: 0, post_transaction_shares: 54000, sec_url: "" },
+      { id: "sm-6", instrument_id: "i-googl", filer_name: "Riley Brooks", filer_title: "10% Owner", relationship: "Ten percent owner", transaction_code: "S", side: "sell", transaction_date: "2026-07-14", filed_at: "2026-07-16T17:24:00Z", shares: 21000, price: 191.3, transaction_value: 4017300, post_transaction_shares: 528000, sec_url: "" }
+    ];
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     state.journalOverview = localJournalView({ page: 1, pageSize: 6 });
     applyJournalView(localJournalView({ page: 1, pageSize: state.journalPageSize }));
     authShell.hidden = true;

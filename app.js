@@ -45,7 +45,7 @@
 
   const state = {
     user: null,
-    portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [],
+    portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [], executions: [],
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
@@ -53,7 +53,7 @@
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
     route: "overview", selectedPortfolioId: null,
-    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
+    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 10,
     loading: false, lastSync: null
   };
 
@@ -447,18 +447,19 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview, watchlist] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
         query("Instruments", db.from("instruments").select("*").order("symbol")),
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
         query("Position capacity", db.from("position_capacity").select("*")),
+        query("Sell history", db.from("executions").select("id,portfolio_id,instrument_id,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").eq("side", "sell").order("executed_at", { ascending: false }).limit(200)),
         query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery()
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview, watchlist });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist });
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
@@ -629,6 +630,25 @@
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
   }
 
+  function sellHistoryTable(portfolio) {
+    const instruments = instrumentMap();
+    const rows = state.executions.filter((item) => item.portfolio_id === portfolio.id);
+    const pages = Math.max(1, Math.ceil(rows.length / state.tradeHistoryPageSize));
+    state.tradeHistoryPage = clamp(state.tradeHistoryPage, 1, pages);
+    const start = (state.tradeHistoryPage - 1) * state.tradeHistoryPageSize;
+    const visible = rows.slice(start, start + state.tradeHistoryPageSize);
+    if (!visible.length) return `<div class="empty-state"><div><strong>No completed sells yet</strong>Confirmed partial and full exits will appear here automatically.</div></div>`;
+    return `<div class="table-shell"><table class="trade-history-table">
+      <thead><tr><th>Date</th><th>Asset</th><th>Quantity</th><th>Sell price</th><th>Net proceeds</th><th>Realized P/L</th></tr></thead>
+      <tbody>${visible.map((execution) => {
+        const instrument = instruments.get(execution.instrument_id);
+        const realized = num(execution.realized_pnl);
+        const sign = realized > 0 ? "+" : "";
+        return `<tr><td><span class="cell-main mono">${new Date(execution.executed_at).toLocaleDateString()}</span><span class="cell-sub">${new Date(execution.executed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></td><td><span class="cell-main">${esc(instrument?.symbol || "—")}</span><span class="cell-sub">${esc(instrument?.display_name || instrument?.asset_type || "")}</span></td><td><strong class="mono">${formatTradeQuantity(execution.quantity)}</strong></td><td><strong class="mono">${money(execution.price, 4)}</strong></td><td><strong class="mono">${money(execution.cash_effect)}</strong><span class="cell-sub">FEE ${money(execution.fee)}</span></td><td><strong class="mono ${realized >= 0 ? "positive" : "negative"}">${sign}${money(realized)}</strong></td></tr>`;
+      }).join("")}</tbody>
+    </table></div><div class="pagination"><span>${start + 1}–${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} sells · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>← Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
+  }
+
   function renderPortfolio() {
     const portfolio = currentPortfolio();
     const stats = portfolioStats(portfolio);
@@ -654,6 +674,10 @@
         <div class="section-head"><div><span class="section-index">01 / ASSETS</span><h2>Positions, P/L and allocation.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
         <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${portfolio.kind === "options" ? "Options use manual prices" : esc(priceFreshnessLabel())}</span><button class="button button--small" type="button" data-action="${portfolio.kind === "options" ? "refresh" : "price-refresh"}">${portfolio.kind === "options" ? "Refresh data" : "Update prices"}</button></div></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
+      </section>
+      <section class="section">
+        <div class="section-head"><div><span class="section-index">02 / SELL HISTORY</span><h2>Completed exits.</h2></div><p>Partial and full sells · newest first</p></div>
+        <div id="trade-history-region">${sellHistoryTable(portfolio)}</div>
       </section>`;
     const search = $("#holding-search");
     search?.addEventListener("input", () => {
@@ -1343,7 +1367,7 @@
     const isOptions = portfolio.kind === "options";
     openDialog({
       kicker: `${portfolio.name} · Saved to Supabase`, title: `Record a ${sidePreset}`, submitLabel: `Review ${sidePreset}`,
-      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" aria-describedby="trade-quantity-hint" required>${sidePreset === "sell" ? '<button class="button button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div>${sidePreset === "sell" ? '<small id="trade-quantity-hint" class="trade-quantity-hint"></small>' : ""}</label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
+      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" required>${sidePreset === "sell" ? '<button class="button button--primary button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
         const instrumentId = form.get("instrument");
         const draft = await rpc("api_create_trade_draft", {
@@ -1369,15 +1393,11 @@
       const instrumentSelect = $('[name="instrument"]', body);
       const quantityInput = $('[name="quantity"]', body);
       const sellAllButton = $("[data-trade-sell-all]", body);
-      const quantityHint = $("#trade-quantity-hint", body);
       const syncSellAll = () => {
         const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentSelect.value);
         const available = num(position?.quantity);
-        const instrument = instrumentMap().get(instrumentSelect.value);
-        const unit = instrument?.asset_type === "option" ? "contracts" : "shares";
         sellAllButton.disabled = available <= 0;
-        sellAllButton.textContent = available > 0 ? `Sell all · ${formatTradeQuantity(available)}` : "Sell all";
-        quantityHint.textContent = available > 0 ? `${formatTradeQuantity(available)} ${unit} currently held` : "No open quantity available";
+        sellAllButton.textContent = "Sell all";
       };
       instrumentSelect.addEventListener("change", syncSellAll);
       sellAllButton.addEventListener("click", () => {
@@ -1478,6 +1498,11 @@
     else if (action === "page-prev" || action === "page-next") {
       state.holdingsPage += action === "page-next" ? 1 : -1;
       $("#holdings-region").innerHTML = holdingsTable(currentPortfolio());
+    }
+    else if (action === "trade-history-prev" || action === "trade-history-next") {
+      state.tradeHistoryPage += action === "trade-history-next" ? 1 : -1;
+      $("#trade-history-region").innerHTML = sellHistoryTable(currentPortfolio());
+      $("#trade-history-region")?.scrollIntoView({ block: "start" });
     }
   }
 

@@ -51,7 +51,7 @@
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistChartBusy: false,
-    selectedWatchlistInstrumentId: null, watchlistRange: "6M",
+    selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M",
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
     loading: false, lastSync: null
@@ -622,7 +622,15 @@
     });
   }
 
-  const watchlistRangeCounts = { "1M": 32, "6M": 190, "1Y": 370, "2Y": 760 };
+  const watchlistChartOptions = {
+    "1H": { apiTimespan: "M60", defaultRange: "5D", ranges: { "5D": 50, "10D": 100 } },
+    "4H": { apiTimespan: "M240", defaultRange: "1M", ranges: { "1M": 50, "3M": 150 } },
+    "1D": { apiTimespan: "D", defaultRange: "6M", ranges: { "1M": 32, "6M": 190, "1Y": 370, "2Y": 760 } }
+  };
+
+  function currentWatchlistChartOption() {
+    return watchlistChartOptions[state.watchlistTimeframe] || watchlistChartOptions["1D"];
+  }
 
   function watchlistRows() {
     const instruments = instrumentMap();
@@ -658,7 +666,12 @@
       return;
     }
 
-    const bars = [...new Map(state.watchlistBars.map((bar) => [String(bar.time).slice(0, 10), bar])).entries()]
+    // Daily bars can share a date; intraday bars must retain their complete timestamp.
+    // Using an epoch timestamp also gives Lightweight Charts an unambiguous UTC timeline.
+    const bars = [...new Map(state.watchlistBars.map((bar) => {
+      const stamp = new Date(bar.time).getTime();
+      return [Number.isFinite(stamp) ? Math.floor(stamp / 1000) : String(bar.time), bar];
+    })).entries()]
       .map(([time, bar]) => ({
         time,
         open: num(bar.open),
@@ -667,7 +680,7 @@
         close: num(bar.close),
         volume: num(bar.volume)
       }))
-      .sort((a, b) => a.time.localeCompare(b.time));
+      .sort((a, b) => Number(a.time) - Number(b.time));
 
     watchlistChart = charts.createChart(container, {
       autoSize: true,
@@ -691,7 +704,7 @@
         rightOffset: 4,
         barSpacing: 8,
         minBarSpacing: 2,
-        timeVisible: false,
+        timeVisible: state.watchlistTimeframe !== "1D",
         secondsVisible: false
       },
       crosshair: {
@@ -755,6 +768,8 @@
 
   function renderWatchlist() {
     destroyWatchlistChart();
+    const chartOption = currentWatchlistChartOption();
+    const timeframe = state.watchlistTimeframe;
     const rows = watchlistRows();
     const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
     const bars = state.watchlistBars;
@@ -782,18 +797,21 @@
         </aside>
         <article class="market-chart-panel">
           ${selected ? `<header class="market-chart-head">
-            <div><span class="section-index">02 / WEBULL DAILY BARS</span><h2>${esc(selected.instrument.symbol)}</h2><p>${esc(selected.instrument.display_name || selected.instrument.asset_type)}</p></div>
+            <div><span class="section-index">02 / WEBULL ${timeframe} BARS</span><h2>${esc(selected.instrument.symbol)}</h2><p>${esc(selected.instrument.display_name || selected.instrument.asset_type)}</p></div>
             <div class="market-chart-quote"><strong>${last ? money(last.close, 4) : selected.price ? money(selected.price.price, 4) : "—"}</strong><span class="${dailyChange >= 0 ? "positive" : "negative"}">${dailyChange > 0 ? "+" : ""}${dailyChange.toFixed(2)} · ${dailyChange > 0 ? "+" : ""}${dailyChangePercent.toFixed(2)}%</span></div>
           </header>
           <div class="market-chart-toolbar">
-            <div class="range-switch" aria-label="Chart range">${Object.keys(watchlistRangeCounts).map((range) => `<button type="button" class="${range === state.watchlistRange ? "is-active" : ""}" data-action="watchlist-range" data-range="${range}">${range}</button>`).join("")}</div>
+            <div class="chart-switches">
+              <div class="range-switch" aria-label="Chart timeframe">${Object.keys(watchlistChartOptions).map((frame) => `<button type="button" class="${frame === timeframe ? "is-active" : ""}" data-action="watchlist-timeframe" data-timeframe="${frame}">${frame}</button>`).join("")}</div>
+              <div class="range-switch range-switch--range" aria-label="Chart range">${Object.keys(chartOption.ranges).map((range) => `<button type="button" class="${range === state.watchlistRange ? "is-active" : ""}" data-action="watchlist-range" data-range="${range}">${range}</button>`).join("")}</div>
+            </div>
             <div class="chart-toolbar-meta"><span class="chart-interaction-hint">Wheel/pinch to zoom · Drag to move</span><div class="chart-legend"><span class="ma20">MA20</span><span class="ma50">MA50</span><span class="ma200">MA200</span></div></div>
           </div>
-          ${state.watchlistChartBusy ? `<div class="watchlist-chart-state"><span></span><p>Reading ${esc(selected.instrument.symbol)} bars from Webull…</p></div>` : bars.length ? `<div id="watchlist-chart" role="img" tabindex="0" aria-label="${esc(selected.instrument.symbol)} interactive daily candlestick chart with volume and moving averages"></div>` : `<div class="watchlist-chart-state"><p>Select a range to load Webull bars.</p></div>`}
+          ${state.watchlistChartBusy ? `<div class="watchlist-chart-state"><span></span><p>Reading ${esc(selected.instrument.symbol)} ${timeframe} bars from Webull…</p></div>` : bars.length ? `<div id="watchlist-chart" role="img" tabindex="0" aria-label="${esc(selected.instrument.symbol)} interactive ${timeframe} candlestick chart with volume and moving averages"></div>` : `<div class="watchlist-chart-state"><p>Select a range to load Webull bars.</p></div>`}
           <footer class="market-chart-foot">
             <div><small>${state.watchlistRange} MOVE</small><strong class="${rangeChange >= 0 ? "positive" : "negative"}">${rangeChange > 0 ? "+" : ""}${rangeChangePercent.toFixed(2)}%</strong></div>
             <div><small>LATEST VOLUME</small><strong>${last ? compactNumber(last.volume) : "—"}</strong></div>
-            <div><small>DATA SOURCE</small><strong>WEBULL · DAILY</strong></div>
+            <div><small>DATA SOURCE</small><strong>WEBULL · ${timeframe}</strong></div>
             <button class="button button--small button--remove" type="button" data-action="watchlist-remove" data-instrument-id="${selected.instrument_id}">Remove</button>
           </footer>` : `<div class="market-chart-empty"><span>WEBULL / 00</span><h2>Add a ticker to begin.</h2><p>The chart is independent from your four portfolios and excludes options.</p></div>`}
         </article>
@@ -801,7 +819,7 @@
     requestAnimationFrame(drawWatchlistChart);
   }
 
-  function previewBars(symbol, count) {
+  function previewBars(symbol, count, timeframe = state.watchlistTimeframe) {
     let seed = [...symbol].reduce((sum, char) => sum + char.charCodeAt(0), 0) || 100;
     let close = 80 + seed % 170;
     const rows = [];
@@ -810,26 +828,31 @@
       const change = (seed / 233280 - .47) * close * .035;
       const open = close;
       close = Math.max(open + change, 2);
-      const date = new Date(); date.setUTCDate(date.getUTCDate() - index);
+      const date = new Date();
+      if (timeframe === "1H") date.setUTCHours(date.getUTCHours() - index);
+      else if (timeframe === "4H") date.setUTCHours(date.getUTCHours() - index * 4);
+      else date.setUTCDate(date.getUTCDate() - index);
       rows.push({ time: date.toISOString(), open, close, high: Math.max(open, close) * 1.012, low: Math.min(open, close) * .988, volume: 800000 + seed * 70 });
     }
     return rows;
   }
 
-  async function loadWatchlistBars(instrumentId = state.selectedWatchlistInstrumentId, range = state.watchlistRange) {
+  async function loadWatchlistBars(instrumentId = state.selectedWatchlistInstrumentId, range = state.watchlistRange, timeframe = state.watchlistTimeframe) {
     if (!instrumentId || state.watchlistChartBusy) return;
     state.selectedWatchlistInstrumentId = instrumentId;
-    state.watchlistRange = range;
+    state.watchlistTimeframe = watchlistChartOptions[timeframe] ? timeframe : "1D";
+    const chartOption = currentWatchlistChartOption();
+    state.watchlistRange = chartOption.ranges[range] ? range : chartOption.defaultRange;
     state.watchlistChartBusy = true;
     state.watchlistBars = [];
     renderWatchlist();
     try {
       if (localPreviewEnabled) {
         const symbol = instrumentMap().get(instrumentId)?.symbol || "DEMO";
-        state.watchlistBars = previewBars(symbol, watchlistRangeCounts[range]);
+        state.watchlistBars = previewBars(symbol, chartOption.ranges[state.watchlistRange], state.watchlistTimeframe);
       } else {
         const { data, error } = await db.functions.invoke("refresh-stock-prices", {
-          body: { action: "chart", instrument_id: instrumentId, count: watchlistRangeCounts[range] }
+          body: { action: "chart", instrument_id: instrumentId, timespan: chartOption.apiTimespan, count: chartOption.ranges[state.watchlistRange] }
         });
         if (error) {
           let detail = error.message;
@@ -1320,8 +1343,13 @@
     else if (action === "refresh") await loadData();
     else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
     else if (action === "watchlist-add") openWatchlistDialog();
-    else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId, state.watchlistRange);
-    else if (action === "watchlist-range") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.range);
+    else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId, state.watchlistRange, state.watchlistTimeframe);
+    else if (action === "watchlist-timeframe") {
+      const nextTimeframe = target.dataset.timeframe;
+      const nextOption = watchlistChartOptions[nextTimeframe] || watchlistChartOptions["1D"];
+      await loadWatchlistBars(state.selectedWatchlistInstrumentId, nextOption.defaultRange, nextTimeframe);
+    }
+    else if (action === "watchlist-range") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.range, state.watchlistTimeframe);
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "account") openAccountDialog();
     else if (action === "budget-edit") openBudgetDialog();
@@ -1491,4 +1519,3 @@
     else await showApp(data.session.user);
   })();
 })();
-

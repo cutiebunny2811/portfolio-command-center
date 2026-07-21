@@ -139,6 +139,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .field textarea { min-height: 96px; resize: vertical; }
 .field input::placeholder, .field textarea::placeholder { color: var(--paper-faint); }
 .field input:focus, .field select:focus, .field textarea:focus, .toolbar input:focus, .toolbar select:focus { border-color: var(--gold); }
+.trade-quantity-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.trade-quantity-control input { min-width: 0; }
+.button--sell-all { min-width: 132px; border-color: var(--red); background: var(--red-wash); color: var(--paper); white-space: nowrap; }
+.button--sell-all:hover { border-color: var(--red-bright); background: var(--red); }
+.trade-quantity-hint { color: var(--paper-faint); font: 9px/1.25 var(--mono); letter-spacing: .03em; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .field-row--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-check { display: flex; align-items: center; gap: 9px; color: var(--paper-dim); }
@@ -623,6 +628,8 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 
 @media (max-width: 420px) {
+  .trade-quantity-control { grid-template-columns: 1fr; }
+  .button--sell-all { width: 100%; }
   .hero-ledger { grid-template-columns: 1fr; }
   .hero-metric { border-right: 0; border-bottom: 1px solid var(--rule); }
   .hero-metric:last-child { border-bottom: 0; }

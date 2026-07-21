@@ -50,7 +50,7 @@
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
-    watchlist: [], watchlistReady: true, watchlistBars: [], watchlistChartBusy: false,
+    watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M",
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25,
@@ -406,6 +406,7 @@
   async function refreshDashboard() {
     await loadData();
     await refreshStockPrices({ force: true, notify: true });
+    await refreshVisibleWatchlistChart();
   }
 
   async function loadData({ quiet = false } = {}) {
@@ -428,6 +429,7 @@
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
         state.selectedWatchlistInstrumentId = watchlist[0]?.instrument_id || null;
         state.watchlistBars = [];
+        state.watchlistLivePrice = null;
       }
       if (!state.selectedPortfolioId || !portfolios.some((item) => item.id === state.selectedPortfolioId)) {
         state.selectedPortfolioId = portfolios[0]?.id || null;
@@ -775,6 +777,7 @@
     const bars = state.watchlistBars;
     const first = bars[0];
     const last = bars[bars.length - 1];
+    const displayPrice = num(state.watchlistLivePrice?.price) || num(last?.close) || num(selected?.price?.price);
     const rangeChange = first && last ? num(last.close) - num(first.close) : 0;
     const rangeChangePercent = first && num(first.close) ? rangeChange / num(first.close) * 100 : 0;
     const dailyChange = bars.length > 1 ? num(last?.close) - num(bars[bars.length - 2]?.close) : 0;
@@ -798,7 +801,7 @@
         <article class="market-chart-panel">
           ${selected ? `<header class="market-chart-head">
             <div><span class="section-index">02 / WEBULL ${timeframe} BARS</span><h2>${esc(selected.instrument.symbol)}</h2><p>${esc(selected.instrument.display_name || selected.instrument.asset_type)}</p></div>
-            <div class="market-chart-quote"><strong>${last ? money(last.close, 4) : selected.price ? money(selected.price.price, 4) : "—"}</strong><span class="${dailyChange >= 0 ? "positive" : "negative"}">${dailyChange > 0 ? "+" : ""}${dailyChange.toFixed(2)} · ${dailyChange > 0 ? "+" : ""}${dailyChangePercent.toFixed(2)}%</span></div>
+            <div class="market-chart-quote"><strong>${displayPrice ? money(displayPrice, 4) : "—"}</strong><span class="${dailyChange >= 0 ? "positive" : "negative"}">${dailyChange > 0 ? "+" : ""}${dailyChange.toFixed(2)} · ${dailyChange > 0 ? "+" : ""}${dailyChangePercent.toFixed(2)}%</span></div>
           </header>
           <div class="market-chart-toolbar">
             <div class="chart-switches">
@@ -845,6 +848,7 @@
     state.watchlistRange = chartOption.ranges[range] ? range : chartOption.defaultRange;
     state.watchlistChartBusy = true;
     state.watchlistBars = [];
+    state.watchlistLivePrice = null;
     renderWatchlist();
     try {
       if (localPreviewEnabled) {
@@ -861,6 +865,9 @@
         }
         if (data?.error) throw new Error(data.error);
         state.watchlistBars = Array.isArray(data?.bars) ? data.bars : [];
+        state.watchlistLivePrice = num(data?.live_price) > 0
+          ? { price: num(data.live_price), marketTime: data.live_market_time || null }
+          : null;
         if (!state.watchlistBars.length) {
           const responsePreview = data == null ? "empty response" : JSON.stringify(data).slice(0, 500);
           throw new Error(`Webull returned no chart bars · ${responsePreview}`);
@@ -1420,9 +1427,20 @@
       if (state.route === "watchlist") drawWatchlistChart();
     }, 120);
   });
-  window.setInterval(() => refreshStockPrices(), 15 * 60_000);
+
+  async function refreshVisibleWatchlistChart() {
+    if (state.route !== "watchlist" || !state.selectedWatchlistInstrumentId || state.watchlistChartBusy) return;
+    await loadWatchlistBars(state.selectedWatchlistInstrumentId, state.watchlistRange, state.watchlistTimeframe);
+  }
+
+  async function refreshMarketData() {
+    await refreshStockPrices();
+    await refreshVisibleWatchlistChart();
+  }
+
+  window.setInterval(() => { void refreshMarketData(); }, 15 * 60_000);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refreshStockPrices();
+    if (document.visibilityState === "visible") void refreshMarketData();
   });
 
   db.auth.onAuthStateChange((event, session) => {

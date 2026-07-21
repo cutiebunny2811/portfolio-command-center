@@ -141,9 +141,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .field input:focus, .field select:focus, .field textarea:focus, .toolbar input:focus, .toolbar select:focus { border-color: var(--gold); }
 .trade-quantity-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .trade-quantity-control input { min-width: 0; }
-.button--sell-all { min-width: 132px; border-color: var(--red); background: var(--red-wash); color: var(--paper); white-space: nowrap; }
-.button--sell-all:hover { border-color: var(--red-bright); background: var(--red); }
-.trade-quantity-hint { color: var(--paper-faint); font: 9px/1.25 var(--mono); letter-spacing: .03em; }
+.button--sell-all { min-width: 112px; white-space: nowrap; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .field-row--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-check { display: flex; align-items: center; gap: 9px; color: var(--paper-dim); }
@@ -404,6 +402,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .status--risk::before { background: var(--red-bright); }
 .row-actions { display: flex; gap: 5px; }
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--paper-faint); font: 10px/1 var(--mono); }
+.trade-history-table { min-width: 880px; }
+.trade-history-table td { height: 66px; }
 
 .journal-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: clamp(24px, 4vw, 54px); }
 .journal-commandbar {

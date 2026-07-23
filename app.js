@@ -1066,7 +1066,7 @@
       </section>
 
       <section class="pulse-section pulse-sector-section">
-        <div class="section-head pulse-section__head"><div><span class="section-index">03 / SECTOR ROTATION</span><h2>Where the tape is leaning.</h2></div>
+        <div class="section-head pulse-section__head"><div><span class="section-index">03 / SECTORS + THEMES</span><h2>Where the tape is leaning.</h2></div>
           <div class="pulse-window" aria-label="Sector performance window">${["1D", "1W", "1M", "3M", "YTD"].map((window) => `<button type="button" class="${state.marketPulseWindow === window ? "is-active" : ""}" data-action="market-pulse-window" data-window="${window}">${window}</button>`).join("")}</div>
         </div>
         <div class="sector-rank">${sectors.map((row, index) => {
@@ -1079,18 +1079,18 @@
             <strong class="mono">${signedPercent(value)}</strong>
           </div>`;
         }).join("")}</div>
-        <p class="pulse-method">Sector returns use Webull daily bars for the eleven Select Sector SPDR ETFs. SPY is shown separately as the broad-market proxy.</p>
+        <p class="pulse-method">${sectors.length} sector, theme and asset-proxy ETFs ranked from Webull daily bars. Government-bond ETFs are excluded.</p>
       </section>`;
   }
 
   function previewMarketPulseRows() {
     const now = new Date().toISOString();
     const fixed = [
-      ["SPY", "S&P 500 proxy", 638.42, .58, 78300000, true, false, null],
+      ["SPY", "S&P 500 proxy", 638.42, .58, 78300000, true, true, "S&P 500"],
       ["QQQ", "Nasdaq-100 proxy", 571.16, .94, 62100000, true, false, null],
       ["DIA", "Dow Jones proxy", 452.31, -.22, 5200000, true, false, null],
       ["IWM", "Russell 2000 proxy", 231.08, 1.17, 34800000, true, false, null],
-      ["GLD", "Gold proxy", 301.44, -.41, 9100000, true, false, null],
+      ["GLD", "Gold proxy", 301.44, -.41, 9100000, true, true, "Gold"],
       ["XLK", "Technology", 268.41, 1.18, 8800000, false, true, "Technology"],
       ["XLC", "Communication Services", 112.08, .63, 4600000, false, true, "Communication Services"],
       ["XLY", "Consumer Discretionary", 228.13, .37, 5100000, false, true, "Consumer Discretionary"],
@@ -1101,7 +1101,14 @@
       ["XLI", "Industrials", 151.74, .54, 6900000, false, true, "Industrials"],
       ["XLB", "Materials", 94.18, -.66, 4300000, false, true, "Materials"],
       ["XLRE", "Real Estate", 42.87, -.27, 3900000, false, true, "Real Estate"],
-      ["XLU", "Utilities", 79.36, -.73, 11900000, false, true, "Utilities"]
+      ["XLU", "Utilities", 79.36, -.73, 11900000, false, true, "Utilities"],
+      ["XBI", "Biotech", 102.42, .74, 7800000, false, true, "Biotech"],
+      ["NLR", "Nuclear Energy", 126.18, 1.34, 1200000, false, true, "Nuclear Energy"],
+      ["SMH", "Semiconductors", 314.76, 1.92, 6900000, false, true, "Semiconductors"],
+      ["TAN", "Solar Energy", 42.31, -1.18, 3400000, false, true, "Solar Energy"],
+      ["IBIT", "Bitcoin", 71.84, 2.16, 21800000, false, true, "Bitcoin"],
+      ["IGV", "Software", 111.27, .81, 1800000, false, true, "Software"],
+      ["BUG", "Cybersecurity", 35.92, .56, 640000, false, true, "Cybersecurity"]
     ].map(([symbol, display_name, price, change_percent, volume, is_benchmark, is_sector, sector_name], index) => ({
       symbol, display_name, price, change_percent, volume, is_benchmark, is_sector, sector_name,
       asset_type: "etf", is_watchlist: false, return_1w: num(change_percent) * (1.4 + index % 3),

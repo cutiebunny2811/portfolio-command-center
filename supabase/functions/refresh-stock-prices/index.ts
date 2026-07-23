@@ -29,6 +29,15 @@ const marketPulseSectors = [
   { symbol: "XLB", displayName: "Materials" },
   { symbol: "XLRE", displayName: "Real Estate" },
   { symbol: "XLU", displayName: "Utilities" },
+  { symbol: "XBI", displayName: "Biotech" },
+  { symbol: "NLR", displayName: "Nuclear Energy" },
+  { symbol: "SMH", displayName: "Semiconductors" },
+  { symbol: "TAN", displayName: "Solar Energy" },
+  { symbol: "IBIT", displayName: "Bitcoin" },
+  { symbol: "IGV", displayName: "Software" },
+  { symbol: "BUG", displayName: "Cybersecurity" },
+  { symbol: "SPY", displayName: "S&P 500" },
+  { symbol: "GLD", displayName: "Gold" },
 ];
 
 type Instrument = {

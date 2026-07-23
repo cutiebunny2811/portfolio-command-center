@@ -10,6 +10,26 @@ const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const snapshotPath = "/openapi/market-data/stock/snapshot";
 const barsPath = "/openapi/market-data/stock/bars";
 const refreshWindowMs = 15 * 60_000;
+const marketPulseBenchmarks = [
+  { symbol: "SPY", displayName: "S&P 500 proxy" },
+  { symbol: "QQQ", displayName: "Nasdaq-100 proxy" },
+  { symbol: "DIA", displayName: "Dow Jones proxy" },
+  { symbol: "IWM", displayName: "Russell 2000 proxy" },
+  { symbol: "GLD", displayName: "Gold proxy" },
+];
+const marketPulseSectors = [
+  { symbol: "XLK", displayName: "Technology" },
+  { symbol: "XLC", displayName: "Communication Services" },
+  { symbol: "XLY", displayName: "Consumer Discretionary" },
+  { symbol: "XLP", displayName: "Consumer Staples" },
+  { symbol: "XLE", displayName: "Energy" },
+  { symbol: "XLF", displayName: "Financials" },
+  { symbol: "XLV", displayName: "Health Care" },
+  { symbol: "XLI", displayName: "Industrials" },
+  { symbol: "XLB", displayName: "Materials" },
+  { symbol: "XLRE", displayName: "Real Estate" },
+  { symbol: "XLU", displayName: "Utilities" },
+];
 
 type Instrument = {
   id: string;
@@ -20,6 +40,26 @@ type Instrument = {
 type PriceResult = {
   instrument: Instrument;
   price: number;
+  marketTime: string;
+};
+
+type MarketPulseInstrument = Instrument & {
+  instrumentId: string | null;
+  displayName: string;
+  isWatchlist: boolean;
+  isBenchmark: boolean;
+  isSector: boolean;
+  sectorName: string | null;
+};
+
+type MarketPulseSnapshot = {
+  instrument: MarketPulseInstrument;
+  price: number;
+  previousClose: number | null;
+  changeValue: number | null;
+  changePercent: number | null;
+  volume: number | null;
+  turnover: number | null;
   marketTime: string;
 };
 
@@ -201,6 +241,88 @@ async function signedGet(
   return { response, payload };
 }
 
+function finiteNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function chunksOf<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks;
+}
+
+async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Promise<MarketPulseSnapshot[]> {
+  if (!instruments.length) return [];
+  const category = instruments[0].asset_type === "etf" ? "US_ETF" : "US_STOCK";
+  if (instruments.some((item) => (item.asset_type === "etf" ? "US_ETF" : "US_STOCK") !== category)) {
+    throw new Error("Market pulse snapshot batches must share one asset category");
+  }
+  const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
+  const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
+  const region = Deno.env.get("WEBULL_REGION")?.trim().toLowerCase() || "th";
+  const host = Deno.env.get("WEBULL_API_HOST")?.trim() || (region === "th" ? "api.webull.co.th" : "api.webull.com");
+  const accessToken = Deno.env.get("WEBULL_ACCESS_TOKEN")?.trim();
+  if (!appKey || !appSecret) throw new Error("Webull secrets are not configured");
+
+  const query = {
+    symbols: instruments.map((item) => item.symbol.trim().toUpperCase()).join(","),
+    category,
+    extend_hour_required: "false",
+    overnight_required: "false",
+  };
+  const { response, payload } = await signedGet(snapshotPath, query, appKey, appSecret, host, accessToken);
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 600) : `HTTP ${response.status}`;
+    throw new Error(`Webull market pulse snapshot failed: ${detail}`);
+  }
+
+  const bySymbol = new Map(instruments.map((item) => [item.symbol.toUpperCase(), item]));
+  return payloadRows(payload).flatMap((row): MarketPulseSnapshot[] => {
+    const symbol = String(row.symbol || "").trim().toUpperCase();
+    const instrument = bySymbol.get(symbol);
+    const value = marketValue(row);
+    if (!instrument || !value) return [];
+    const previousClose = finiteNumber(row.pre_close ?? row.previous_close);
+    const reportedChange = finiteNumber(row.change ?? row.change_value);
+    const changeValue = reportedChange ?? (previousClose && previousClose > 0 ? value.price - previousClose : null);
+    const changePercent = previousClose && previousClose > 0
+      ? (value.price / previousClose - 1) * 100
+      : finiteNumber(row.change_ratio) != null
+        ? Number(row.change_ratio) * 100
+        : null;
+    return [{
+      instrument,
+      price: value.price,
+      previousClose,
+      changeValue,
+      changePercent,
+      volume: finiteNumber(row.volume),
+      turnover: finiteNumber(row.turnover),
+      marketTime: value.marketTime,
+    }];
+  });
+}
+
+function returnFromClose(currentPrice: number, close: number | undefined): number | null {
+  return close && close > 0 ? (currentPrice / close - 1) * 100 : null;
+}
+
+function sectorReturnSet(bars: ChartBar[], currentPrice: number) {
+  const sorted = [...bars].sort((a, b) => a.time.localeCompare(b.time));
+  const lastIndex = sorted.length - 1;
+  const closeAt = (sessionsBack: number) => sorted[Math.max(lastIndex - sessionsBack, 0)]?.close;
+  const latestDate = new Date(sorted[lastIndex]?.time || Date.now());
+  const yearStart = Date.UTC(latestDate.getUTCFullYear(), 0, 1);
+  const priorYearBar = [...sorted].reverse().find((bar) => new Date(bar.time).getTime() < yearStart);
+  return {
+    return_1w: returnFromClose(currentPrice, closeAt(5)),
+    return_1m: returnFromClose(currentPrice, closeAt(21)),
+    return_3m: returnFromClose(currentPrice, closeAt(63)),
+    return_ytd: returnFromClose(currentPrice, priorYearBar?.close ?? sorted[0]?.close),
+  };
+}
+
 async function fetchLatestRegularClose(
   instrument: Instrument,
   appKey: string,
@@ -356,6 +478,182 @@ Deno.serve(async (request) => {
     if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
 
     const body = await request.json().catch(() => ({}));
+    if (body?.action === "market_pulse") {
+      const force = body?.force === true;
+      const { data: watchlistRows, error: watchlistError } = await supabase
+        .from("watchlist_items")
+        .select("instrument_id,instruments!inner(id,symbol,display_name,asset_type)");
+      if (watchlistError) throw watchlistError;
+
+      const universe = new Map<string, MarketPulseInstrument>();
+      const addToUniverse = (item: MarketPulseInstrument) => {
+        const symbol = item.symbol.trim().toUpperCase();
+        const current = universe.get(symbol);
+        universe.set(symbol, current ? {
+          ...current,
+          id: current.instrumentId ? current.id : item.id,
+          instrumentId: current.instrumentId || item.instrumentId,
+          displayName: current.instrumentId ? current.displayName : item.displayName,
+          isWatchlist: current.isWatchlist || item.isWatchlist,
+          isBenchmark: current.isBenchmark || item.isBenchmark,
+          isSector: current.isSector || item.isSector,
+          sectorName: current.sectorName || item.sectorName,
+        } : { ...item, symbol });
+      };
+
+      for (const row of watchlistRows || []) {
+        const relation = Array.isArray(row.instruments) ? row.instruments[0] : row.instruments;
+        if (!relation || !["stock", "etf"].includes(String(relation.asset_type).toLowerCase())) continue;
+        addToUniverse({
+          id: String(relation.id),
+          instrumentId: String(row.instrument_id),
+          symbol: String(relation.symbol),
+          displayName: String(relation.display_name || relation.symbol),
+          asset_type: String(relation.asset_type).toLowerCase() as "stock" | "etf",
+          isWatchlist: true,
+          isBenchmark: false,
+          isSector: false,
+          sectorName: null,
+        });
+      }
+      for (const item of marketPulseBenchmarks) {
+        addToUniverse({
+          id: `market-${item.symbol}`,
+          instrumentId: null,
+          symbol: item.symbol,
+          displayName: item.displayName,
+          asset_type: "etf",
+          isWatchlist: false,
+          isBenchmark: true,
+          isSector: false,
+          sectorName: null,
+        });
+      }
+      for (const item of marketPulseSectors) {
+        addToUniverse({
+          id: `market-${item.symbol}`,
+          instrumentId: null,
+          symbol: item.symbol,
+          displayName: item.displayName,
+          asset_type: "etf",
+          isWatchlist: false,
+          isBenchmark: false,
+          isSector: true,
+          sectorName: item.displayName,
+        });
+      }
+
+      const desired = [...universe.values()];
+      const { data: cachedRows, error: cacheError } = await supabase
+        .from("market_pulse_latest")
+        .select("*")
+        .eq("user_id", authData.user.id);
+      if (cacheError) throw cacheError;
+      const cachedBySymbol = new Map((cachedRows || []).map((row) => [String(row.symbol).toUpperCase(), row]));
+      const snapshotCutoff = Date.now() - refreshWindowMs;
+      const pending = desired.filter((item) => {
+        const cached = cachedBySymbol.get(item.symbol);
+        return force || !cached || new Date(cached.fetched_at).getTime() < snapshotCutoff;
+      });
+
+      const batches = (["stock", "etf"] as const).flatMap((assetType) =>
+        chunksOf(pending.filter((item) => item.asset_type === assetType), 100)
+      );
+      const batchResults = await mapLimit(batches, 3, fetchMarketPulseBatch);
+      const snapshots = batchResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+      const failures = batchResults.flatMap((result, index) => result.status === "rejected"
+        ? [{ symbols: batches[index].map((item) => item.symbol).join(","), message: result.reason instanceof Error ? result.reason.message : String(result.reason) }]
+        : []);
+      const snapshotBySymbol = new Map(snapshots.map((item) => [item.instrument.symbol, item]));
+
+      const sectorCutoff = Date.now() - 60 * 60_000;
+      const sectorPending = desired.filter((item) => {
+        if (!item.isSector) return false;
+        const cached = cachedBySymbol.get(item.symbol);
+        return force || !cached?.sector_bars_at || new Date(cached.sector_bars_at).getTime() < sectorCutoff;
+      });
+      const sectorResults = await mapLimit(sectorPending, 4, async (instrument) => {
+        const bars = await fetchHistoricalBars(instrument, 280, "D");
+        const price = snapshotBySymbol.get(instrument.symbol)?.price
+          ?? Number(cachedBySymbol.get(instrument.symbol)?.price)
+          ?? bars[bars.length - 1]?.close;
+        return { symbol: instrument.symbol, returns: sectorReturnSet(bars, price) };
+      });
+      const sectorReturns = new Map(sectorResults.flatMap((result) =>
+        result.status === "fulfilled" ? [[result.value.symbol, result.value.returns] as const] : []
+      ));
+      sectorResults.forEach((result, index) => {
+        if (result.status === "rejected") failures.push({
+          symbols: sectorPending[index].symbol,
+          message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+      });
+
+      const now = new Date().toISOString();
+      const upserts = desired.flatMap((instrument) => {
+        const snapshot = snapshotBySymbol.get(instrument.symbol);
+        const cached = cachedBySymbol.get(instrument.symbol);
+        const price = snapshot?.price ?? Number(cached?.price);
+        if (!Number.isFinite(price) || price <= 0) return [];
+        const returns = sectorReturns.get(instrument.symbol);
+        return [{
+          user_id: authData.user.id,
+          instrument_id: instrument.instrumentId,
+          symbol: instrument.symbol,
+          display_name: instrument.displayName,
+          asset_type: instrument.asset_type,
+          is_watchlist: instrument.isWatchlist,
+          is_benchmark: instrument.isBenchmark,
+          is_sector: instrument.isSector,
+          sector_name: instrument.sectorName,
+          price,
+          previous_close: snapshot?.previousClose ?? cached?.previous_close ?? null,
+          change_value: snapshot?.changeValue ?? cached?.change_value ?? null,
+          change_percent: snapshot?.changePercent ?? cached?.change_percent ?? null,
+          volume: snapshot?.volume ?? cached?.volume ?? null,
+          turnover: snapshot?.turnover ?? cached?.turnover ?? null,
+          return_1w: returns?.return_1w ?? cached?.return_1w ?? null,
+          return_1m: returns?.return_1m ?? cached?.return_1m ?? null,
+          return_3m: returns?.return_3m ?? cached?.return_3m ?? null,
+          return_ytd: returns?.return_ytd ?? cached?.return_ytd ?? null,
+          sector_bars_at: returns ? now : cached?.sector_bars_at ?? null,
+          market_time: snapshot?.marketTime ?? cached?.market_time ?? now,
+          fetched_at: snapshot ? now : cached?.fetched_at ?? now,
+        }];
+      });
+      if (upserts.length) {
+        const { error: upsertError } = await supabase
+          .from("market_pulse_latest")
+          .upsert(upserts, { onConflict: "user_id,symbol" });
+        if (upsertError) throw upsertError;
+      }
+      const desiredSymbols = new Set(desired.map((item) => item.symbol));
+      const staleSymbols = (cachedRows || []).filter((row) => !desiredSymbols.has(String(row.symbol).toUpperCase())).map((row) => row.symbol);
+      if (staleSymbols.length) {
+        const { error: cleanupError } = await supabase
+          .from("market_pulse_latest")
+          .delete()
+          .eq("user_id", authData.user.id)
+          .in("symbol", staleSymbols);
+        if (cleanupError) throw cleanupError;
+      }
+      const { data: rows, error: rowsError } = await supabase
+        .from("market_pulse_latest")
+        .select("*")
+        .eq("user_id", authData.user.id)
+        .order("symbol");
+      if (rowsError) throw rowsError;
+      return new Response(JSON.stringify({
+        source: "webull",
+        fetched_at: now,
+        watchlist_count: desired.filter((item) => item.isWatchlist).length,
+        updated: snapshots.length,
+        cached: Math.max(desired.length - pending.length, 0),
+        failures,
+        rows: rows || [],
+      }), { headers: jsonHeaders });
+    }
+
     if (body?.action === "chart") {
       const instrumentId = String(body?.instrument_id || "");
       if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });

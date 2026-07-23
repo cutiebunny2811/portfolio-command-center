@@ -31,9 +31,15 @@ not market-price data, so checking every minute only wastes quota.
 
 ## 4. Expected behavior
 
-- The first successful run looks back 14 days to stay within the free API rate limit.
-- Later runs overlap the last four days so late/amended filings are caught.
-- One Massive filing batch is fetched and then matched against all watchlists.
+- Every run overlaps the last four days so fresh, late, and amended filings are caught.
+- Every newly watched instrument also receives a one-time 90-day ticker backfill.
+- To respect the free API rate limit, at most four new symbols are backfilled per
+  run. A large imported watchlist therefore fills progressively across scheduled
+  runs, while newly added symbols are picked up automatically.
+- Backfill completion is stored per instrument in `smart_money_sync_state`,
+  including symbols with no matching filings, so empty histories are not fetched
+  repeatedly.
+- Massive filing batches are matched against all applicable user watchlists.
 - Repeated runs are safe because transactions are deduplicated by user,
   accession number, and a stable transaction fingerprint.
 - The page displays only the newest 50 matching rows at once, while Supabase

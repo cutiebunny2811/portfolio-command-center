@@ -1156,6 +1156,11 @@ tbody tr:last-child td { border-bottom: 0; }
   .portfolio-card__numbers { grid-template-columns: 1fr 1fr; }
   .portfolio-card__numbers > div:last-child { grid-column: 1 / -1; }
   .watchlist-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .watchlist-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding-inline: 10px; }
+  .watchlist-row > i { display: none; }
+  .watchlist-row .asset-mark { width: 28px; height: 28px; flex-basis: 28px; }
+  .watchlist-row .asset-identity { gap: 8px; }
+  .watchlist-row > span:nth-child(2) small { display: none; }
   .pulse-leader-row { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 14px; }
   .pulse-leader-row > div:nth-child(2) { display: none; }
   .market-chart-head { grid-template-columns: 1fr; align-items: start; }

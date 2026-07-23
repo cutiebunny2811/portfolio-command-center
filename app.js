@@ -1379,9 +1379,12 @@
 
   function openCashDialog() {
     const portfolio = currentPortfolio();
+    const availableCash = Math.max(portfolioStats(portfolio).cash, 0);
+    const availableCashValue = availableCash.toFixed(8).replace(/\.?0+$/, "");
+    const availableCashDisplay = availableCash.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8 });
     openDialog({
       kicker: `${portfolio.name} · Draft → Confirm`, title: "Record cash movement", submitLabel: "Preview movement",
-      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required></label></div><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
+      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><div class="trade-quantity-control"><input name="amount" type="number" min="0.00000001" step="0.00000001" required><button class="button button--primary button--sell-all" type="button" data-cash-withdraw-all hidden>Withdraw all</button></div></label></div><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Available to withdraw: <strong>$${availableCashDisplay}</strong>. Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
       onSubmit: async (form) => {
         const draft = await rpc("api_create_cash_draft", {
           p_portfolio_id: portfolio.id, p_movement_type: form.get("type"), p_amount: num(form.get("amount")),
@@ -1390,6 +1393,22 @@
         openDraftConfirmation("cash movement", draft, (id, token) => rpc("api_confirm_cash_draft", { p_draft_id: id, p_confirmation_token: token }));
       }
     });
+    const body = $("#dialog-body");
+    const typeSelect = $('[name="type"]', body);
+    const amountInput = $('[name="amount"]', body);
+    const withdrawAllButton = $("[data-cash-withdraw-all]", body);
+    const syncWithdrawAll = () => {
+      const isWithdrawal = typeSelect.value === "withdrawal";
+      withdrawAllButton.hidden = !isWithdrawal;
+      withdrawAllButton.disabled = !isWithdrawal || availableCash <= 0;
+    };
+    typeSelect.addEventListener("change", syncWithdrawAll);
+    withdrawAllButton.addEventListener("click", () => {
+      amountInput.value = availableCashValue;
+      amountInput.dispatchEvent(new Event("input", { bubbles: true }));
+      amountInput.focus();
+    });
+    syncWithdrawAll();
   }
 
   function optionFields() {

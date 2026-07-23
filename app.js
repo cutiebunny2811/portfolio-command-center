@@ -128,6 +128,20 @@
     return new Map(state.instruments.map((item) => [item.id, item]));
   }
 
+  function assetMark(instrument, size = "") {
+    const symbol = String(instrument?.symbol || "?").trim().toUpperCase();
+    const initials = symbol.replace(/[^A-Z0-9]/g, "").slice(0, 2) || "?";
+    const logoUrl = String(instrument?.logo_url || "").trim();
+    return `<span class="asset-mark ${size ? `asset-mark--${esc(size)}` : ""}${logoUrl ? "" : " is-fallback"}" aria-hidden="true">
+      ${logoUrl ? `<img src="${esc(logoUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ""}
+      <span>${esc(initials)}</span>
+    </span>`;
+  }
+
+  function assetIdentity(instrument) {
+    return `<span class="asset-identity">${assetMark(instrument)}<span class="asset-identity__copy"><strong>${esc(instrument?.symbol || "—")}</strong><small>${esc(instrument?.display_name || instrument?.asset_type || "")}</small></span></span>`;
+  }
+
   function latestPriceMap() {
     const map = new Map();
     state.prices.forEach((price) => {
@@ -760,7 +774,7 @@
         const tranches = num(row.target?.planned_tranches);
         const canPlanBuy = ["stock", "etf"].includes(row.instrument.asset_type);
         return `<tr>
-        <td><span class="cell-main">${esc(row.instrument.symbol)}</span><span class="cell-sub">${esc(row.instrument.display_name || row.instrument.asset_type)}</span></td>
+        <td>${assetIdentity(row.instrument)}</td>
         <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
         <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
@@ -970,7 +984,7 @@
     return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Showing first 8" : "Last viewed / newest"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
       const isSelected = item.instrument_id === selected?.instrument_id;
       return `<button type="button" class="watchlist-row ${isSelected ? "is-active" : ""}" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
-        <span><strong>${esc(item.instrument.symbol)}</strong><small>${esc(item.instrument.display_name || item.instrument.asset_type)}</small></span>
+        ${assetIdentity(item.instrument)}
         <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
         <i aria-hidden="true">↗</i>
       </button>`;
@@ -1012,8 +1026,9 @@
   function pulseLeaderRow(row, metric = "change") {
     const change = Number(row.change_percent);
     const tone = change >= 0 ? "positive" : "negative";
+    const instrument = instrumentMap().get(row.instrument_id) || row;
     return `<div class="pulse-leader-row">
-      <div><strong>${esc(row.symbol)}</strong><span>${esc(row.display_name || row.asset_type)}</span></div>
+      ${assetIdentity(instrument)}
       <div><strong class="mono">${money(row.price, Number(row.price) < 10 ? 4 : 2)}</strong><span>${metric === "volume" ? `${compactNumber(row.volume)} volume` : "Webull snapshot"}</span></div>
       <strong class="${tone} mono">${signedPercent(change)}</strong>
     </div>`;
@@ -2081,6 +2096,11 @@
   });
 
   document.addEventListener("click", handleClick);
+  document.addEventListener("error", (event) => {
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement) || !image.matches(".asset-mark img")) return;
+    image.closest(".asset-mark")?.classList.add("is-fallback");
+  }, true);
   document.addEventListener("input", (event) => {
     const smartSearch = event.target.closest("[data-smart-money-search]");
     if (smartSearch && state.route === "smart-money") {

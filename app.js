@@ -52,6 +52,7 @@
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
+    watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false, marketPulseWindow: "1D",
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 10,
@@ -112,6 +113,9 @@
     }
     if (/watchlist_items|api_add_watchlist_item|api_remove_watchlist_item/i.test(message)) {
       return "Watchlist is not installed yet. Run 011_watchlist.sql in Supabase first.";
+    }
+    if (/market_pulse_latest/i.test(message)) {
+      return "Market Pulse is not installed yet. Run 015_market_pulse.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -348,6 +352,20 @@
     throw new Error(`Watchlist: ${error.message}`);
   }
 
+  async function optionalMarketPulseQuery() {
+    if (localPreviewEnabled) return state.marketPulse;
+    const { data, error } = await db.from("market_pulse_latest").select("*").order("symbol");
+    if (!error) {
+      state.marketPulseReady = true;
+      return data || [];
+    }
+    if (/market_pulse_latest|schema cache|does not exist/i.test(error.message)) {
+      state.marketPulseReady = false;
+      return [];
+    }
+    throw new Error(`Market Pulse: ${error.message}`);
+  }
+
   async function optionalSmartMoneyQuery() {
     if (localPreviewEnabled) return state.smartMoneyEvents;
     const { data, error } = await db.from("smart_money_events").select("*").order("filed_at", { ascending: false }).limit(500);
@@ -516,9 +534,48 @@
     }
   }
 
+  async function refreshMarketPulse({ force = false, notify = false } = {}) {
+    if (!state.user || state.marketPulseBusy || !state.marketPulseReady) return null;
+    state.marketPulseBusy = true;
+    if (state.route === "watchlist" && state.watchlistView === "market") renderWatchlist();
+    try {
+      if (localPreviewEnabled) {
+        state.marketPulse = previewMarketPulseRows();
+        return { rows: state.marketPulse, updated: state.marketPulse.length };
+      }
+      const { data, error } = await db.functions.invoke("refresh-stock-prices", {
+        body: { action: "market_pulse", force }
+      });
+      if (error) {
+        let detail = error.message;
+        try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(data.error);
+      state.marketPulse = Array.isArray(data?.rows)
+        ? data.rows
+        : await optionalMarketPulseQuery();
+      if (notify) {
+        const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
+        toast(failed
+          ? `${data.updated || 0} market snapshots updated; ${failed} batch${failed === 1 ? "" : "es"} need attention`
+          : `${data.updated || 0} Webull market snapshots updated`, failed > 0);
+      }
+      return data;
+    } catch (error) {
+      console.warn(error);
+      if (notify) toast(`Market Pulse: ${friendlyError(error)}`, true);
+      return null;
+    } finally {
+      state.marketPulseBusy = false;
+      if (state.route === "watchlist" && state.watchlistView === "market") renderWatchlist();
+    }
+  }
+
   async function refreshDashboard() {
     await loadData();
     await refreshStockPrices({ force: true, notify: true });
+    if (state.watchlistView === "market") await refreshMarketPulse({ force: true, notify: true });
     await refreshVisibleWatchlistChart();
   }
 
@@ -527,7 +584,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, smartMoneyEvents] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -538,9 +595,10 @@
         query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
+        optionalMarketPulseQuery(),
         optionalSmartMoneyQuery()
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, smartMoneyEvents });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
@@ -923,6 +981,148 @@
     return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(num(value));
   }
 
+  function marketPulseTabs() {
+    return `<nav class="research-tabs" aria-label="Watchlist research views">
+      <button type="button" class="${state.watchlistView === "charts" ? "is-active" : ""}" data-action="watchlist-view" data-view="charts"><span>01</span>Charts</button>
+      <button type="button" class="${state.watchlistView === "market" ? "is-active" : ""}" data-action="watchlist-view" data-view="market"><span>02</span>Market Pulse</button>
+    </nav>`;
+  }
+
+  function marketPulseValue(row, window = state.marketPulseWindow) {
+    const key = { "1D": "change_percent", "1W": "return_1w", "1M": "return_1m", "3M": "return_3m", "YTD": "return_ytd" }[window] || "change_percent";
+    const value = Number(row?.[key]);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function signedPercent(value, digits = 2) {
+    if (!Number.isFinite(Number(value))) return "—";
+    const parsed = Number(value);
+    return `${parsed > 0 ? "+" : ""}${parsed.toFixed(digits)}%`;
+  }
+
+  function marketPulseFreshness(rows = state.marketPulse) {
+    const latest = rows.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
+    if (!latest.length) return "Waiting for first sync";
+    const minutes = Math.max(Math.floor((Date.now() - Math.max(...latest)) / 60_000), 0);
+    if (minutes < 1) return "Updated just now";
+    if (minutes === 1) return "Updated 1 minute ago";
+    return `Updated ${minutes} minutes ago`;
+  }
+
+  function pulseLeaderRow(row, metric = "change") {
+    const change = Number(row.change_percent);
+    const tone = change >= 0 ? "positive" : "negative";
+    return `<div class="pulse-leader-row">
+      <div><strong>${esc(row.symbol)}</strong><span>${esc(row.display_name || row.asset_type)}</span></div>
+      <div><strong class="mono">${money(row.price, Number(row.price) < 10 ? 4 : 2)}</strong><span>${metric === "volume" ? `${compactNumber(row.volume)} volume` : "Webull snapshot"}</span></div>
+      <strong class="${tone} mono">${signedPercent(change)}</strong>
+    </div>`;
+  }
+
+  function renderMarketPulse() {
+    const rows = state.marketPulse;
+    const watchRows = rows.filter((row) => row.is_watchlist);
+    const benchmarks = rows.filter((row) => row.is_benchmark);
+    const sectors = rows.filter((row) => row.is_sector)
+      .map((row) => ({ ...row, windowValue: marketPulseValue(row) }))
+      .sort((a, b) => (b.windowValue ?? -Infinity) - (a.windowValue ?? -Infinity));
+    const gainers = [...watchRows].filter((row) => Number(row.change_percent) > 0).sort((a, b) => Number(b.change_percent) - Number(a.change_percent)).slice(0, 5);
+    const losers = [...watchRows].filter((row) => Number(row.change_percent) < 0).sort((a, b) => Number(a.change_percent) - Number(b.change_percent)).slice(0, 5);
+    const active = [...watchRows].filter((row) => Number(row.volume) > 0).sort((a, b) => Number(b.volume) - Number(a.volume)).slice(0, 5);
+    const advancers = watchRows.filter((row) => Number(row.change_percent) > 0).length;
+    const decliners = watchRows.filter((row) => Number(row.change_percent) < 0).length;
+    const breadth = watchRows.length ? (advancers - decliners) / watchRows.length * 100 : 0;
+    const values = sectors.map((row) => Math.abs(row.windowValue || 0));
+    const sectorScale = Math.max(...values, 1);
+
+    if (!rows.length) {
+      return `<section class="pulse-empty"><span>WEBULL / 00</span><h2>Your market tape is ready to be measured.</h2><p>Refresh once to rank the names in your Watchlist and calculate sector context.</p><button class="button button--primary" type="button" data-action="market-pulse-refresh">Refresh Market Pulse</button></section>`;
+    }
+
+    return `
+      <section class="pulse-ledger" aria-label="Watchlist market breadth">
+        <div class="pulse-ledger__lead"><small>WATCHLIST NAMES</small><strong>${watchRows.length}</strong><span>Only your tracked universe</span></div>
+        <div><small>ADVANCING</small><strong class="positive">${advancers}</strong><span>Above previous close</span></div>
+        <div><small>DECLINING</small><strong class="negative">${decliners}</strong><span>Below previous close</span></div>
+        <div><small>BREADTH</small><strong class="${breadth >= 0 ? "positive" : "negative"}">${signedPercent(breadth, 1)}</strong><span>Advance / decline balance</span></div>
+      </section>
+
+      <section class="pulse-section">
+        <div class="section-head pulse-section__head"><div><span class="section-index">01 / MARKET PROXIES</span><h2>Context before conviction.</h2></div><p>${esc(marketPulseFreshness(rows))} · ETF proxies, not index levels</p></div>
+        <div class="benchmark-tape">${benchmarks.map((row) => `<div class="benchmark-cell">
+          <span>${esc(row.symbol)}</span><strong class="mono">${money(row.price, Number(row.price) < 10 ? 4 : 2)}</strong>
+          <small class="${Number(row.change_percent) >= 0 ? "positive" : "negative"}">${signedPercent(row.change_percent)}</small>
+          <em>${esc(row.display_name || "Market proxy")}</em>
+        </div>`).join("")}</div>
+      </section>
+
+      <section class="pulse-section">
+        <div class="section-head pulse-section__head"><div><span class="section-index">02 / WATCHLIST LEADERS</span><h2>The names moving now.</h2></div><p>Ranked across ${watchRows.length} watched stock${watchRows.length === 1 ? "" : "s"} and ETFs · never the whole market</p></div>
+        <div class="pulse-leaders">
+          <article><header><span class="positive">↗</span><div><small>UPSIDE</small><h3>Leaders</h3></div></header>${gainers.length ? gainers.map((row) => pulseLeaderRow(row)).join("") : `<p class="pulse-list-empty">No advancing names in the latest snapshot.</p>`}</article>
+          <article><header><span class="negative">↘</span><div><small>PRESSURE</small><h3>Decliners</h3></div></header>${losers.length ? losers.map((row) => pulseLeaderRow(row)).join("") : `<p class="pulse-list-empty">No declining names in the latest snapshot.</p>`}</article>
+          <article><header><span class="gold">◆</span><div><small>SHARE VOLUME</small><h3>Most active</h3></div></header>${active.length ? active.map((row) => pulseLeaderRow(row, "volume")).join("") : `<p class="pulse-list-empty">Volume is waiting for the next Webull snapshot.</p>`}</article>
+        </div>
+      </section>
+
+      <section class="pulse-section pulse-sector-section">
+        <div class="section-head pulse-section__head"><div><span class="section-index">03 / SECTOR ROTATION</span><h2>Where the tape is leaning.</h2></div>
+          <div class="pulse-window" aria-label="Sector performance window">${["1D", "1W", "1M", "3M", "YTD"].map((window) => `<button type="button" class="${state.marketPulseWindow === window ? "is-active" : ""}" data-action="market-pulse-window" data-window="${window}">${window}</button>`).join("")}</div>
+        </div>
+        <div class="sector-rank">${sectors.map((row, index) => {
+          const value = row.windowValue;
+          const width = value == null ? 0 : Math.max(Math.abs(value) / sectorScale * 100, 2);
+          return `<div class="sector-row ${value == null ? "is-missing" : value >= 0 ? "is-positive" : "is-negative"}">
+            <span class="mono">${String(index + 1).padStart(2, "0")}</span>
+            <div><strong>${esc(row.sector_name || row.display_name)}</strong><small>${esc(row.symbol)}</small></div>
+            <div class="sector-track"><i style="--sector-width:${width}%"></i><b></b></div>
+            <strong class="mono">${signedPercent(value)}</strong>
+          </div>`;
+        }).join("")}</div>
+        <p class="pulse-method">Sector returns use Webull daily bars for the eleven Select Sector SPDR ETFs. SPY is shown separately as the broad-market proxy.</p>
+      </section>`;
+  }
+
+  function previewMarketPulseRows() {
+    const now = new Date().toISOString();
+    const fixed = [
+      ["SPY", "S&P 500 proxy", 638.42, .58, 78300000, true, false, null],
+      ["QQQ", "Nasdaq-100 proxy", 571.16, .94, 62100000, true, false, null],
+      ["DIA", "Dow Jones proxy", 452.31, -.22, 5200000, true, false, null],
+      ["IWM", "Russell 2000 proxy", 231.08, 1.17, 34800000, true, false, null],
+      ["GLD", "Gold proxy", 301.44, -.41, 9100000, true, false, null],
+      ["XLK", "Technology", 268.41, 1.18, 8800000, false, true, "Technology"],
+      ["XLC", "Communication Services", 112.08, .63, 4600000, false, true, "Communication Services"],
+      ["XLY", "Consumer Discretionary", 228.13, .37, 5100000, false, true, "Consumer Discretionary"],
+      ["XLP", "Consumer Staples", 84.92, -.18, 7200000, false, true, "Consumer Staples"],
+      ["XLE", "Energy", 91.57, -.82, 17600000, false, true, "Energy"],
+      ["XLF", "Financials", 52.24, .21, 29800000, false, true, "Financials"],
+      ["XLV", "Health Care", 146.91, -.32, 9400000, false, true, "Health Care"],
+      ["XLI", "Industrials", 151.74, .54, 6900000, false, true, "Industrials"],
+      ["XLB", "Materials", 94.18, -.66, 4300000, false, true, "Materials"],
+      ["XLRE", "Real Estate", 42.87, -.27, 3900000, false, true, "Real Estate"],
+      ["XLU", "Utilities", 79.36, -.73, 11900000, false, true, "Utilities"]
+    ].map(([symbol, display_name, price, change_percent, volume, is_benchmark, is_sector, sector_name], index) => ({
+      symbol, display_name, price, change_percent, volume, is_benchmark, is_sector, sector_name,
+      asset_type: "etf", is_watchlist: false, return_1w: num(change_percent) * (1.4 + index % 3),
+      return_1m: num(change_percent) * (2.1 + index % 4), return_3m: num(change_percent) * (3.2 + index % 5),
+      return_ytd: num(change_percent) * (5.4 + index % 6), fetched_at: now
+    }));
+    const instruments = instrumentMap();
+    const watched = state.watchlist.map((item, index) => {
+      const instrument = instruments.get(item.instrument_id);
+      const price = 24 + (index + 1) * 47.36;
+      const change = [3.42, -2.18, 1.07, -4.12, .68][index % 5];
+      return {
+        symbol: instrument?.symbol || `WATCH${index + 1}`, display_name: instrument?.display_name || "Watched name",
+        instrument_id: item.instrument_id, asset_type: instrument?.asset_type || "stock", is_watchlist: true,
+        is_benchmark: false, is_sector: false, price, change_percent: change, volume: 1800000 + index * 7400000,
+        fetched_at: now
+      };
+    });
+    return [...fixed, ...watched];
+  }
+
   function movingAverage(bars, period) {
     let sum = 0;
     return bars.map((bar, index) => {
@@ -1045,6 +1245,19 @@
 
   function renderWatchlist() {
     destroyWatchlistChart();
+    if (state.watchlistView === "market") {
+      viewRoot.innerHTML = `
+        ${pageHead(
+          "Watchlist intelligence · Webull snapshots",
+          "Read the tape you chose.",
+          "Movers are ranked only across your Watchlist. Sector ETFs provide context and never alter your portfolios.",
+          `<button class="button" type="button" data-action="market-pulse-refresh" ${state.marketPulseBusy ? "disabled" : ""}>${state.marketPulseBusy ? "Refreshing…" : "Refresh pulse"}</button>`
+        )}
+        ${marketPulseTabs()}
+        ${!state.marketPulseReady ? `<div class="warning-box watchlist-setup"><strong>One setup step remains.</strong> Run <code>015_market_pulse.sql</code> in Supabase, then refresh this page.</div>` : ""}
+        ${state.marketPulseBusy && !state.marketPulse.length ? `<div class="pulse-loading"><span></span><p>Measuring your Watchlist through Webull…</p></div>` : renderMarketPulse()}`;
+      return;
+    }
     const chartOption = currentWatchlistChartOption();
     const timeframe = state.watchlistTimeframe;
     const rows = watchlistRows();
@@ -1060,6 +1273,7 @@
 
     viewRoot.innerHTML = `
       ${pageHead("Webull market data · Stocks and ETFs", "Watch the names that matter.", "A separate research list. Nothing here changes portfolio cash, positions or allocation.", `<button class="button button--primary" type="button" data-action="watchlist-add">+ Add ticker</button>`)}
+      ${marketPulseTabs()}
       ${!state.watchlistReady ? `<div class="warning-box watchlist-setup"><strong>One setup step remains.</strong> Run <code>011_watchlist.sql</code> in Supabase, then refresh this page.</div>` : ""}
       <section class="watchlist-workbench" aria-label="Watchlist and Webull chart">
         <aside class="watchlist-rail">
@@ -1169,6 +1383,7 @@
         await loadData({ quiet: true });
         state.selectedWatchlistInstrumentId = instrumentId;
         await refreshStockPrices({ force: true });
+        await refreshMarketPulse();
         toast(`${String(form.get("symbol")).toUpperCase()} added to watchlist`);
         await loadWatchlistBars(instrumentId, state.watchlistRange);
       }
@@ -1183,6 +1398,7 @@
       onSubmit: async () => {
         await rpc("api_remove_watchlist_item", { p_instrument_id: instrumentId });
         closeDialog(); state.watchlistBars = []; toast(`${instrument?.symbol || "Ticker"} removed from watchlist`); await loadData({ quiet: true });
+        await refreshMarketPulse();
         if (state.selectedWatchlistInstrumentId) await loadWatchlistBars();
       }
     });
@@ -1754,8 +1970,10 @@
       if (state.route === "journal") await loadJournalPage();
       else {
         render();
-        if (state.route === "watchlist" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
+        if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
           await loadWatchlistBars();
+        } else if (state.route === "watchlist" && state.watchlistView === "market" && !state.marketPulse.length) {
+          await refreshMarketPulse();
         }
       }
       return;
@@ -1770,6 +1988,22 @@
     if (action === "close-dialog") closeDialog();
     else if (action === "refresh") await loadData();
     else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
+    else if (action === "watchlist-view") {
+      state.watchlistView = target.dataset.view === "market" ? "market" : "charts";
+      renderWatchlist();
+      if (state.watchlistView === "market") {
+        const latest = state.marketPulse.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
+        const stale = !latest.length || Date.now() - Math.max(...latest) >= 15 * 60_000;
+        if (stale) await refreshMarketPulse();
+      } else if (state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
+        await loadWatchlistBars();
+      }
+    }
+    else if (action === "market-pulse-refresh") await refreshMarketPulse({ force: true, notify: true });
+    else if (action === "market-pulse-window") {
+      state.marketPulseWindow = ["1D", "1W", "1M", "3M", "YTD"].includes(target.dataset.window) ? target.dataset.window : "1D";
+      renderWatchlist();
+    }
     else if (action === "watchlist-add") openWatchlistDialog();
     else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId, state.watchlistRange, state.watchlistTimeframe);
     else if (action === "watchlist-timeframe") {
@@ -1871,17 +2105,18 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (state.route === "journal") drawEquityCurvePaged(state.journalDaily);
-      if (state.route === "watchlist") drawWatchlistChart();
+      if (state.route === "watchlist" && state.watchlistView === "charts") drawWatchlistChart();
     }, 120);
   });
 
   async function refreshVisibleWatchlistChart() {
-    if (state.route !== "watchlist" || !state.selectedWatchlistInstrumentId || state.watchlistChartBusy) return;
+    if (state.route !== "watchlist" || state.watchlistView !== "charts" || !state.selectedWatchlistInstrumentId || state.watchlistChartBusy) return;
     await loadWatchlistBars(state.selectedWatchlistInstrumentId, state.watchlistRange, state.watchlistTimeframe);
   }
 
   async function refreshMarketData() {
     await refreshStockPrices();
+    if (state.route === "watchlist" && state.watchlistView === "market") await refreshMarketPulse();
     await refreshVisibleWatchlistChart();
   }
 
@@ -1974,6 +2209,7 @@
       { id: "sm-6", instrument_id: "i-googl", filer_name: "Riley Brooks", filer_title: "10% Owner", relationship: "Ten percent owner", transaction_code: "S", side: "sell", transaction_date: "2026-07-14", filed_at: "2026-07-16T17:24:00Z", shares: 21000, price: 191.3, transaction_value: 4017300, post_transaction_shares: 528000, sec_url: "" }
     ];
     Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    state.marketPulse = previewMarketPulseRows();
     state.journalOverview = localJournalView({ page: 1, pageSize: 6 });
     applyJournalView(localJournalView({ page: 1, pageSize: state.journalPageSize }));
     authShell.hidden = true;

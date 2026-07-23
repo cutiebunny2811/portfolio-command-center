@@ -7,9 +7,13 @@ const corsHeaders = {
 };
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const massiveForm4Url = "https://api.massive.com/stocks/filings/vX/form-4";
-const initialLookbackDays = 14;
+const initialLookbackDays = 90;
 const regularLookbackDays = 4;
 const maxPages = 10;
+// Massive's free tier is rate constrained. One regular market-wide request plus
+// four ticker backfills keeps a scheduled run bounded while still completing a
+// 200-name watchlist progressively.
+const maxBackfillSymbolsPerRun = 4;
 
 type WatchlistRow = {
   user_id: string;
@@ -94,7 +98,7 @@ async function stableKey(row: MassiveForm4): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function fetchMassiveRows(apiKey: string, since: string): Promise<MassiveForm4[]> {
+async function fetchMassiveRows(apiKey: string, since: string, symbol?: string): Promise<MassiveForm4[]> {
   const rows: MassiveForm4[] = [];
   let nextUrl: string | null = massiveForm4Url;
   let page = 0;
@@ -104,6 +108,7 @@ async function fetchMassiveRows(apiKey: string, since: string): Promise<MassiveF
     if (url.hostname !== "api.massive.com") throw new Error("Massive returned an unexpected pagination host");
     if (page === 0) {
       url.searchParams.set("filing_date.gte", since);
+      if (symbol) url.searchParams.set("tickers", normalizedSymbol(symbol));
       // The free plan is request-rate constrained. Pull the largest supported
       // page so a broad watchlist does not require one request per ticker.
       url.searchParams.set("limit", "10000");
@@ -171,15 +176,51 @@ Deno.serve(async (request) => {
     if (!eligible.length) return response({ ok: true, checked: 0, matched: 0, inserted: 0, message: "Watchlist is empty" });
 
     const userIds = [...new Set(eligible.map((row) => row.user_id))];
-    const { data: syncRows } = await admin
+    const { data: syncRows, error: syncRowsError } = await admin
       .from("smart_money_sync_state")
-      .select("user_id,last_success_at")
-      .in("user_id", userIds)
-      .eq("source", "massive");
-    const hasPreviousSync = new Set((syncRows || []).filter((row) => row.last_success_at).map((row) => row.user_id));
-    const lookback = userIds.every((id) => hasPreviousSync.has(id)) ? regularLookbackDays : initialLookbackDays;
-    const since = dateDaysAgo(lookback);
-    const filings = await fetchMassiveRows(massiveApiKey, since);
+      .select("user_id,source,last_success_at")
+      .in("user_id", userIds);
+    if (syncRowsError) throw syncRowsError;
+
+    // The regular request catches fresh and amended filings for every watched
+    // symbol. It intentionally overlaps four days to tolerate delayed filings.
+    const since = dateDaysAgo(regularLookbackDays);
+    const regularFilings = await fetchMassiveRows(massiveApiKey, since);
+
+    // A 90D filter in the UI can only be truthful when every newly watched
+    // instrument has received a historical backfill. Track that work per
+    // instrument in the existing sync-state table so an empty result is still
+    // remembered and is not requested every 30 minutes forever.
+    const completedBackfills = new Set(
+      (syncRows || [])
+        .filter((row) => row.last_success_at && String(row.source).startsWith("massive-backfill:"))
+        .map((row) => `${row.user_id}:${row.source}`),
+    );
+    const pendingBackfills = eligible.filter((row) => {
+      const source = `massive-backfill:${row.instrument_id}`;
+      return !completedBackfills.has(`${row.user_id}:${source}`);
+    });
+    const backfillSymbols = [...new Set(
+      pendingBackfills.map((row) => normalizedSymbol(row.instruments?.symbol)).filter(Boolean),
+    )].slice(0, maxBackfillSymbolsPerRun);
+
+    const fetchedBackfills: MassiveForm4[] = [];
+    const backfillSince = dateDaysAgo(initialLookbackDays);
+    for (const symbol of backfillSymbols) {
+      fetchedBackfills.push(...await fetchMassiveRows(massiveApiKey, backfillSince, symbol));
+    }
+
+    // The regular window can overlap a ticker backfill. Remove duplicates
+    // before the batch upsert so PostgreSQL never receives the same conflict
+    // key twice in one statement.
+    const filings: MassiveForm4[] = [];
+    const seenFilings = new Set<string>();
+    for (const filing of [...regularFilings, ...fetchedBackfills]) {
+      const key = `${filing.accession_number || ""}:${await stableKey(filing)}`;
+      if (seenFilings.has(key)) continue;
+      seenFilings.add(key);
+      filings.push(filing);
+    }
 
     const instrumentByUserAndSymbol = new Map<string, string>();
     for (const row of eligible) {
@@ -239,6 +280,29 @@ Deno.serve(async (request) => {
     }
 
     const now = new Date().toISOString();
+    const completedBackfillRows = pendingBackfills
+      .filter((row) => backfillSymbols.includes(normalizedSymbol(row.instruments?.symbol)))
+      .map((row) => ({
+        user_id: row.user_id,
+        source: `massive-backfill:${row.instrument_id}`,
+        last_filed_at: fetchedBackfills.reduce<string | null>((latest, filing) => {
+          const symbols = Array.isArray(filing.tickers) ? filing.tickers.map(normalizedSymbol) : [];
+          if (!symbols.includes(normalizedSymbol(row.instruments?.symbol)) || !filing.filing_date) return latest;
+          const value = `${filing.filing_date}T00:00:00Z`;
+          return !latest || value > latest ? value : latest;
+        }, null),
+        last_checked_at: now,
+        last_success_at: now,
+        last_error: null,
+        updated_at: now,
+      }));
+    if (completedBackfillRows.length) {
+      const { error: backfillStateError } = await admin
+        .from("smart_money_sync_state")
+        .upsert(completedBackfillRows, { onConflict: "user_id,source" });
+      if (backfillStateError) throw backfillStateError;
+    }
+
     const syncState = userIds.map((id) => ({
       user_id: id,
       source: "massive",
@@ -264,6 +328,12 @@ Deno.serve(async (request) => {
       filings_checked: filings.length,
       matched_transactions: inserts.length,
       since,
+      backfill_since: backfillSince,
+      backfilled_symbols: backfillSymbols,
+      backfills_remaining: Math.max(
+        0,
+        new Set(pendingBackfills.map((row) => normalizedSymbol(row.instruments?.symbol))).size - backfillSymbols.length,
+      ),
     });
   } catch (error) {
     console.error(error);

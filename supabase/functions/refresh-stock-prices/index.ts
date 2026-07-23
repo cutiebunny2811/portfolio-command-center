@@ -9,6 +9,7 @@ const corsHeaders = {
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const snapshotPath = "/openapi/market-data/stock/snapshot";
 const barsPath = "/openapi/market-data/stock/bars";
+const webullLogoCdn = "https://quotes-static.webullfintech.com/ticker-icon";
 const refreshWindowMs = 15 * 60_000;
 const marketPulseBenchmarks = [
   { symbol: "SPY", displayName: "S&P 500 proxy" },
@@ -50,6 +51,8 @@ type PriceResult = {
   instrument: Instrument;
   price: number;
   marketTime: string;
+  webullInstrumentId: string | null;
+  logoUrl: string | null;
 };
 
 type MarketPulseInstrument = Instrument & {
@@ -70,6 +73,8 @@ type MarketPulseSnapshot = {
   volume: number | null;
   turnover: number | null;
   marketTime: string;
+  webullInstrumentId: string | null;
+  logoUrl: string | null;
 };
 
 type ChartBar = {
@@ -250,6 +255,18 @@ async function signedGet(
   return { response, payload };
 }
 
+function webullIdentity(row: Record<string, unknown> | null | undefined): {
+  webullInstrumentId: string | null;
+  logoUrl: string | null;
+} {
+  const webullInstrumentId = String(row?.instrument_id ?? row?.ticker_id ?? "").trim();
+  if (!/^\d+$/.test(webullInstrumentId)) return { webullInstrumentId: null, logoUrl: null };
+  return {
+    webullInstrumentId,
+    logoUrl: `${webullLogoCdn}/${webullInstrumentId}.png`,
+  };
+}
+
 function finiteNumber(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -300,6 +317,7 @@ async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Prom
       : finiteNumber(row.change_ratio) != null
         ? Number(row.change_ratio) * 100
         : null;
+    const identity = webullIdentity(row);
     return [{
       instrument,
       price: value.price,
@@ -309,6 +327,7 @@ async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Prom
       volume: finiteNumber(row.volume),
       turnover: finiteNumber(row.turnover),
       marketTime: value.marketTime,
+      ...identity,
     }];
   });
 }
@@ -366,6 +385,8 @@ async function fetchLatestRegularClose(
     instrument,
     price: bars[0].price,
     marketTime: new Date(Number.isFinite(bars[0].time) ? bars[0].time : Date.now()).toISOString(),
+    webullInstrumentId: null,
+    logoUrl: null,
   };
 }
 
@@ -450,7 +471,26 @@ async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
   const row = rows.find((item) => String(item.symbol || "").toUpperCase() === instrument.symbol.toUpperCase()) || rows[0];
   const value = row ? marketValue(row) : null;
   if (!value) throw new Error(`${instrument.symbol}: snapshot did not contain a usable price`);
-  return { instrument, ...value };
+  return { instrument, ...value, ...webullIdentity(row) };
+}
+
+async function syncInstrumentLogos(
+  supabase: ReturnType<typeof createClient>,
+  items: Array<{ instrumentId: string | null; webullInstrumentId: string | null; logoUrl: string | null }>,
+): Promise<string | null> {
+  const logos = items.flatMap((item) =>
+    item.instrumentId && item.webullInstrumentId && item.logoUrl
+      ? [{
+          instrument_id: item.instrumentId,
+          webull_instrument_id: item.webullInstrumentId,
+          logo_url: item.logoUrl,
+        }]
+      : []
+  );
+  if (!logos.length) return null;
+  const unique = [...new Map(logos.map((item) => [item.instrument_id, item])).values()];
+  const { error } = await supabase.rpc("api_set_instrument_logos", { p_items: unique });
+  return error?.message || null;
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
@@ -475,6 +515,7 @@ Deno.serve(async (request) => {
   if (request.method !== "POST") return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: jsonHeaders });
 
   try {
+    const body = await request.json().catch(() => ({}));
     const authorization = request.headers.get("Authorization");
     if (!authorization) return new Response(JSON.stringify({ error: "Authentication required" }), { status: 401, headers: jsonHeaders });
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -486,7 +527,6 @@ Deno.serve(async (request) => {
     const { data: authData, error: authError } = await supabase.auth.getUser();
     if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
 
-    const body = await request.json().catch(() => ({}));
     if (body?.action === "market_pulse") {
       const force = body?.force === true;
       const { data: watchlistRows, error: watchlistError } = await supabase
@@ -573,6 +613,12 @@ Deno.serve(async (request) => {
       const failures = batchResults.flatMap((result, index) => result.status === "rejected"
         ? [{ symbols: batches[index].map((item) => item.symbol).join(","), message: result.reason instanceof Error ? result.reason.message : String(result.reason) }]
         : []);
+      const logoFailure = await syncInstrumentLogos(supabase, snapshots.map((snapshot) => ({
+        instrumentId: snapshot.instrument.instrumentId,
+        webullInstrumentId: snapshot.webullInstrumentId,
+        logoUrl: snapshot.logoUrl,
+      })));
+      if (logoFailure) failures.push({ symbols: "logos", message: logoFailure });
       const snapshotBySymbol = new Map(snapshots.map((item) => [item.instrument.symbol, item]));
 
       const sectorCutoff = Date.now() - 60 * 60_000;
@@ -687,6 +733,13 @@ Deno.serve(async (request) => {
         if (snapshotResult.status === "fulfilled") snapshot = snapshotResult.value;
         if (hourlyResult.status === "fulfilled") liveBars = mergeLiveDailyBar(bars, hourlyResult.value, snapshot);
       }
+      if (snapshot) {
+        await syncInstrumentLogos(supabase, [{
+          instrumentId: instrument.id,
+          webullInstrumentId: snapshot.webullInstrumentId,
+          logoUrl: snapshot.logoUrl,
+        }]);
+      }
       return new Response(JSON.stringify({
         symbol: instrument.symbol,
         source: "webull",
@@ -750,6 +803,12 @@ Deno.serve(async (request) => {
     writes.forEach((result, index) => {
       if (result.error) failures.push({ symbol: successes[index].value.instrument.symbol, message: result.error.message });
     });
+    const logoFailure = await syncInstrumentLogos(supabase, successes.map(({ value }) => ({
+      instrumentId: value.instrument.id,
+      webullInstrumentId: value.webullInstrumentId,
+      logoUrl: value.logoUrl,
+    })));
+    if (logoFailure) failures.push({ symbol: "logos", message: logoFailure });
     const updated = writes.filter((result) => !result.error).length;
     return new Response(JSON.stringify({ updated, checked: pending.length, failures }), {
       status: updated || !pending.length ? 200 : 502,

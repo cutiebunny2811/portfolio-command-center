@@ -528,7 +528,10 @@
       if (data?.error) throw new Error(`Webull price refresh: ${data.error}`);
       state.lastWebullRefresh = new Date();
       if (num(data?.updated) > 0) {
-        state.prices = await query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000));
+        [state.prices, state.instruments] = await Promise.all([
+          query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
+          query("Instruments", db.from("instruments").select("*").order("symbol"))
+        ]);
       }
       setSync(true, `Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       if (notify) {
@@ -569,6 +572,9 @@
       state.marketPulse = Array.isArray(data?.rows)
         ? data.rows
         : await optionalMarketPulseQuery();
+      if (num(data?.updated) > 0) {
+        state.instruments = await query("Instruments", db.from("instruments").select("*").order("symbol"));
+      }
       if (notify) {
         const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
         toast(failed

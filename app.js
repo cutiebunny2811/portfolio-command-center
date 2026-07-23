@@ -223,6 +223,71 @@
     };
   }
 
+  function instrumentPriceFreshness(market) {
+    if (!market) return "Manual price";
+    const timestamp = new Date(market.market_time || market.fetched_at).getTime();
+    if (!Number.isFinite(timestamp)) return esc(market.source || "Manual price");
+    const minutes = Math.max(Math.floor((Date.now() - timestamp) / 60_000), 0);
+    if (minutes < 1) return `${esc(market.source || "Market")} · just now`;
+    if (minutes === 1) return `${esc(market.source || "Market")} · 1 min ago`;
+    return `${esc(market.source || "Market")} · ${minutes} min ago`;
+  }
+
+  function buyProjection(portfolio, row, amount, price, fee = 0) {
+    const stats = portfolioStats(portfolio);
+    const currentQuantity = num(row.position?.quantity);
+    const currentCost = num(row.deployed);
+    const purchaseAmount = Math.max(num(amount), 0);
+    const purchasePrice = Math.max(num(price), 0);
+    const purchaseFee = Math.max(num(fee), 0);
+    const addedShares = purchasePrice > 0 ? purchaseAmount / purchasePrice : 0;
+    const quantityAfter = currentQuantity + addedShares;
+    // Match Supabase's confirmed weighted-average formula exactly:
+    // fees become part of cost basis while cash falls by gross + fee.
+    const costAfter = currentCost + purchaseAmount + purchaseFee;
+    const averageAfter = quantityAfter > 0 ? costAfter / quantityAfter : 0;
+    const cashAfter = stats.cash - purchaseAmount - purchaseFee;
+    const allocationAfter = stats.capital > 0 ? costAfter / stats.capital * 100 : 0;
+    const targetProgress = row.targetPercent > 0 ? allocationAfter / row.targetPercent * 100 : 0;
+    const overage = Math.max(costAfter - row.quota, 0);
+    const roomAfter = Math.max(Math.min(row.quota - costAfter, cashAfter), 0);
+    return {
+      amount: purchaseAmount,
+      price: purchasePrice,
+      fee: purchaseFee,
+      addedShares,
+      quantityAfter,
+      costAfter,
+      averageAfter,
+      cashAfter,
+      allocationAfter,
+      targetProgress,
+      overage,
+      roomAfter,
+      tone: allocationTone(targetProgress),
+      isOver: row.targetPercent > 0 && allocationAfter > row.targetPercent + .001,
+      hasCash: cashAfter >= -.005,
+      isValid: purchaseAmount > 0 && purchasePrice > 0
+    };
+  }
+
+  function buyProjectionSummary(projection, row) {
+    if (!projection?.isValid) {
+      return `<div class="trade-projection__empty">Enter quantity and price to preview the position after this buy.</div>`;
+    }
+    const warning = !projection.hasCash
+      ? `<div class="trade-projection__warning is-cash">Cash short by ${money(Math.abs(projection.cashAfter))}. Reduce the quantity or add money first.</div>`
+      : projection.isOver
+        ? `<div class="trade-projection__warning">Tactical overweight · ${money(projection.overage)} above the ${percent(row.targetPercent)} target. The buy is allowed; trim guidance will appear after confirmation.</div>`
+        : `<div class="trade-projection__status is-${projection.tone}">${money(projection.roomAfter)} remains before the ${percent(row.targetPercent)} target.</div>`;
+    return `<div class="trade-projection__grid">
+      <div><small>New average</small><strong>${money(projection.averageAfter, 4)}</strong></div>
+      <div><small>Shares after</small><strong>${formatTradeQuantity(projection.quantityAfter)}</strong></div>
+      <div><small>Allocation after</small><strong>${percent(projection.allocationAfter, 2)}</strong></div>
+      <div><small>Cash after</small><strong class="${projection.hasCash ? "gold" : "negative"}">${money(projection.cashAfter)}</strong></div>
+    </div>${warning}`;
+  }
+
   function portfolioRows(portfolio) {
     const instruments = instrumentMap();
     const positions = new Map(
@@ -635,13 +700,14 @@
         const allocationState = allocationTone(allocationProgress);
         const trim = trimRecommendation(row, market);
         const tranches = num(row.target?.planned_tranches);
+        const canPlanBuy = ["stock", "etf"].includes(row.instrument.asset_type);
         return `<tr>
         <td><span class="cell-main">${esc(row.instrument.symbol)}</span><span class="cell-sub">${esc(row.instrument.display_name || row.instrument.asset_type)}</span></td>
         <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
         <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
         <td class="allocation-cell ${trim ? "is-over" : ""}"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track is-${allocationState} ${allocationProgress > 100 ? "is-over" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="${trim ? "negative" : "gold"}">${trim ? `${money(trim.excess)} over` : `${money(row.remaining)} left`}</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div>${trim ? `<div class="allocation-cell__advice"><strong>Suggested trim</strong><span>Sell ~${formatTradeQuantity(trim.quantity)} ${trim.unit}${trim.estimatedProceeds != null ? ` · about ${money(trim.estimatedProceeds)} at market` : ""} to return near ${percent(row.targetPercent)}.</span></div>` : ""}</td>
-        <td><div class="row-actions"><button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
+        <td><div class="row-actions">${canPlanBuy ? `<button class="button button--small button--plan-buy" type="button" data-action="buy-simulate" data-instrument-id="${row.id}">Plan buy</button>` : ""}<button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
       </tr>`;
       }).join("")}</tbody>
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
@@ -1316,7 +1382,8 @@
     viewRoot.innerHTML = `${pageHead("Connection issue", "The ledger could not be read.", friendlyError(error), '<button class="button button--primary" type="button" data-action="refresh">Try again</button>')}<div class="warning-box">No local financial copy was used. Fix the Supabase issue and refresh safely.</div>`;
   }
 
-  function openDialog({ kicker = "Dashboard action", title, body, submitLabel = "Save", onSubmit, danger = false, cancelLabel = "Cancel" }) {
+  function openDialog({ kicker = "Dashboard action", title, body, submitLabel = "Save", onSubmit, danger = false, cancelLabel = "Cancel", wide = false }) {
+    dialog.classList.toggle("dialog--wide", wide);
     $("#dialog-kicker").textContent = kicker;
     $("#dialog-title").textContent = title;
     $("#dialog-body").innerHTML = body;
@@ -1329,6 +1396,7 @@
 
   function closeDialog() {
     dialogSubmit = null;
+    dialog.classList.remove("dialog--wide");
     if (dialog.open) dialog.close();
   }
 
@@ -1379,12 +1447,9 @@
 
   function openCashDialog() {
     const portfolio = currentPortfolio();
-    const availableCash = Math.max(portfolioStats(portfolio).cash, 0);
-    const availableCashValue = availableCash.toFixed(8).replace(/\.?0+$/, "");
-    const availableCashDisplay = availableCash.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8 });
     openDialog({
       kicker: `${portfolio.name} · Draft → Confirm`, title: "Record cash movement", submitLabel: "Preview movement",
-      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><div class="trade-quantity-control"><input name="amount" type="number" min="0.00000001" step="0.00000001" required><button class="button button--primary button--sell-all" type="button" data-cash-withdraw-all hidden>Withdraw all</button></div></label></div><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Available to withdraw: <strong>$${availableCashDisplay}</strong>. Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
+      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required></label></div><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
       onSubmit: async (form) => {
         const draft = await rpc("api_create_cash_draft", {
           p_portfolio_id: portfolio.id, p_movement_type: form.get("type"), p_amount: num(form.get("amount")),
@@ -1393,22 +1458,6 @@
         openDraftConfirmation("cash movement", draft, (id, token) => rpc("api_confirm_cash_draft", { p_draft_id: id, p_confirmation_token: token }));
       }
     });
-    const body = $("#dialog-body");
-    const typeSelect = $('[name="type"]', body);
-    const amountInput = $('[name="amount"]', body);
-    const withdrawAllButton = $("[data-cash-withdraw-all]", body);
-    const syncWithdrawAll = () => {
-      const isWithdrawal = typeSelect.value === "withdrawal";
-      withdrawAllButton.hidden = !isWithdrawal;
-      withdrawAllButton.disabled = !isWithdrawal || availableCash <= 0;
-    };
-    typeSelect.addEventListener("change", syncWithdrawAll);
-    withdrawAllButton.addEventListener("click", () => {
-      amountInput.value = availableCashValue;
-      amountInput.dispatchEvent(new Event("input", { bubbles: true }));
-      amountInput.focus();
-    });
-    syncWithdrawAll();
   }
 
   function optionFields() {
@@ -1493,7 +1542,98 @@
     return state.instruments.filter((item) => ids.has(item.id)).map((item) => `<option value="${item.id}">${esc(item.symbol)} · ${esc(item.display_name || item.asset_type)}</option>`).join("");
   }
 
-  function openTradeDialog(sidePreset = "buy") {
+  function openBuySimulator(instrumentId) {
+    const portfolio = currentPortfolio();
+    const row = portfolioRows(portfolio).find((item) => item.id === instrumentId);
+    if (!row || !["stock", "etf"].includes(row.instrument.asset_type)) {
+      toast("Buy simulator is available for stocks and ETFs", true);
+      return;
+    }
+    const stats = portfolioStats(portfolio);
+    const market = latestPriceMap().get(instrumentId);
+    const defaultPrice = num(market?.price) || num(row.position?.average_cost);
+    const trancheCount = Math.max(num(row.target?.planned_tranches) || 3, 1);
+    const trancheAmount = row.quota > 0 ? row.quota / trancheCount : stats.cash / 3;
+    const targetRoom = Math.max(row.quota - row.deployed, 0);
+    const scenarios = [
+      { label: "1 tranche", amount: trancheAmount },
+      { label: "2 tranches", amount: trancheAmount * 2 },
+      { label: "To target", amount: targetRoom },
+      { label: "Custom", amount: Math.min(Math.max(trancheAmount, 0), Math.max(stats.cash, 0)) }
+    ];
+    openDialog({
+      kicker: `${portfolio.name} · No data is saved`,
+      title: `Plan a ${row.instrument.symbol} buy`,
+      cancelLabel: "Close",
+      wide: true,
+      body: `<div class="buy-simulator" data-buy-simulator data-instrument-id="${row.id}">
+        <div class="buy-simulator__position">
+          <div><small>Current position</small><strong>${formatTradeQuantity(row.position?.quantity)} shares</strong></div>
+          <div><small>Average cost</small><strong>${num(row.position?.quantity) > 0 ? money(row.position?.average_cost, 4) : "No position"}</strong></div>
+          <div><small>Amount used</small><strong>${money(row.deployed)}</strong></div>
+          <div><small>Allocation</small><strong>${percent(row.currentPercent, 2)} <span>/ ${percent(row.targetPercent)} target</span></strong></div>
+          <div><small>Cash available</small><strong class="gold">${money(stats.cash)}</strong></div>
+        </div>
+        <div class="buy-simulator__controls">
+          <label class="field"><span>Planned buy price</span><input data-sim-price type="number" min="0.0001" step="0.0001" value="${defaultPrice || ""}" placeholder="Enter a planned price"></label>
+          <label class="field"><span>Estimated fee</span><input data-sim-fee type="number" min="0" step="0.01" value="0"></label>
+          <div class="buy-simulator__quote"><span>${market ? instrumentPriceFreshness(market) : "No Webull price · using average cost"}</span><small>The planned price stays editable.</small></div>
+        </div>
+        <div class="buy-simulator__table" role="table" aria-label="Forward average scenarios">
+          <div class="buy-simulator__header" role="row"><span>Scenario / amount</span><span>Shares added</span><span>New average</span><span>Allocation after</span><span>Cash after</span><span></span></div>
+          ${scenarios.map((scenario) => `<div class="buy-simulator__row" role="row" data-sim-row>
+            <label><span>${scenario.label}</span><div class="money-input"><i>$</i><input data-sim-amount type="number" min="0" step="0.01" value="${num(scenario.amount).toFixed(2)}"></div></label>
+            <div data-sim-shares>—</div>
+            <div data-sim-average>—</div>
+            <div class="buy-simulator__allocation"><strong data-sim-allocation>—</strong><div class="allocation-track"><i></i></div><small data-sim-status>Enter a price</small></div>
+            <div data-sim-cash>—</div>
+            <button class="button button--small button--primary" type="button" data-sim-use>Use in Buy</button>
+          </div>`).join("")}
+        </div>
+        <p class="form-hint">Simulation only. Amount means stock value before fees. Nothing changes in Supabase until the normal Review → Confirm flow is completed.</p>
+      </div>`
+    });
+    const body = $("#dialog-body");
+    const priceInput = $("[data-sim-price]", body);
+    const feeInput = $("[data-sim-fee]", body);
+    const scenarioRows = $$("[data-sim-row]", body);
+    const renderScenario = (scenarioRow) => {
+      const amount = num($("[data-sim-amount]", scenarioRow)?.value);
+      const projection = buyProjection(portfolio, row, amount, num(priceInput?.value), num(feeInput?.value));
+      $("[data-sim-shares]", scenarioRow).textContent = projection.isValid ? `+${formatTradeQuantity(projection.addedShares)}` : "—";
+      $("[data-sim-average]", scenarioRow).textContent = projection.isValid ? money(projection.averageAfter, 4) : "—";
+      $("[data-sim-allocation]", scenarioRow).textContent = projection.isValid ? percent(projection.allocationAfter, 2) : "—";
+      $("[data-sim-cash]", scenarioRow).textContent = projection.isValid ? money(projection.cashAfter) : "—";
+      const track = $(".allocation-track", scenarioRow);
+      track.className = `allocation-track is-${projection.tone} ${projection.isOver ? "is-over" : ""}`;
+      track.style.setProperty("--current", `${clamp(projection.targetProgress, 0, 100)}%`);
+      const status = $("[data-sim-status]", scenarioRow);
+      status.textContent = !projection.isValid
+        ? "Enter an amount and price"
+        : !projection.hasCash
+          ? `Cash short ${money(Math.abs(projection.cashAfter))}`
+          : projection.isOver
+            ? `${money(projection.overage)} over target`
+            : `${money(projection.roomAfter)} room left`;
+      scenarioRow.classList.toggle("is-over", projection.isOver);
+      scenarioRow.classList.toggle("is-cash-short", !projection.hasCash);
+      const useButton = $("[data-sim-use]", scenarioRow);
+      useButton.disabled = !projection.isValid || !projection.hasCash;
+      useButton.onclick = () => openTradeDialog("buy", {
+        instrumentId: row.id,
+        quantity: projection.addedShares,
+        price: projection.price,
+        fee: projection.fee
+      });
+    };
+    const renderAll = () => scenarioRows.forEach(renderScenario);
+    priceInput?.addEventListener("input", renderAll);
+    feeInput?.addEventListener("input", renderAll);
+    scenarioRows.forEach((scenarioRow) => $("[data-sim-amount]", scenarioRow)?.addEventListener("input", () => renderScenario(scenarioRow)));
+    renderAll();
+  }
+
+  function openTradeDialog(sidePreset = "buy", prefills = null) {
     const portfolio = currentPortfolio();
     const options = portfolioInstrumentOptions(portfolio, sidePreset === "sell");
     if (!options) {
@@ -1504,7 +1644,7 @@
     const isOptions = portfolio.kind === "options";
     openDialog({
       kicker: `${portfolio.name} · Saved to Supabase`, title: `Record a ${sidePreset}`, submitLabel: `Review ${sidePreset}`,
-      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" required>${sidePreset === "sell" ? '<button class="button button--primary button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
+      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" required>${sidePreset === "sell" ? '<button class="button button--primary button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div>${sidePreset === "buy" && !isOptions ? '<div class="trade-projection" data-trade-projection></div>' : ""}<label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
         const instrumentId = form.get("instrument");
         const draft = await rpc("api_create_trade_draft", {
@@ -1525,10 +1665,34 @@
         openDraftConfirmation("trade fill", draft, (id, token) => rpc("api_confirm_trade_draft", { p_draft_id: id, p_confirmation_token: token }));
       }
     });
+    const tradeBody = $("#dialog-body");
+    const instrumentSelect = $('[name="instrument"]', tradeBody);
+    const quantityInput = $('[name="quantity"]', tradeBody);
+    const priceInput = $('[name="price"]', tradeBody);
+    const feeInput = $('[name="fee"]', tradeBody);
+    if (prefills?.instrumentId && [...instrumentSelect.options].some((option) => option.value === prefills.instrumentId)) instrumentSelect.value = prefills.instrumentId;
+    if (prefills?.quantity) quantityInput.value = Number(prefills.quantity.toFixed(8));
+    if (prefills?.price) priceInput.value = Number(prefills.price.toFixed(4));
+    if (prefills?.fee != null) feeInput.value = num(prefills.fee);
+    if (sidePreset === "buy" && !isOptions) {
+      const projectionRegion = $("[data-trade-projection]", tradeBody);
+      const renderTradeProjection = () => {
+        const row = portfolioRows(portfolio).find((item) => item.id === instrumentSelect.value);
+        if (!row) { projectionRegion.innerHTML = ""; return; }
+        const amount = num(quantityInput.value) * num(priceInput.value);
+        projectionRegion.innerHTML = buyProjectionSummary(
+          buyProjection(portfolio, row, amount, num(priceInput.value), num(feeInput.value)),
+          row
+        );
+      };
+      instrumentSelect.addEventListener("change", renderTradeProjection);
+      quantityInput.addEventListener("input", renderTradeProjection);
+      priceInput.addEventListener("input", renderTradeProjection);
+      feeInput.addEventListener("input", renderTradeProjection);
+      renderTradeProjection();
+    }
     if (sidePreset === "sell") {
-      const body = $("#dialog-body");
-      const instrumentSelect = $('[name="instrument"]', body);
-      const quantityInput = $('[name="quantity"]', body);
+      const body = tradeBody;
       const sellAllButton = $("[data-trade-sell-all]", body);
       const syncSellAll = () => {
         const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentSelect.value);
@@ -1623,6 +1787,7 @@
     else if (action === "asset-add") openAssetDialog();
     else if (action === "trade-add" || action === "trade-buy") openTradeDialog("buy");
     else if (action === "trade-sell") openTradeDialog("sell");
+    else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
     else if (action === "asset-remove") openRemoveAssetDialog(target.dataset.instrumentId);

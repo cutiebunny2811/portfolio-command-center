@@ -2036,11 +2036,15 @@
     openDialog({
       kicker: "Hermes · Scoped access", title: "Create agent token", submitLabel: "Create token",
       body: `<label class="field"><span>Token name</span><input name="name" maxlength="80" value="Hermes" required></label>
-        <label class="field"><span>Expires on</span><input name="expires" type="date" value="${expiry}" required></label>
+        <label class="field-check"><input name="no_expiry" type="checkbox" data-agent-token-no-expiry checked>Keep this token active until I revoke it</label>
+        <label class="field" data-agent-token-expiry><span>Expires on (optional)</span><input name="expires" type="date" value="${expiry}" disabled></label>
         <div class="preview-grid"><div class="preview-cell"><small>Read</small><strong>All dashboard pages</strong></div><div class="preview-cell"><small>Write</small><strong>Drafts + Watchlist only</strong></div></div>
-        <div class="warning-box">Hermes cannot confirm drafts, run SQL, edit balances directly, delete history, or place broker orders.</div>`,
+        <div class="warning-box">This token stays active until you revoke it from Account. Hermes cannot confirm drafts, run SQL, edit balances directly, delete history, or place broker orders.</div>`,
       onSubmit: async (form) => {
-        const expires = new Date(`${form.get("expires")}T23:59:59Z`).toISOString();
+        const permanent = form.get("no_expiry") === "on";
+        const expiryDate = String(form.get("expires") || "");
+        if (!permanent && !expiryDate) throw new Error("Choose an expiry date or keep the token active until revoked.");
+        const expires = permanent ? null : new Date(`${expiryDate}T23:59:59Z`).toISOString();
         const token = await rpc("api_create_agent_token", {
           p_name: form.get("name"),
           p_scopes: ["read", "drafts:write", "watchlist:write"],
@@ -2055,6 +2059,15 @@
         });
       }
     });
+    const noExpiry = $("[data-agent-token-no-expiry]", $("#dialog-body"));
+    const expiryField = $("[data-agent-token-expiry]", $("#dialog-body"));
+    const expiryInput = $("input[name=expires]", expiryField);
+    noExpiry?.addEventListener("change", () => {
+      const permanent = noExpiry.checked;
+      expiryInput.disabled = permanent;
+      expiryField.classList.toggle("is-disabled", permanent);
+    });
+    expiryField?.classList.add("is-disabled");
   }
 
   async function openAgentDraftReview(draftId) {

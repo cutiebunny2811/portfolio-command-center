@@ -146,6 +146,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .field-row--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-check { display: flex; align-items: center; gap: 9px; color: var(--paper-dim); }
 .field-check input { accent-color: var(--gold); }
+.field.is-disabled { opacity: .5; }
 .form-hint { margin: 6px 0 0; color: var(--paper-faint); font-size: 11px; }
 .form-error { min-height: 18px; margin: 0; color: var(--red-bright); font-size: 12px; }
 
@@ -558,6 +559,18 @@ tbody tr:last-child td { border-bottom: 0; }
 .dialog__actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--rule); padding: 16px 24px; }
 .dialog .form-error { padding: 0 24px; }
 .preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-left: 1px solid var(--rule); }
+.agent-access { display: grid; gap: 12px; border-top: 1px solid var(--rule); padding-top: 18px; }
+.agent-access__head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.agent-access__head--drafts { margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.agent-access__head h3 { margin: 2px 0 0; font-size: 20px; letter-spacing: -.035em; }
+.agent-access__head small,
+.agent-access__head > span { color: var(--muted); font: 9px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.agent-access__list { display: grid; border-top: 1px solid var(--rule); }
+.agent-access-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; border-bottom: 1px solid var(--rule); padding: 12px 0; }
+.agent-access-row > div { display: grid; gap: 3px; min-width: 0; }
+.agent-access-row strong { overflow-wrap: anywhere; }
+.agent-access-row small { color: var(--muted); font: 9px/1.4 var(--mono); letter-spacing: .04em; }
+.empty-note { margin: 0; padding: 14px 0; color: var(--muted); }
 .preview-cell { min-height: 80px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 14px; }
 .preview-cell small { display: block; color: var(--paper-faint); font: 9px/1.2 var(--mono); text-transform: uppercase; }
 .preview-cell strong { display: block; margin-top: 10px; font: 600 14px/1.2 var(--mono); overflow-wrap: anywhere; }

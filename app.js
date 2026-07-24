@@ -54,6 +54,7 @@
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false, marketPulseWindow: "1D",
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
+    agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 10,
     loading: false, lastSync: null
@@ -1981,11 +1982,99 @@
     });
   }
 
-  function openAccountDialog() {
+  function agentTokenStatus(token) {
+    if (token.revoked_at) return "Revoked";
+    if (token.expires_at && new Date(token.expires_at) <= new Date()) return "Expired";
+    return "Active";
+  }
+
+  async function openAccountDialog() {
+    let agentReady = true;
+    try {
+      const [tokens, drafts] = await Promise.all([
+        rpc("api_list_agent_tokens", {}),
+        rpc("api_list_agent_drafts", {})
+      ]);
+      state.agentTokens = tokens || [];
+      state.agentDrafts = drafts || [];
+    } catch (error) {
+      agentReady = false;
+      state.agentTokens = [];
+      state.agentDrafts = [];
+      console.warn(error);
+    }
+    const tokens = state.agentTokens.map((token) => `
+      <div class="agent-access-row">
+        <div><strong>${esc(token.name)}</strong><small>${esc(agentTokenStatus(token))} · ${esc((token.scopes || []).join(", "))}</small></div>
+        ${!token.revoked_at ? `<button class="button button--ghost button--small" type="button" data-action="agent-token-revoke" data-token-id="${esc(token.id)}">Revoke</button>` : ""}
+      </div>`).join("");
+    const drafts = state.agentDrafts.map((draft) => {
+      const portfolio = state.portfolios.find((item) => item.id === draft.portfolio_id);
+      return `<div class="agent-access-row">
+        <div><strong>${esc(String(draft.operation_type || "operation").replaceAll("_", " "))}</strong><small>${esc(portfolio?.name || "Portfolio")} · expires ${esc(new Date(draft.expires_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</small></div>
+        <button class="button button--primary button--small" type="button" data-action="agent-draft-review" data-draft-id="${esc(draft.id)}">Review</button>
+      </div>`;
+    }).join("");
     openDialog({
       kicker: "Authenticated session", title: "Account", submitLabel: "Sign out", danger: true,
-      body: `<div class="preview-grid"><div class="preview-cell"><small>Signed in as</small><strong>${esc(state.user?.email || "Supabase user")}</strong></div><div class="preview-cell"><small>Data source</small><strong>Supabase / RLS</strong></div></div><p class="form-hint">Financial records are not cached in this app. Signing out clears the active Supabase session from this device.</p>`,
+      body: `<div class="preview-grid"><div class="preview-cell"><small>Signed in as</small><strong>${esc(state.user?.email || "Supabase user")}</strong></div><div class="preview-cell"><small>Data source</small><strong>Supabase / RLS</strong></div></div>
+        <section class="agent-access">
+          <div class="agent-access__head"><div><small>HERMES / MCP</small><h3>Agent access</h3></div>${agentReady ? '<button class="button button--primary button--small" type="button" data-action="agent-token-create">New token</button>' : ""}</div>
+          ${agentReady ? `<p class="form-hint">Tokens are stored as hashes. The plaintext token appears once and belongs only in Hermes local secrets.</p>
+            <div class="agent-access__list">${tokens || '<p class="empty-note">No agent tokens yet.</p>'}</div>
+            <div class="agent-access__head agent-access__head--drafts"><div><small>HUMAN APPROVAL</small><h3>Agent drafts</h3></div><span>${state.agentDrafts.length} pending</span></div>
+            <div class="agent-access__list">${drafts || '<p class="empty-note">No pending agent drafts.</p>'}</div>`
+            : '<div class="warning-box">Hermes Agent API is not installed yet. Run 017_hermes_agent_api.sql in Supabase first.</div>'}
+        </section>
+        <p class="form-hint">Financial records are not cached in this app. Signing out clears the active Supabase session from this device.</p>`,
       onSubmit: async () => { await db.auth.signOut(); closeDialog(); showAuth(); }
+    });
+  }
+
+  function openCreateAgentTokenDialog() {
+    const expiry = new Date(Date.now() + 90 * 24 * 60 * 60_000).toISOString().slice(0, 10);
+    openDialog({
+      kicker: "Hermes · Scoped access", title: "Create agent token", submitLabel: "Create token",
+      body: `<label class="field"><span>Token name</span><input name="name" maxlength="80" value="Hermes" required></label>
+        <label class="field"><span>Expires on</span><input name="expires" type="date" value="${expiry}" required></label>
+        <div class="preview-grid"><div class="preview-cell"><small>Read</small><strong>All dashboard pages</strong></div><div class="preview-cell"><small>Write</small><strong>Drafts + Watchlist only</strong></div></div>
+        <div class="warning-box">Hermes cannot confirm drafts, run SQL, edit balances directly, delete history, or place broker orders.</div>`,
+      onSubmit: async (form) => {
+        const expires = new Date(`${form.get("expires")}T23:59:59Z`).toISOString();
+        const token = await rpc("api_create_agent_token", {
+          p_name: form.get("name"),
+          p_scopes: ["read", "drafts:write", "watchlist:write"],
+          p_expires_at: expires
+        });
+        openDialog({
+          kicker: "Shown once · Store locally", title: "Hermes token created", cancelLabel: "Done",
+          body: `<label class="field"><span>Agent token</span><textarea data-agent-token readonly rows="4">${esc(token.token)}</textarea></label>
+            <button class="button button--primary" type="button" data-action="agent-token-copy">Copy token</button>
+            <div class="warning-box">Paste this into Hermes as PCC_AGENT_TOKEN. Closing this window permanently hides the plaintext token.</div>`,
+          onSubmit: null
+        });
+      }
+    });
+  }
+
+  async function openAgentDraftReview(draftId) {
+    const draft = state.agentDrafts.find((item) => item.id === draftId);
+    if (!draft) { toast("Agent draft was not found or has expired", true); return; }
+    const portfolio = state.portfolios.find((item) => item.id === draft.portfolio_id);
+    openDialog({
+      kicker: `Hermes draft · ${esc(portfolio?.name || "Portfolio")}`,
+      title: `Confirm ${String(draft.operation_type || "operation").replaceAll("_", " ")}`,
+      submitLabel: "Confirm and post",
+      body: `<div class="preview-grid">${previewCells(draft.server_preview || {})}</div>
+        <div class="warning-box">Hermes prepared this draft but cannot post it. Supabase will recalculate every value atomically when you confirm.</div>`,
+      onSubmit: async () => {
+        const claim = await rpc("api_prepare_agent_draft_confirmation", { p_draft_id: draft.id });
+        const fn = draft.operation_type === "cash" ? "api_confirm_cash_draft" : "api_confirm_trade_draft";
+        await rpc(fn, { p_draft_id: draft.id, p_confirmation_token: claim.confirmation_token });
+        closeDialog();
+        toast("Agent draft confirmed");
+        await loadData({ quiet: true });
+      }
     });
   }
 
@@ -2043,7 +2132,19 @@
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "smart-money-side") { state.smartMoneySide = target.dataset.side || "all"; renderSmartMoney(); }
     else if (action === "smart-money-window") { state.smartMoneyWindow = num(target.dataset.days) || 30; renderSmartMoney(); }
-    else if (action === "account") openAccountDialog();
+    else if (action === "account") await openAccountDialog();
+    else if (action === "agent-token-create") openCreateAgentTokenDialog();
+    else if (action === "agent-token-copy") {
+      const token = $("[data-agent-token]")?.value || "";
+      await navigator.clipboard.writeText(token);
+      toast("Agent token copied");
+    }
+    else if (action === "agent-token-revoke") {
+      await rpc("api_revoke_agent_token", { p_token_id: target.dataset.tokenId });
+      toast("Agent token revoked");
+      await openAccountDialog();
+    }
+    else if (action === "agent-draft-review") await openAgentDraftReview(target.dataset.draftId);
     else if (action === "budget-edit") openBudgetDialog();
     else if (action === "cash-add") openCashDialog();
     else if (action === "asset-add") openAssetDialog();

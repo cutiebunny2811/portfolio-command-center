@@ -27,8 +27,9 @@
   }).format(num(value));
   const percent = (value, digits = 1) => `${num(value).toFixed(digits)}%`;
   const today = () => new Date().toISOString().slice(0, 10);
-  const localDateTime = () => {
-    const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
+  const localDateTime = (value = Date.now()) => {
+    const source = new Date(value);
+    const d = new Date(source.getTime() - source.getTimezoneOffset() * 60_000);
     return d.toISOString().slice(0, 16);
   };
   const uid = (prefix) => `${prefix}-${crypto.randomUUID()}`;
@@ -56,7 +57,7 @@
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
-    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 25, tradeHistoryQuery: "",
+    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 8, tradeHistoryQuery: "",
     loading: false, lastSync: null
   };
 
@@ -809,13 +810,13 @@
     const start = (state.tradeHistoryPage - 1) * state.tradeHistoryPageSize;
     const visible = rows.slice(start, start + state.tradeHistoryPageSize);
     if (!visible.length) return `<div class="empty-state"><div><strong>No matching transactions</strong>${query ? "Try another ticker." : "Confirmed buys and sells will appear here automatically."}</div></div>`;
-    return `<div class="table-shell"><table class="trade-history-table"><thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th><th>Price</th><th>Cash movement</th><th>Realized P/L</th></tr></thead><tbody>${visible.map((execution) => {
+    return `<div class="table-shell history-table-shell"><table class="trade-history-table"><thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th><th>Price</th><th>Cash movement</th><th>Realized P/L</th><th>Action</th></tr></thead><tbody>${visible.map((execution) => {
       const instrument = instruments.get(execution.instrument_id);
       const isSell = execution.side === "sell";
       const realized = num(execution.realized_pnl);
       const sign = realized > 0 ? "+" : "";
       const fallback = String.fromCharCode(8212);
-      return `<tr><td><span class="cell-main mono">${new Date(execution.executed_at).toLocaleDateString()}</span><span class="cell-sub">${new Date(execution.executed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></td><td><span class="status status--${isSell ? "risk" : "good"}">${isSell ? "SELL" : "BUY"}</span></td><td><span class="cell-main">${esc(instrument?.symbol || fallback)}</span><span class="cell-sub">${esc(instrument?.display_name || instrument?.asset_type || "")}</span></td><td><strong class="mono">${formatTradeQuantity(execution.quantity)}</strong></td><td><strong class="mono">${money(execution.price, 4)}</strong><span class="cell-sub">FEE ${money(execution.fee)}</span></td><td><strong class="mono ${isSell ? "positive" : "negative"}">${isSell ? "+" : ""}${money(execution.cash_effect)}</strong></td><td>${isSell ? `<strong class="mono ${realized >= 0 ? "positive" : "negative"}">${sign}${money(realized)}</strong>` : `<span class="cell-sub">On exit</span>`}</td></tr>`;
+      return `<tr><td><span class="cell-main mono">${new Date(execution.executed_at).toLocaleDateString()}</span><span class="cell-sub">${new Date(execution.executed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></td><td><span class="status status--${isSell ? "risk" : "good"}">${isSell ? "SELL" : "BUY"}</span></td><td><span class="cell-main">${esc(instrument?.symbol || fallback)}</span><span class="cell-sub">${esc(instrument?.display_name || instrument?.asset_type || "")}</span></td><td><strong class="mono">${formatTradeQuantity(execution.quantity)}</strong></td><td><strong class="mono">${money(execution.price, 4)}</strong><span class="cell-sub">FEE ${money(execution.fee)}</span></td><td><strong class="mono ${isSell ? "positive" : "negative"}">${isSell ? "+" : ""}${money(execution.cash_effect)}</strong></td><td>${isSell ? `<strong class="mono ${realized >= 0 ? "positive" : "negative"}">${sign}${money(realized)}</strong>` : `<span class="cell-sub">On exit</span>`}</td><td><button class="button button--small" type="button" data-action="trade-history-edit" data-execution-id="${execution.id}">Edit</button></td></tr>`;
     }).join("")}</tbody></table></div><div class="pagination"><span>${start + 1}-${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} transactions · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next</button></div></div>`;
   }
 
@@ -824,7 +825,7 @@
     state.tradeHistoryPage = 1;
     state.tradeHistoryQuery = "";
     openDialog({
-      kicker: `${portfolio.name} · Audit trail`, title: "Transaction history", cancelLabel: "Done", wide: true,
+      kicker: `${portfolio.name} · Audit trail`, title: "Transaction history", cancelLabel: "Done", wide: true, variant: "history",
       body: `<div class="history-commandbar"><label class="field"><span>Search ticker</span><input type="search" autocomplete="off" data-trade-history-search placeholder="RKLB, NVDA..."></label><span class="meta">Loads only the latest 200 transactions</span></div><div id="trade-history-region">${historyDialogMarkup(portfolio)}</div>`,
       onSubmit: null
     });
@@ -834,6 +835,40 @@
       state.tradeHistoryPage = 1;
       const region = $("#trade-history-region", $("#dialog-body"));
       if (region) region.innerHTML = historyDialogMarkup(portfolio);
+    });
+  }
+
+  function openExecutionEditDialog(executionId) {
+    const execution = state.executions.find((item) => item.id === executionId);
+    const instrument = instrumentMap().get(execution?.instrument_id);
+    const portfolio = state.portfolios.find((item) => item.id === execution?.portfolio_id);
+    if (!execution || !instrument || !portfolio) {
+      toast("Transaction could not be loaded", true);
+      return;
+    }
+    openDialog({
+      kicker: `${portfolio.name} · Audited correction`,
+      title: `Edit ${instrument.symbol} ${String(execution.side).toUpperCase()}`,
+      submitLabel: "Save correction",
+      danger: true,
+      body: `<div class="warning-box">This corrects the confirmed record, then rebuilds this ticker's weighted-average cost, cash effect and realized P/L in chronological order.</div>
+        <div class="field-row"><label class="field"><span>Quantity</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" value="${esc(execution.quantity)}" required></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" value="${esc(execution.price)}" required></label></div>
+        <div class="field-row"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="0.01" value="${esc(execution.fee)}" required></label><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime(execution.executed_at)}" required></label></div>
+        <label class="field"><span>Reason for correction</span><textarea name="reason" maxlength="500" placeholder="Wrong quantity, price, fee or date..." required></textarea></label>`,
+      onSubmit: async (form) => {
+        await rpc("api_correct_execution", {
+          p_execution_id: execution.id,
+          p_quantity: num(form.get("quantity")),
+          p_price: num(form.get("price")),
+          p_fee: num(form.get("fee")),
+          p_executed_at: new Date(form.get("executed")).toISOString(),
+          p_reason: form.get("reason")
+        });
+        closeDialog();
+        toast(`${instrument.symbol} history corrected`);
+        await loadData({ quiet: true });
+        openExecutionHistoryDialog();
+      }
     });
   }
 
@@ -1005,20 +1040,25 @@
     const byId = new Map(rows.map((item) => [item.instrument_id, item]));
     const quickIds = [state.selectedWatchlistInstrumentId, ...state.watchlistRecentIds].filter(Boolean);
     const quickRows = quickIds.map((id) => byId.get(id)).filter(Boolean);
-    return { query: "", matchCount: rows.length, rows: [...new Map(quickRows.map((item) => [item.instrument_id, item])).values()].slice(0, 6) };
+    const ordered = [...quickRows, ...rows].filter((item, index, list) =>
+      list.findIndex((candidate) => candidate.instrument_id === item.instrument_id) === index);
+    return { query: "", matchCount: rows.length, rows: ordered };
   }
 
   function watchlistRowsMarkup(rows, selected) {
     const visible = watchlistVisibleRows(rows);
     const label = visible.query ? `${visible.matchCount} match${visible.matchCount === 1 ? "" : "es"}` : "Quick view";
     if (!visible.rows.length) return `<div class="watchlist-list-empty">No ticker matches “${esc(state.watchlistSearch)}”.</div>`;
-    return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Scroll matches" : "Last viewed / newest"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
+    return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Scroll matches" : "Recent first · scroll all"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
       const isSelected = item.instrument_id === selected?.instrument_id;
-      return `<button type="button" class="watchlist-row ${isSelected ? "is-active" : ""}" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
-        ${assetIdentity(item.instrument)}
-        <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
-        <i aria-hidden="true">↗</i>
-      </button>`;
+      return `<div class="watchlist-row ${isSelected ? "is-active" : ""}">
+        <button type="button" class="watchlist-row__open" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
+          ${assetIdentity(item.instrument)}
+          <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
+          <i aria-hidden="true">↗</i>
+        </button>
+        <button type="button" class="watchlist-row__remove" data-action="watchlist-remove" data-instrument-id="${item.instrument_id}" aria-label="Remove ${esc(item.instrument.symbol)} from watchlist">×</button>
+      </div>`;
     }).join("")}</div>`;
   }
 
@@ -1651,8 +1691,9 @@
     viewRoot.innerHTML = `${pageHead("Connection issue", "The ledger could not be read.", friendlyError(error), '<button class="button button--primary" type="button" data-action="refresh">Try again</button>')}<div class="warning-box">No local financial copy was used. Fix the Supabase issue and refresh safely.</div>`;
   }
 
-  function openDialog({ kicker = "Dashboard action", title, body, submitLabel = "Save", onSubmit, danger = false, cancelLabel = "Cancel", wide = false }) {
+  function openDialog({ kicker = "Dashboard action", title, body, submitLabel = "Save", onSubmit, danger = false, cancelLabel = "Cancel", wide = false, variant = "" }) {
     dialog.classList.toggle("dialog--wide", wide);
+    dialog.classList.toggle("dialog--history", variant === "history");
     $("#dialog-kicker").textContent = kicker;
     $("#dialog-title").textContent = title;
     $("#dialog-body").innerHTML = body;
@@ -1665,7 +1706,7 @@
 
   function closeDialog() {
     dialogSubmit = null;
-    dialog.classList.remove("dialog--wide");
+    dialog.classList.remove("dialog--wide", "dialog--history");
     if (dialog.open) dialog.close();
   }
 
@@ -2189,6 +2230,7 @@
     else if (action === "trade-sell") openTradeDialog("sell");
     else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
     else if (action === "execution-history") openExecutionHistoryDialog();
+    else if (action === "trade-history-edit") openExecutionEditDialog(target.dataset.executionId);
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
     else if (action === "asset-remove") openRemoveAssetDialog(target.dataset.instrumentId);

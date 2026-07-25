@@ -57,7 +57,7 @@
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
-    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 8, tradeHistoryQuery: "",
+    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
     loading: false, lastSync: null
   };
 

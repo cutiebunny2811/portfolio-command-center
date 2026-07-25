@@ -56,7 +56,7 @@
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
-    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 10,
+    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 25, tradeHistoryQuery: "",
     loading: false, lastSync: null
   };
 
@@ -183,9 +183,13 @@
     const marketValue = positions.reduce((sum, item) => {
       const price = prices.get(item.instrument_id);
       const instrument = instruments.get(item.instrument_id);
-      return sum + (price ? num(price.price) * num(item.quantity) * num(instrument?.multiplier || 1) : 0);
+      const currentValue = price ? num(price.price) * num(item.quantity) * num(instrument?.multiplier || 1) : num(item.cost_basis);
+      return sum + currentValue;
     }, 0);
-    return { positions, cash, deployed, budget, capital, remaining, utilization, marketValue };
+    const currentEquity = cash + marketValue;
+    const returnAmount = currentEquity - capital;
+    const returnPercent = capital > 0 ? returnAmount / capital * 100 : 0;
+    return { positions, cash, deployed, budget, capital, remaining, utilization, marketValue, currentEquity, returnAmount, returnPercent };
   }
 
   function combinedStats() {
@@ -612,7 +616,7 @@
         query("Instruments", db.from("instruments").select("*").order("symbol")),
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
         query("Position capacity", db.from("position_capacity").select("*")),
-        query("Sell history", db.from("executions").select("id,portfolio_id,instrument_id,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").eq("side", "sell").order("executed_at", { ascending: false }).limit(200)),
+        query("Transaction history", db.from("executions").select("id,portfolio_id,instrument_id,side,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").order("executed_at", { ascending: false }).limit(200)),
         query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
@@ -717,6 +721,7 @@
                 <div><small>Total capital</small><strong>${money(stats.capital)}</strong></div>
                 <div><small>Invested</small><strong>${money(stats.deployed)}</strong></div>
                 <div><small>Remaining</small><strong>${money(stats.cash)}</strong></div>
+                <div class="portfolio-card__return ${stats.returnAmount > 0 ? "positive" : stats.returnAmount < 0 ? "negative" : ""}"><small>Portfolio return</small><strong>${stats.returnAmount > 0 ? "+" : ""}${percent(stats.returnPercent, 2)}</strong></div>
               </div>
               <div><div class="meter ${plan.isOver ? "is-risk" : plan.isComplete ? "is-complete" : ""}" style="--meter:${clamp(plan.planned, 0, 100)}%"><i></i></div><p class="meta">${percent(plan.planned)} planned · ${percent(plan.unallocated)} stays as cash</p></div>
             </button>`;
@@ -792,23 +797,44 @@
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
   }
 
-  function sellHistoryTable(portfolio) {
+  function historyDialogMarkup(portfolio) {
     const instruments = instrumentMap();
-    const rows = state.executions.filter((item) => item.portfolio_id === portfolio.id);
+    const query = state.tradeHistoryQuery.trim().toLowerCase();
+    const rows = state.executions.filter((item) => {
+      const instrument = instruments.get(item.instrument_id);
+      return item.portfolio_id === portfolio.id && (!query || `${instrument?.symbol || ""} ${instrument?.display_name || ""}`.toLowerCase().includes(query));
+    });
     const pages = Math.max(1, Math.ceil(rows.length / state.tradeHistoryPageSize));
     state.tradeHistoryPage = clamp(state.tradeHistoryPage, 1, pages);
     const start = (state.tradeHistoryPage - 1) * state.tradeHistoryPageSize;
     const visible = rows.slice(start, start + state.tradeHistoryPageSize);
-    if (!visible.length) return `<div class="empty-state"><div><strong>No completed sells yet</strong>Confirmed partial and full exits will appear here automatically.</div></div>`;
-    return `<div class="table-shell"><table class="trade-history-table">
-      <thead><tr><th>Date</th><th>Asset</th><th>Quantity</th><th>Sell price</th><th>Net proceeds</th><th>Realized P/L</th></tr></thead>
-      <tbody>${visible.map((execution) => {
-        const instrument = instruments.get(execution.instrument_id);
-        const realized = num(execution.realized_pnl);
-        const sign = realized > 0 ? "+" : "";
-        return `<tr><td><span class="cell-main mono">${new Date(execution.executed_at).toLocaleDateString()}</span><span class="cell-sub">${new Date(execution.executed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></td><td><span class="cell-main">${esc(instrument?.symbol || "—")}</span><span class="cell-sub">${esc(instrument?.display_name || instrument?.asset_type || "")}</span></td><td><strong class="mono">${formatTradeQuantity(execution.quantity)}</strong></td><td><strong class="mono">${money(execution.price, 4)}</strong></td><td><strong class="mono">${money(execution.cash_effect)}</strong><span class="cell-sub">FEE ${money(execution.fee)}</span></td><td><strong class="mono ${realized >= 0 ? "positive" : "negative"}">${sign}${money(realized)}</strong></td></tr>`;
-      }).join("")}</tbody>
-    </table></div><div class="pagination"><span>${start + 1}–${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} sells · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>← Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
+    if (!visible.length) return `<div class="empty-state"><div><strong>No matching transactions</strong>${query ? "Try another ticker." : "Confirmed buys and sells will appear here automatically."}</div></div>`;
+    return `<div class="table-shell"><table class="trade-history-table"><thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th><th>Price</th><th>Cash movement</th><th>Realized P/L</th></tr></thead><tbody>${visible.map((execution) => {
+      const instrument = instruments.get(execution.instrument_id);
+      const isSell = execution.side === "sell";
+      const realized = num(execution.realized_pnl);
+      const sign = realized > 0 ? "+" : "";
+      const fallback = String.fromCharCode(8212);
+      return `<tr><td><span class="cell-main mono">${new Date(execution.executed_at).toLocaleDateString()}</span><span class="cell-sub">${new Date(execution.executed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></td><td><span class="status status--${isSell ? "risk" : "good"}">${isSell ? "SELL" : "BUY"}</span></td><td><span class="cell-main">${esc(instrument?.symbol || fallback)}</span><span class="cell-sub">${esc(instrument?.display_name || instrument?.asset_type || "")}</span></td><td><strong class="mono">${formatTradeQuantity(execution.quantity)}</strong></td><td><strong class="mono">${money(execution.price, 4)}</strong><span class="cell-sub">FEE ${money(execution.fee)}</span></td><td><strong class="mono ${isSell ? "positive" : "negative"}">${isSell ? "+" : ""}${money(execution.cash_effect)}</strong></td><td>${isSell ? `<strong class="mono ${realized >= 0 ? "positive" : "negative"}">${sign}${money(realized)}</strong>` : `<span class="cell-sub">On exit</span>`}</td></tr>`;
+    }).join("")}</tbody></table></div><div class="pagination"><span>${start + 1}-${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} transactions · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next</button></div></div>`;
+  }
+
+  function openExecutionHistoryDialog() {
+    const portfolio = currentPortfolio();
+    state.tradeHistoryPage = 1;
+    state.tradeHistoryQuery = "";
+    openDialog({
+      kicker: `${portfolio.name} · Audit trail`, title: "Transaction history", cancelLabel: "Done", wide: true,
+      body: `<div class="history-commandbar"><label class="field"><span>Search ticker</span><input type="search" autocomplete="off" data-trade-history-search placeholder="RKLB, NVDA..."></label><span class="meta">Loads only the latest 200 transactions</span></div><div id="trade-history-region">${historyDialogMarkup(portfolio)}</div>`,
+      onSubmit: null
+    });
+    const search = $("[data-trade-history-search]", $("#dialog-body"));
+    search?.addEventListener("input", () => {
+      state.tradeHistoryQuery = search.value;
+      state.tradeHistoryPage = 1;
+      const region = $("#trade-history-region", $("#dialog-body"));
+      if (region) region.innerHTML = historyDialogMarkup(portfolio);
+    });
   }
 
   function renderPortfolio() {
@@ -819,6 +845,7 @@
     viewRoot.innerHTML = `
       ${pageHead(`${portfolio.name} · ${portfolio.allocation_basis === "maximum_loss" ? "Maximum loss basis" : "Cost basis"}`, portfolio.name, "Record what you bought or sold, then use the 100% plan to see how much room remains for each ticker.", `
         <button class="button button--ghost" type="button" data-action="cash-add">Add / withdraw money</button>
+        <button class="button button--ghost" type="button" data-action="execution-history">History</button>
         <button class="button button--ghost" type="button" data-action="trade-sell">Sell</button>
         <button class="button button--ghost" type="button" data-action="trade-buy">Buy</button>
         <button class="button button--primary" type="button" data-action="asset-add">+ Add to plan</button>`)}
@@ -837,10 +864,7 @@
         <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${portfolio.kind === "options" ? "Options use manual prices" : esc(priceFreshnessLabel())}</span><button class="button button--small" type="button" data-action="${portfolio.kind === "options" ? "refresh" : "price-refresh"}">${portfolio.kind === "options" ? "Refresh data" : "Update prices"}</button></div></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
       </section>
-      <section class="section">
-        <div class="section-head"><div><span class="section-index">02 / SELL HISTORY</span><h2>Completed exits.</h2></div><p>Partial and full sells · newest first</p></div>
-        <div id="trade-history-region">${sellHistoryTable(portfolio)}</div>
-      </section>`;
+      `;
     const search = $("#holding-search");
     search?.addEventListener("input", () => {
       state.holdingsQuery = search.value;
@@ -977,7 +1001,7 @@
   function watchlistVisibleRows(rows) {
     const query = state.watchlistSearch.trim().toLowerCase();
     const matches = query ? rows.filter((item) => [item.instrument.symbol, item.instrument.display_name, item.instrument.asset_type].some((value) => String(value || "").toLowerCase().includes(query))) : rows;
-    if (query) return { query, matchCount: matches.length, rows: matches.slice(0, 8) };
+    if (query) return { query, matchCount: matches.length, rows: matches };
     const byId = new Map(rows.map((item) => [item.instrument_id, item]));
     const quickIds = [state.selectedWatchlistInstrumentId, ...state.watchlistRecentIds].filter(Boolean);
     const quickRows = quickIds.map((id) => byId.get(id)).filter(Boolean);
@@ -988,7 +1012,7 @@
     const visible = watchlistVisibleRows(rows);
     const label = visible.query ? `${visible.matchCount} match${visible.matchCount === 1 ? "" : "es"}` : "Quick view";
     if (!visible.rows.length) return `<div class="watchlist-list-empty">No ticker matches “${esc(state.watchlistSearch)}”.</div>`;
-    return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Showing first 8" : "Last viewed / newest"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
+    return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Scroll matches" : "Last viewed / newest"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
       const isSelected = item.instrument_id === selected?.instrument_id;
       return `<button type="button" class="watchlist-row ${isSelected ? "is-active" : ""}" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
         ${assetIdentity(item.instrument)}
@@ -2164,6 +2188,7 @@
     else if (action === "trade-add" || action === "trade-buy") openTradeDialog("buy");
     else if (action === "trade-sell") openTradeDialog("sell");
     else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
+    else if (action === "execution-history") openExecutionHistoryDialog();
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
     else if (action === "asset-remove") openRemoveAssetDialog(target.dataset.instrumentId);
@@ -2181,8 +2206,8 @@
     }
     else if (action === "trade-history-prev" || action === "trade-history-next") {
       state.tradeHistoryPage += action === "trade-history-next" ? 1 : -1;
-      $("#trade-history-region").innerHTML = sellHistoryTable(currentPortfolio());
-      $("#trade-history-region")?.scrollIntoView({ block: "start" });
+      const region = $("#trade-history-region", $("#dialog-body"));
+      if (region) region.innerHTML = historyDialogMarkup(currentPortfolio());
     }
   }
 

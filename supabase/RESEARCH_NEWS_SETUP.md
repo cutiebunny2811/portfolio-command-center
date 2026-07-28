@@ -11,15 +11,15 @@ the signed-in user's tracked universe:
 There is intentionally no AI score and no quarterly financial-statement
 calculation in V1.
 
-The article layer is source-agnostic. The collector uses Massive News and the
-official SEC EDGAR current 8-K feed. Additional source adapters can be added later without changing
+The article layer is source-agnostic. The collector uses Massive News and Massive's SEC EDGAR
+8-K text endpoint; every filing keeps its original SEC.gov filing URL. Additional source adapters can be added later without changing
 the read/save/hide workflow or duplicating per-user article content.
 
 ## Install
 
 1. Run `supabase/021_research_news.sql` once in the Supabase SQL Editor.
 2. Run `supabase/022_research_ticker_search.sql` to make search exact and ticker-only.
-3. Reuse the existing `MASSIVE_API_KEY` Edge Function secret. SEC requires no API key.
+3. Reuse the existing `MASSIVE_API_KEY` Edge Function secret for both news and SEC 8-K data.
 4. Add a long random `RESEARCH_SYNC_SECRET` for scheduled collector calls.
 5. Deploy the collector:
 

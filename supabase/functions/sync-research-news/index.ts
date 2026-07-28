@@ -7,13 +7,9 @@ const corsHeaders = {
 };
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const massiveNewsUrl = "https://api.massive.com/v2/reference/news";
-const secTickerIndexUrl =
-  "https://cdn.jsdelivr.net/gh/jadchaar/sec-cik-mapper@main/mappings/stocks/ticker_to_cik.json";
-const secCurrentFilingsUrl = "https://www.sec.gov/cgi-bin/browse-edgar";
-const secUserAgent = "PortfolioCommandCenter/1.0 cutiebunny2811@users.noreply.github.com";
+const massive8KUrl = "https://api.massive.com/stocks/filings/8-K/vX/text";
 const regularLookbackHours = 72;
 const maxPages = 5;
-const secMaxPages = 5;
 
 type InstrumentScope = {
   userId: string;
@@ -38,14 +34,14 @@ type MassiveNews = Record<string, unknown> & {
   };
 };
 
-type SecFiling = {
-  accession: string;
-  cik: string;
-  company: string;
-  canonicalUrl: string;
-  filingDate: string | null;
-  publishedAt: string;
-  form: string;
+type Massive8K = Record<string, unknown> & {
+  accession_number?: string;
+  cik?: string;
+  filing_date?: string;
+  filing_url?: string;
+  form_type?: string;
+  items_text?: string;
+  ticker?: string;
 };
 
 function response(payload: unknown, status = 200): Response {
@@ -110,95 +106,37 @@ async function fetchMassiveNews(apiKey: string, since: string): Promise<MassiveN
   return rows;
 }
 
-function decodeXml(value: string): string {
-  return value
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
-}
+async function fetchMassive8K(apiKey: string, trackedSymbols: Set<string>, since: string): Promise<Massive8K[]> {
+  const filings: Massive8K[] = [];
+  let nextUrl: string | null = massive8KUrl;
+  let page = 0;
+  const sinceDate = since.slice(0, 10);
 
-function xmlTag(entry: string, tag: string): string {
-  const match = entry.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
-  return decodeXml(match?.[1]?.trim() || "");
-}
-
-function secHeaders(): HeadersInit {
-  return {
-    Accept: "application/atom+xml, application/json;q=0.9, */*;q=0.1",
-    "User-Agent": secUserAgent,
-  };
-}
-
-async function fetchSecCikSymbols(trackedSymbols: Set<string>): Promise<Map<string, string[]>> {
-  const result = await fetch(secTickerIndexUrl, { headers: { Accept: "application/json" } });
-  if (!result.ok) throw new Error(`SEC ticker mapping request failed: HTTP ${result.status}`);
-  const payload = await result.json() as Record<string, string | number>;
-  const symbolsByCik = new Map<string, string[]>();
-  for (const [ticker, rawCik] of Object.entries(payload || {})) {
-    const symbol = normalizedSymbol(ticker);
-    const cik = String(rawCik || "").padStart(10, "0");
-    if (!symbol || !trackedSymbols.has(symbol) || !/^\d{10}$/.test(cik)) continue;
-    symbolsByCik.set(cik, [...new Set([...(symbolsByCik.get(cik) || []), symbol])]);
-  }
-  return symbolsByCik;
-}
-
-function parseSecAtom(xml: string): SecFiling[] {
-  const filings: SecFiling[] = [];
-  for (const match of xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)) {
-    const entry = match[1];
-    const title = xmlTag(entry, "title");
-    const summary = xmlTag(entry, "summary");
-    const publishedAt = xmlTag(entry, "updated") || xmlTag(entry, "published");
-    const id = xmlTag(entry, "id");
-    const href = decodeXml(entry.match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*>/i)?.[1] || "");
-    const accession = id.match(/accession-number=([0-9-]+)/i)?.[1]
-      || href.match(/([0-9]{10}-[0-9]{2}-[0-9]{6})/)?.[1]
-      || "";
-    const cik = title.match(/\((\d{10})\)(?:\s+\([^)]+\))?\s*$/)?.[1]
-      || href.match(/\/data\/(\d+)\//)?.[1]?.padStart(10, "0")
-      || "";
-    const form = title.match(/^(8-K(?:\/A)?)/i)?.[1]?.toUpperCase() || "8-K";
-    const company = title
-      .replace(/^8-K(?:\/A)?\s*-\s*/i, "")
-      .replace(/\s+\(\d{10}\)(?:\s+\([^)]+\))?\s*$/, "")
-      .trim();
-    const filingDate = summary.match(/Filed:\s*<\/b>\s*([0-9-]+)/i)?.[1]
-      || summary.match(/Filed:\s*([0-9-]+)/i)?.[1]
-      || null;
-    if (!accession || !cik || !company || !href || !publishedAt) continue;
-    filings.push({ accession, cik, company, canonicalUrl: href, filingDate, publishedAt, form });
+  while (nextUrl && page < maxPages) {
+    const url = new URL(nextUrl);
+    if (url.hostname !== "api.massive.com") throw new Error("Massive returned an unexpected 8-K pagination host");
+    if (page === 0) {
+      url.searchParams.set("filing_date.gte", sinceDate);
+      url.searchParams.set("form_type", "8-K");
+      url.searchParams.set("sort", "filing_date.desc");
+      url.searchParams.set("limit", "100");
+    }
+    url.searchParams.set("apiKey", apiKey);
+    const result = await fetch(url, { headers: { Accept: "application/json" } });
+    const payload = await result.json().catch(() => null) as { results?: unknown[]; next_url?: string } | null;
+    if (!result.ok) {
+      const detail = payload ? JSON.stringify(payload).slice(0, 500) : `HTTP ${result.status}`;
+      throw new Error(`Massive SEC 8-K request failed: ${detail}`);
+    }
+    for (const item of payload?.results || []) {
+      if (!item || typeof item !== "object") continue;
+      const filing = item as Massive8K;
+      if (trackedSymbols.has(normalizedSymbol(filing.ticker))) filings.push(filing);
+    }
+    nextUrl = payload?.next_url || null;
+    page += 1;
   }
   return filings;
-}
-
-async function fetchSec8K(symbolsByCik: Map<string, string[]>, since: string): Promise<SecFiling[]> {
-  if (!symbolsByCik.size) return [];
-  const filings: SecFiling[] = [];
-  const cutoff = new Date(since).getTime();
-  for (let page = 0; page < secMaxPages; page += 1) {
-    const url = new URL(secCurrentFilingsUrl);
-    url.searchParams.set("action", "getcurrent");
-    url.searchParams.set("type", "8-K");
-    url.searchParams.set("company", "");
-    url.searchParams.set("dateb", "");
-    url.searchParams.set("owner", "include");
-    url.searchParams.set("start", String(page * 100));
-    url.searchParams.set("count", "100");
-    url.searchParams.set("output", "atom");
-    const result = await fetch(url, { headers: secHeaders() });
-    if (!result.ok) throw new Error(`SEC 8-K feed request failed: HTTP ${result.status}`);
-    const pageFilings = parseSecAtom(await result.text());
-    filings.push(...pageFilings.filter((filing) => symbolsByCik.has(filing.cik)));
-    const oldest = pageFilings.reduce((value, filing) => Math.min(value, new Date(filing.publishedAt).getTime()), Number.POSITIVE_INFINITY);
-    if (!pageFilings.length || oldest <= cutoff) break;
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  return filings.filter((filing) => new Date(filing.publishedAt).getTime() >= cutoff);
 }
 
 async function storeArticlesAndMatches(
@@ -362,23 +300,26 @@ Deno.serve(async (request) => {
     let secError: string | null = null;
     try {
       const trackedSymbols = new Set(scopeBySymbol.keys());
-      const symbolsByCik = await fetchSecCikSymbols(trackedSymbols);
-      const secFilings = await fetchSec8K(symbolsByCik, since);
+      const secFilings = await fetchMassive8K(apiKey, trackedSymbols, since);
       secChecked = secFilings.length;
       secRows = secFilings.map((filing) => {
-        const tickers = symbolsByCik.get(filing.cik) || [];
+        const ticker = normalizedSymbol(filing.ticker);
+        const filingDate = String(filing.filing_date || "").trim();
+        const publishedAt = filingDate ? `${filingDate}T00:00:00.000Z` : new Date().toISOString();
+        const itemsText = String(filing.items_text || "").replace(/\s+/g, " ").trim();
+        const form = String(filing.form_type || "8-K").trim().toUpperCase();
         return {
           source: "sec-8k",
-          source_article_id: filing.accession,
-          canonical_url: filing.canonicalUrl,
-          title: `${filing.form} · ${filing.company}`,
-          description: `Official SEC current report${filing.filingDate ? ` filed ${filing.filingDate}` : ""}. Open the filing to review the reported items and exhibits.`,
+          source_article_id: String(filing.accession_number || `${ticker}-${filingDate}`),
+          canonical_url: String(filing.filing_url || "https://www.sec.gov/edgar/search/"),
+          title: `${ticker} filed ${form}`,
+          description: itemsText.slice(0, 900) || `Official SEC current report${filingDate ? ` filed ${filingDate}` : ""}. Open the filing to review the reported items and exhibits.`,
           publisher_name: "SEC EDGAR",
           publisher_homepage_url: "https://www.sec.gov/edgar/search/",
           publisher_logo_url: null,
-          published_at: filing.publishedAt,
-          tickers,
-          keywords: ["SEC", filing.form, "Current report"],
+          published_at: publishedAt,
+          tickers: [ticker],
+          keywords: ["SEC", form, "Current report"],
           raw_payload: filing,
           updated_at: new Date().toISOString(),
         };

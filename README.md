@@ -28,6 +28,23 @@ supabase/011_watchlist.sql
 supabase/015_market_pulse.sql
 ```
 
+### News + SEC 8-K
+
+Run [`supabase/021_research_news.sql`](supabase/021_research_news.sql) and
+[`supabase/022_research_ticker_search.sql`](supabase/022_research_ticker_search.sql),
+then deploy `sync-research-news`. News is deliberately source-first:
+
+- `All` covers news matched to tracked stocks and ETFs.
+- `Unread` is the reading queue.
+- `Portfolio` keeps only names currently held.
+- `Saved` is the user's bookmark shelf.
+
+V1 does not calculate fundamentals, rank high-signal stories, or call an AI
+model. Articles are deduplicated by provider ID, user state is stored
+separately, and the dashboard requests only 25 stories at a time. Full setup is
+documented in
+[`supabase/RESEARCH_NEWS_SETUP.md`](supabase/RESEARCH_NEWS_SETUP.md).
+
 ## Webull stock prices
 
 `supabase/functions/refresh-stock-prices` refreshes active stock and ETF prices through the Webull Snapshot API. Options are intentionally excluded. The dashboard calls it when the app opens, when the user requests a refresh, and every 15 minutes while the app remains open. The Edge Function ignores prices that are already less than 15 minutes old unless a manual refresh is requested.
@@ -70,3 +87,28 @@ Adding or removing a Watchlist name triggers a targeted Market Pulse refresh. Th
 This is a static app. Publish the repository root with GitHub Pages from the `main` branch.
 
 For a local visual preview with sample-only data, run `node dev-server.mjs` and open `http://127.0.0.1:4173/?preview=1`. The preview path is available only on localhost.
+
+## Hermes / MCP access
+
+Hermes connects to data, not dashboard files:
+
+```text
+Hermes -> local stdio MCP -> portfolio-agent-api -> Supabase
+```
+
+Run [`supabase/017_hermes_agent_api.sql`](supabase/017_hermes_agent_api.sql),
+then deploy both Edge Functions:
+
+```bash
+supabase functions deploy portfolio-agent-api --project-ref zzynqlqnzdhkffvqvpzt
+supabase functions deploy refresh-stock-prices --project-ref zzynqlqnzdhkffvqvpzt
+```
+
+Open `Account > New token` in the dashboard. The plaintext token is shown once;
+store it as `PCC_AGENT_TOKEN` in Hermes' local secrets. The adapter and example
+configuration are in [`hermes-mcp`](hermes-mcp).
+
+The MCP tools can read every dashboard area, manage the separate Watchlist, and
+create expiring trade/cash drafts. They cannot confirm drafts, run SQL, edit
+balances directly, delete history, or place broker orders. Confirm pending
+Hermes drafts from `Account > Agent drafts`.

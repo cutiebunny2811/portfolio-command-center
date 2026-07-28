@@ -7,8 +7,12 @@ const corsHeaders = {
 };
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const massiveNewsUrl = "https://api.massive.com/v2/reference/news";
+const secTickerIndexUrl = "https://www.sec.gov/files/company_tickers.json";
+const secCurrentFilingsUrl = "https://www.sec.gov/cgi-bin/browse-edgar";
+const secUserAgent = "PortfolioCommandCenter/1.0 contact https://github.com/cutiebunny2811/portfolio-command-center";
 const regularLookbackHours = 72;
 const maxPages = 5;
+const secMaxPages = 5;
 
 type InstrumentScope = {
   userId: string;
@@ -31,6 +35,16 @@ type MassiveNews = Record<string, unknown> & {
     homepage_url?: string;
     logo_url?: string;
   };
+};
+
+type SecFiling = {
+  accession: string;
+  cik: string;
+  company: string;
+  canonicalUrl: string;
+  filingDate: string | null;
+  publishedAt: string;
+  form: string;
 };
 
 function response(payload: unknown, status = 200): Response {
@@ -93,6 +107,146 @@ async function fetchMassiveNews(apiKey: string, since: string): Promise<MassiveN
     page += 1;
   }
   return rows;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
+}
+
+function xmlTag(entry: string, tag: string): string {
+  const match = entry.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return decodeXml(match?.[1]?.trim() || "");
+}
+
+function secHeaders(): HeadersInit {
+  return {
+    Accept: "application/atom+xml, application/json;q=0.9, */*;q=0.1",
+    "User-Agent": secUserAgent,
+  };
+}
+
+async function fetchSecCikSymbols(trackedSymbols: Set<string>): Promise<Map<string, string[]>> {
+  const result = await fetch(secTickerIndexUrl, { headers: secHeaders() });
+  if (!result.ok) throw new Error(`SEC ticker index request failed: HTTP ${result.status}`);
+  const payload = await result.json() as Record<string, { cik_str?: number; ticker?: string }>;
+  const symbolsByCik = new Map<string, string[]>();
+  for (const row of Object.values(payload || {})) {
+    const symbol = normalizedSymbol(row?.ticker);
+    const cik = String(row?.cik_str || "").padStart(10, "0");
+    if (!symbol || !trackedSymbols.has(symbol) || !/^\d{10}$/.test(cik)) continue;
+    symbolsByCik.set(cik, [...new Set([...(symbolsByCik.get(cik) || []), symbol])]);
+  }
+  return symbolsByCik;
+}
+
+function parseSecAtom(xml: string): SecFiling[] {
+  const filings: SecFiling[] = [];
+  for (const match of xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)) {
+    const entry = match[1];
+    const title = xmlTag(entry, "title");
+    const summary = xmlTag(entry, "summary");
+    const publishedAt = xmlTag(entry, "updated") || xmlTag(entry, "published");
+    const id = xmlTag(entry, "id");
+    const href = decodeXml(entry.match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*>/i)?.[1] || "");
+    const accession = id.match(/accession-number=([0-9-]+)/i)?.[1]
+      || href.match(/([0-9]{10}-[0-9]{2}-[0-9]{6})/)?.[1]
+      || "";
+    const cik = title.match(/\((\d{10})\)(?:\s+\([^)]+\))?\s*$/)?.[1]
+      || href.match(/\/data\/(\d+)\//)?.[1]?.padStart(10, "0")
+      || "";
+    const form = title.match(/^(8-K(?:\/A)?)/i)?.[1]?.toUpperCase() || "8-K";
+    const company = title
+      .replace(/^8-K(?:\/A)?\s*-\s*/i, "")
+      .replace(/\s+\(\d{10}\)(?:\s+\([^)]+\))?\s*$/, "")
+      .trim();
+    const filingDate = summary.match(/Filed:\s*<\/b>\s*([0-9-]+)/i)?.[1]
+      || summary.match(/Filed:\s*([0-9-]+)/i)?.[1]
+      || null;
+    if (!accession || !cik || !company || !href || !publishedAt) continue;
+    filings.push({ accession, cik, company, canonicalUrl: href, filingDate, publishedAt, form });
+  }
+  return filings;
+}
+
+async function fetchSec8K(symbolsByCik: Map<string, string[]>, since: string): Promise<SecFiling[]> {
+  if (!symbolsByCik.size) return [];
+  const filings: SecFiling[] = [];
+  const cutoff = new Date(since).getTime();
+  for (let page = 0; page < secMaxPages; page += 1) {
+    const url = new URL(secCurrentFilingsUrl);
+    url.searchParams.set("action", "getcurrent");
+    url.searchParams.set("type", "8-K");
+    url.searchParams.set("company", "");
+    url.searchParams.set("dateb", "");
+    url.searchParams.set("owner", "include");
+    url.searchParams.set("start", String(page * 100));
+    url.searchParams.set("count", "100");
+    url.searchParams.set("output", "atom");
+    const result = await fetch(url, { headers: secHeaders() });
+    if (!result.ok) throw new Error(`SEC 8-K feed request failed: HTTP ${result.status}`);
+    const pageFilings = parseSecAtom(await result.text());
+    filings.push(...pageFilings.filter((filing) => symbolsByCik.has(filing.cik)));
+    const oldest = pageFilings.reduce((value, filing) => Math.min(value, new Date(filing.publishedAt).getTime()), Number.POSITIVE_INFINITY);
+    if (!pageFilings.length || oldest <= cutoff) break;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return filings.filter((filing) => new Date(filing.publishedAt).getTime() >= cutoff);
+}
+
+async function storeArticlesAndMatches(
+  admin: ReturnType<typeof createClient>,
+  source: string,
+  articleRows: Record<string, unknown>[],
+  scopeBySymbol: Map<string, InstrumentScope[]>,
+): Promise<number> {
+  if (articleRows.length) {
+    const { error } = await admin
+      .from("research_articles")
+      .upsert(articleRows, { onConflict: "source,source_article_id" });
+    if (error) throw error;
+  }
+  const sourceIds = articleRows.map((row) => String(row.source_article_id));
+  const { data: storedArticles, error: articleError } = sourceIds.length
+    ? await admin
+      .from("research_articles")
+      .select("id,source_article_id,tickers")
+      .eq("source", source)
+      .in("source_article_id", sourceIds)
+    : { data: [], error: null };
+  if (articleError) throw articleError;
+
+  const matches: Record<string, unknown>[] = [];
+  for (const article of storedArticles || []) {
+    const matchedScopes = new Map<string, InstrumentScope>();
+    for (const ticker of article.tickers || []) {
+      for (const scope of scopeBySymbol.get(normalizedSymbol(ticker)) || []) {
+        matchedScopes.set(`${scope.userId}:${scope.instrumentId}`, scope);
+      }
+    }
+    for (const scope of matchedScopes.values()) {
+      matches.push({
+        user_id: scope.userId,
+        article_id: article.id,
+        instrument_id: scope.instrumentId,
+        is_watchlist: scope.isWatchlist,
+        is_portfolio: scope.isPortfolio,
+      });
+    }
+  }
+  if (matches.length) {
+    const { error } = await admin
+      .from("research_article_matches")
+      .upsert(matches, { onConflict: "user_id,article_id,instrument_id" });
+    if (error) throw error;
+  }
+  return matches.length;
 }
 
 Deno.serve(async (request) => {
@@ -166,12 +320,12 @@ Deno.serve(async (request) => {
     if (!scopes.size) return response({ ok: true, tracked: 0, matched_articles: 0, message: "No tracked stocks or ETFs" });
 
     const since = hoursAgo(regularLookbackHours);
-    const news = await fetchMassiveNews(massiveApiKey, since);
     const scopeBySymbol = new Map<string, InstrumentScope[]>();
     for (const scope of scopes.values()) {
       if (!scope.symbol) continue;
       scopeBySymbol.set(scope.symbol, [...(scopeBySymbol.get(scope.symbol) || []), scope]);
     }
+    const news = await fetchMassiveNews(massiveApiKey, since);
 
     const matchingNews = news.filter((article) =>
       (article.tickers || []).some((ticker) => scopeBySymbol.has(normalizedSymbol(ticker)))
@@ -199,62 +353,67 @@ Deno.serve(async (request) => {
       });
     }
 
-    if (articleRows.length) {
-      const { error } = await admin
-        .from("research_articles")
-        .upsert(articleRows, { onConflict: "source,source_article_id" });
-      if (error) throw error;
-    }
+    const massiveMatches = await storeArticlesAndMatches(admin, "massive", articleRows, scopeBySymbol);
 
-    const sourceIds = articleRows.map((row) => String(row.source_article_id));
-    const { data: storedArticles, error: articleError } = sourceIds.length
-      ? await admin
-        .from("research_articles")
-        .select("id,source_article_id,tickers")
-        .eq("source", "massive")
-        .in("source_article_id", sourceIds)
-      : { data: [], error: null };
-    if (articleError) throw articleError;
-
-    const matches: Record<string, unknown>[] = [];
-    for (const article of storedArticles || []) {
-      const matchedScopes = new Map<string, InstrumentScope>();
-      for (const ticker of article.tickers || []) {
-        for (const scope of scopeBySymbol.get(normalizedSymbol(ticker)) || []) {
-          matchedScopes.set(`${scope.userId}:${scope.instrumentId}`, scope);
-        }
-      }
-      for (const scope of matchedScopes.values()) {
-        matches.push({
-          user_id: scope.userId,
-          article_id: article.id,
-          instrument_id: scope.instrumentId,
-          is_watchlist: scope.isWatchlist,
-          is_portfolio: scope.isPortfolio,
-        });
-      }
-    }
-    if (matches.length) {
-      const { error } = await admin
-        .from("research_article_matches")
-        .upsert(matches, { onConflict: "user_id,article_id,instrument_id" });
-      if (error) throw error;
+    let secRows: Record<string, unknown>[] = [];
+    let secChecked = 0;
+    let secMatches = 0;
+    let secError: string | null = null;
+    try {
+      const trackedSymbols = new Set(scopeBySymbol.keys());
+      const symbolsByCik = await fetchSecCikSymbols(trackedSymbols);
+      const secFilings = await fetchSec8K(symbolsByCik, since);
+      secChecked = secFilings.length;
+      secRows = secFilings.map((filing) => {
+        const tickers = symbolsByCik.get(filing.cik) || [];
+        return {
+          source: "sec-8k",
+          source_article_id: filing.accession,
+          canonical_url: filing.canonicalUrl,
+          title: `${filing.form} · ${filing.company}`,
+          description: `Official SEC current report${filing.filingDate ? ` filed ${filing.filingDate}` : ""}. Open the filing to review the reported items and exhibits.`,
+          publisher_name: "SEC EDGAR",
+          publisher_homepage_url: "https://www.sec.gov/edgar/search/",
+          publisher_logo_url: null,
+          published_at: filing.publishedAt,
+          tickers,
+          keywords: ["SEC", filing.form, "Current report"],
+          raw_payload: filing,
+          updated_at: new Date().toISOString(),
+        };
+      });
+      secMatches = await storeArticlesAndMatches(admin, "sec-8k", secRows, scopeBySymbol);
+    } catch (error) {
+      secError = error instanceof Error ? error.message : String(error);
+      console.warn("SEC 8-K sync skipped:", secError);
     }
 
     const now = new Date().toISOString();
     const userIds = [...new Set([...scopes.values()].map((scope) => scope.userId))];
-    const syncRows = userIds.map((userId) => ({
-      user_id: userId,
-      source: "massive-news",
-      last_checked_at: now,
-      last_success_at: now,
-      last_published_at: articleRows.reduce<string | null>((latest, row) => {
-        const value = String(row.published_at || "");
-        return value && (!latest || value > latest) ? value : latest;
-      }, null),
-      last_error: null,
-      updated_at: now,
-    }));
+    const latestPublished = (rows: Record<string, unknown>[]) => rows.reduce<string | null>((latest, row) => {
+      const value = String(row.published_at || "");
+      return value && (!latest || value > latest) ? value : latest;
+    }, null);
+    const syncRows = userIds.flatMap((userId) => [
+      {
+        user_id: userId,
+        source: "massive-news",
+        last_checked_at: now,
+        last_success_at: now,
+        last_published_at: latestPublished(articleRows),
+        last_error: null,
+        updated_at: now,
+      },
+      {
+        user_id: userId,
+        source: "sec-8k",
+        last_checked_at: now,
+        last_success_at: secError ? null : now,
+        last_published_at: latestPublished(secRows),
+        last_error: secError,
+        updated_at: now,
+      },
+    ]);
     const { error: syncError } = await admin
       .from("research_sync_state")
       .upsert(syncRows, { onConflict: "user_id,source" });
@@ -265,8 +424,12 @@ Deno.serve(async (request) => {
       users: userIds.length,
       tracked: scopes.size,
       news_checked: news.length,
-      matched_articles: articleRows.length,
-      matches: matches.length,
+      sec_8k_checked: secChecked,
+      matched_articles: articleRows.length + secRows.length,
+      news_articles: articleRows.length,
+      sec_8k_filings: secRows.length,
+      matches: massiveMatches + secMatches,
+      sec_error: secError,
       since,
       truncated: Boolean(news.length && news.length >= maxPages * 1000),
     });

@@ -123,7 +123,7 @@
       return "Market Pulse is not installed yet. Run 015_market_pulse.sql in Supabase first.";
     }
     if (/api_get_research_feed|research_articles|research_article_/i.test(message)) {
-      return "News Feed is not installed yet. Run 021_research_news.sql in Supabase first.";
+      return "News is not installed yet. Run 021_research_news.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -411,14 +411,13 @@
   }
 
   function previewResearchFeed() {
-    const term = state.researchSearch.trim().toLowerCase();
+    const term = state.researchSearch.trim().toUpperCase();
     const filtered = state.researchPreviewSource.filter((article) => {
       if (article.is_hidden) return false;
       if (state.researchFilter === "unread" && article.is_read) return false;
       if (state.researchFilter === "portfolio" && !article.is_portfolio) return false;
       if (state.researchFilter === "saved" && !article.is_saved) return false;
-      return !term || [article.title, article.description, article.publisher_name, ...(article.tickers || [])]
-        .some((value) => String(value || "").toLowerCase().includes(term));
+      return !term || (article.tickers || []).some((ticker) => String(ticker || "").trim().toUpperCase() === term);
     });
     const start = (state.researchPage - 1) * state.researchPageSize;
     return {
@@ -497,12 +496,12 @@
         throw new Error(detail);
       }
       if (data?.error) throw new Error(data.error);
-      if (notify) toast(`${data?.matched_articles || 0} matching news articles synced`);
+      if (notify) toast(`${data?.matched_articles || 0} matching news and SEC filings synced`);
       await loadResearchPage({ renderAfter: false });
       return data;
     } catch (error) {
       console.warn(error);
-      if (notify) toast(`News Feed: ${friendlyError(error)}`, true);
+      if (notify) toast(`News: ${friendlyError(error)}`, true);
       return null;
     } finally {
       state.researchSyncBusy = false;
@@ -1056,10 +1055,12 @@
     const tickers = (article.tickers || []).slice(0, 5);
     const publisher = article.publisher_name || "Source unavailable";
     const description = String(article.description || "").trim();
+    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : "NEWS";
     return `<article class="news-item ${article.is_read ? "is-read" : "is-unread"}">
       <div class="news-item__rail"><span>${article.is_read ? "READ" : "NEW"}</span><i></i></div>
       <div class="news-item__body">
         <div class="news-item__meta">
+          <b>${sourceLabel}</b>
           <span>${esc(publisher)}</span>
           <time datetime="${esc(article.published_at)}">${esc(researchTime(article.published_at))}</time>
           ${article.is_portfolio ? `<strong>IN PORTFOLIO</strong>` : ""}
@@ -1089,17 +1090,17 @@
     ];
 
     viewRoot.innerHTML = `
-      ${pageHead("Research desk · News sources", "A clean feed for what changed.", "News updates for the stocks and ETFs you track. No AI ranking, quarterly-model math or duplicated Watchlist filter.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check for news"}</button>`)}
-      ${!state.researchReady ? `<div class="warning-box research-setup"><strong>News Feed schema is not installed yet.</strong> Run <code>021_research_news.sql</code>, then deploy <code>sync-research-news</code>.</div>` : ""}
-      <section class="news-ledger" aria-label="News Feed summary">
+      ${pageHead("Research desk · News + SEC 8-K", "A clean feed for what changed.", "News and official SEC 8-K filings for the stocks and ETFs you track. No AI ranking or quarterly-model math.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
+      ${!state.researchReady ? `<div class="warning-box research-setup"><strong>News schema is not installed yet.</strong> Run <code>021_research_news.sql</code>, then deploy <code>sync-research-news</code>.</div>` : ""}
+      <section class="news-ledger" aria-label="News summary">
         <div class="news-ledger__lead"><small>MATCHING STORIES</small><strong>${state.researchTotal}</strong><span>${esc(state.researchFilter.toUpperCase())} view</span></div>
         <div><small>UNREAD ON PAGE</small><strong>${unread}</strong><span>Open or mark read</span></div>
         <div><small>PORTFOLIO ON PAGE</small><strong>${portfolio}</strong><span>Current positions only</span></div>
         <div><small>SAVED ON PAGE</small><strong>${saved}</strong><span>Your reading shelf</span></div>
       </section>
-      <section class="news-commandbar" aria-label="News Feed controls">
+      <section class="news-commandbar" aria-label="News controls">
         <nav class="news-filters" aria-label="News filters">${filters.map(([value, label], index) => `<button type="button" class="${state.researchFilter === value ? "is-active" : ""}" data-action="research-filter" data-filter="${value}"><span>0${index + 1}</span>${label}</button>`).join("")}</nav>
-        <label class="news-search"><span>SEARCH HEADLINES OR TICKERS</span><input type="search" data-research-search autocomplete="off" placeholder="NVDA, publisher or headline" value="${esc(state.researchSearch)}"></label>
+        <label class="news-search"><span>SEARCH TICKER</span><input type="search" data-research-search autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" placeholder="NVDA, BE, RKLB…" value="${esc(state.researchSearch)}"></label>
       </section>
       <section class="news-feed" aria-live="polite" aria-busy="${state.researchBusy}">
         <header class="section-head news-feed__head"><div><span class="section-index">01 / SOURCE TAPE</span><h2>Latest from the wire.</h2></div><p>${state.researchTotal ? `Page ${state.researchPage} of ${pages} · newest first` : "Waiting for the first matching story"}</p></header>
@@ -1107,7 +1108,7 @@
           ? `<div class="news-empty"><span></span><p>Reading the latest source index…</p></div>`
           : state.researchEntries.length
             ? state.researchEntries.map(researchArticleMarkup).join("")
-            : `<div class="news-empty"><strong>No stories in this view.</strong><p>${state.researchSearch ? "Try a broader search." : state.researchFilter === "saved" ? "Save useful articles and they will stay here." : "Run the collector or choose another filter."}</p></div>`}
+            : `<div class="news-empty"><strong>No stories in this view.</strong><p>${state.researchSearch ? `No news or SEC 8-K filings matched ticker ${esc(state.researchSearch.trim().toUpperCase())}.` : state.researchFilter === "saved" ? "Save useful articles and they will stay here." : "Run the collector or choose another filter."}</p></div>`}
       </section>
       <div class="pagination news-pagination">
         <span>${state.researchTotal.toLocaleString()} matching stories · 25 at a time</span>
@@ -2435,7 +2436,7 @@
     }
     else if (action === "research-hide") {
       await setResearchState(target.dataset.articleId, "hidden", true);
-      toast("Story hidden from the News Feed");
+      toast("Story hidden from News");
     }
     else if (action === "research-page-prev" || action === "research-page-next") {
       state.researchPage += action === "research-page-next" ? 1 : -1;

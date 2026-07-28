@@ -847,6 +847,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .news-item.is-unread .news-item__rail i { background: var(--red-bright); }
 .news-item__body { min-width: 0; padding: 21px 28px; }
 .news-item__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 14px; color: var(--paper-faint); font: 600 8px/1.2 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+.news-item__meta b { border: 1px solid var(--rule-strong); padding: 4px 6px; color: var(--gold-bright); font: inherit; }
+.news-item__meta b:first-child { border-color: rgb(212 175 55 / .45); }
 .news-item__meta strong { color: var(--gold-bright); font: inherit; }
 .news-item h2 { max-width: 30ch; margin: 17px 0 10px; font-size: clamp(21px, 2.1vw, 31px); line-height: 1.02; letter-spacing: -.045em; }
 .news-item h2 a { color: var(--paper); text-decoration: none; }

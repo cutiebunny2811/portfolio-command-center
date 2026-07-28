@@ -1,6 +1,6 @@
-# Research News V1
+# News + SEC 8-K
 
-Research News is a source-first inbox for news that mentions a stock or ETF in
+News is a source-first inbox for articles and official SEC 8-K filings that mention a stock or ETF in
 the signed-in user's tracked universe:
 
 - `All` includes Watchlist names plus stocks/ETFs currently held in a portfolio.
@@ -11,16 +11,17 @@ the signed-in user's tracked universe:
 There is intentionally no AI score and no quarterly financial-statement
 calculation in V1.
 
-The article layer is source-agnostic, but V1 ships with one collector:
-Massive News. Additional source adapters can be added later without changing
+The article layer is source-agnostic. The collector uses Massive News and the
+official SEC EDGAR current 8-K feed. Additional source adapters can be added later without changing
 the read/save/hide workflow or duplicating per-user article content.
 
 ## Install
 
 1. Run `supabase/021_research_news.sql` once in the Supabase SQL Editor.
-2. Reuse the existing `MASSIVE_API_KEY` Edge Function secret.
-3. Add a long random `RESEARCH_SYNC_SECRET` for scheduled collector calls.
-4. Deploy the collector:
+2. Run `supabase/022_research_ticker_search.sql` to make search exact and ticker-only.
+3. Reuse the existing `MASSIVE_API_KEY` Edge Function secret. SEC requires no API key.
+4. Add a long random `RESEARCH_SYNC_SECRET` for scheduled collector calls.
+5. Deploy the collector:
 
 ```bash
 supabase functions deploy sync-research-news --project-ref zzynqlqnzdhkffvqvpzt --no-verify-jwt

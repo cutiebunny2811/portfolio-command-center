@@ -300,7 +300,7 @@ Deno.serve(async (request) => {
     let secError: string | null = null;
     try {
       const trackedSymbols = new Set(scopeBySymbol.keys());
-      const secFilings = await fetchMassive8K(apiKey, trackedSymbols, since);
+      const secFilings = await fetchMassive8K(massiveApiKey, trackedSymbols, since);
       secChecked = secFilings.length;
       secRows = secFilings.map((filing) => {
         const ticker = normalizedSymbol(filing.ticker);

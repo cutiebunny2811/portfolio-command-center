@@ -1,0 +1,36 @@
+# Research News V1
+
+Research News is a source-first inbox for news that mentions a stock or ETF in
+the signed-in user's tracked universe:
+
+- `All` includes Watchlist names plus stocks/ETFs currently held in a portfolio.
+- `Unread` excludes articles already opened or marked read.
+- `Portfolio` keeps only news matched to a current position.
+- `Saved` keeps the user's bookmarks.
+
+There is intentionally no AI score and no quarterly financial-statement
+calculation in V1.
+
+The article layer is source-agnostic, but V1 ships with one collector:
+Massive News. Additional source adapters can be added later without changing
+the read/save/hide workflow or duplicating per-user article content.
+
+## Install
+
+1. Run `supabase/021_research_news.sql` once in the Supabase SQL Editor.
+2. Reuse the existing `MASSIVE_API_KEY` Edge Function secret.
+3. Add a long random `RESEARCH_SYNC_SECRET` for scheduled collector calls.
+4. Deploy the collector:
+
+```bash
+supabase functions deploy sync-research-news --project-ref zzynqlqnzdhkffvqvpzt --no-verify-jwt
+```
+
+The function still authenticates manual dashboard calls. `--no-verify-jwt`
+only allows the scheduler to reach it; scheduled calls must supply the matching
+`x-sync-secret` header.
+
+Run the collector every 15–30 minutes. Each run checks a bounded 72-hour
+Massive News window, upserts articles by source ID, and records only matches for
+tracked symbols. The dashboard requests 25 rows per page and never downloads the
+entire archive.

@@ -7,7 +7,8 @@ const corsHeaders = {
 };
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const massiveNewsUrl = "https://api.massive.com/v2/reference/news";
-const secTickerIndexUrl = "https://www.sec.gov/files/company_tickers.json";
+const secTickerIndexUrl =
+  "https://cdn.jsdelivr.net/gh/jadchaar/sec-cik-mapper@main/mappings/stocks/ticker_to_cik.json";
 const secCurrentFilingsUrl = "https://www.sec.gov/cgi-bin/browse-edgar";
 const secUserAgent = "PortfolioCommandCenter/1.0 cutiebunny2811@users.noreply.github.com";
 const regularLookbackHours = 72;
@@ -133,13 +134,13 @@ function secHeaders(): HeadersInit {
 }
 
 async function fetchSecCikSymbols(trackedSymbols: Set<string>): Promise<Map<string, string[]>> {
-  const result = await fetch(secTickerIndexUrl, { headers: secHeaders() });
-  if (!result.ok) throw new Error(`SEC ticker index request failed: HTTP ${result.status}`);
-  const payload = await result.json() as Record<string, { cik_str?: number; ticker?: string }>;
+  const result = await fetch(secTickerIndexUrl, { headers: { Accept: "application/json" } });
+  if (!result.ok) throw new Error(`SEC ticker mapping request failed: HTTP ${result.status}`);
+  const payload = await result.json() as Record<string, string | number>;
   const symbolsByCik = new Map<string, string[]>();
-  for (const row of Object.values(payload || {})) {
-    const symbol = normalizedSymbol(row?.ticker);
-    const cik = String(row?.cik_str || "").padStart(10, "0");
+  for (const [ticker, rawCik] of Object.entries(payload || {})) {
+    const symbol = normalizedSymbol(ticker);
+    const cik = String(rawCik || "").padStart(10, "0");
     if (!symbol || !trackedSymbols.has(symbol) || !/^\d{10}$/.test(cik)) continue;
     symbolsByCik.set(cik, [...new Set([...(symbolsByCik.get(cik) || []), symbol])]);
   }

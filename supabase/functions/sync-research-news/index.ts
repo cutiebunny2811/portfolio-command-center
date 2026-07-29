@@ -11,11 +11,26 @@ const massive8KUrl = "https://api.massive.com/stocks/filings/8-K/vX/text";
 const xApiBaseUrl = "https://api.x.com/2";
 const regularLookbackHours = 72;
 const maxPages = 5;
+const xTimelineBatchSize = "10";
+
+const xMacroSignals: Array<[string, RegExp]> = [
+  ["FED", /\b(fed|fomc|federal reserve|powell|warsh)\b|เฟด|ธนาคารกลาง/i],
+  ["RATES", /\b(rate cut|rate hike|interest rates?|basis points?|bps|treasury|bond yields?|yield curve)\b|ดอกเบี้ย|พันธบัตร/i],
+  ["INFLATION", /\b(cpi|ppi|pce|inflation|deflation)\b|เงินเฟ้อ/i],
+  ["ECONOMY", /\b(gdp|payrolls?|nonfarm|nfp|unemployment|jobless|recession|economic growth)\b|เศรษฐกิจ|ว่างงาน/i],
+  ["POLICY", /\b(tariffs?|sanctions?|white house|congress|treasury department|executive order|regulation)\b|ภาษี|คว่ำบาตร|รัฐบาล/i],
+  ["GEOPOLITICS", /\b(iran|israel|russia|ukraine|china|taiwan|war|ceasefire|attack|missile|military)\b|สงคราม|อิหร่าน|อิสราเอล|รัสเซีย|ยูเครน|จีน|ไต้หวัน/i],
+  ["COMMODITIES", /\b(oil|crude|opec|gold|silver|natural gas)\b|น้ำมัน|ทองคำ|ก๊าซ/i],
+  ["FX_CRYPTO", /\b(dollar|dxy|yen|euro|bitcoin|btc|ethereum|crypto)\b|ดอลลาร์|เยน|บิตคอยน์|คริปโต/i],
+];
+const xMarketActionPattern = /\b(breaking|urgent|raises?|cuts?|hikes?|holds?|halts?|suspends?|approves?|rejects?|announces?|warns?|misses?|beats?|acquires?|merger|offering|bankrupt(?:cy)?|default|layoffs?|investigation|probe|guidance|forecast)\b|ด่วน|ประกาศ|ขึ้นดอกเบี้ย|ลดดอกเบี้ย|ระงับ|อนุมัติ|ปฏิเสธ|ควบรวม|เพิ่มทุน|ล้มละลาย/i;
+const xMarketContextPattern = /\b(stocks?|shares?|market|index|futures?|earnings?|revenue|profit|guidance|sec|doj|ftc|fda|contract|order|acquisition|merger|offering|ipo|bankrupt(?:cy)?|credit|debt)\b|หุ้น|ตลาด|กำไร|รายได้|งบ|บริษัท|เพิ่มทุน|หนี้/i;
 
 type InstrumentScope = {
   userId: string;
   instrumentId: string;
   symbol: string;
+  displayName: string;
   isWatchlist: boolean;
   isPortfolio: boolean;
 };
@@ -191,7 +206,9 @@ async function fetchXPosts(token: string, subscription: XSubscription): Promise<
   if (!subscription.external_user_id) throw new Error(`X user ID missing for @${subscription.source_key}`);
   const url = new URL(`${xApiBaseUrl}/users/${encodeURIComponent(subscription.external_user_id)}/tweets`);
   url.searchParams.set("exclude", "retweets,replies");
-  url.searchParams.set("max_results", subscription.last_resource_id ? "100" : "10");
+  // A hard ten-post ceiling prevents a noisy account or a long offline window
+  // from consuming the monthly X budget in one collector run.
+  url.searchParams.set("max_results", xTimelineBatchSize);
   url.searchParams.set("tweet.fields", "id,text,created_at,lang,entities,public_metrics");
   if (subscription.last_resource_id) url.searchParams.set("since_id", subscription.last_resource_id);
   const result = await fetch(url, { headers: xBearerHeaders(token) });
@@ -213,10 +230,53 @@ function highestResourceId(values: string[]): string | null {
   });
 }
 
-function extractXTickers(post: XPost, trackedSymbols: Set<string>): string[] {
-  return [...new Set((post.entities?.cashtags || [])
+function companyAlias(value: unknown): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\b(incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group|common stock|class [a-z])\b/g, " ")
+    .replace(/[^a-z0-9ก-๙]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractXTickers(post: XPost, trackedAliases: Map<string, Set<string>>): string[] {
+  const trackedSymbols = new Set(trackedAliases.keys());
+  const matches = new Set((post.entities?.cashtags || [])
     .map((cashtag) => normalizedSymbol(cashtag.tag))
-    .filter((ticker) => ticker && trackedSymbols.has(ticker)))];
+    .filter((ticker) => ticker && trackedSymbols.has(ticker)));
+  const rawText = String(post.text || "");
+  for (const token of rawText.match(/\$?[A-Z][A-Z0-9.-]{1,5}\b/g) || []) {
+    const symbol = normalizedSymbol(token.replace(/^\$/, ""));
+    if (trackedSymbols.has(symbol)) matches.add(symbol);
+  }
+  const normalizedText = ` ${companyAlias(rawText)} `;
+  for (const [symbol, aliases] of trackedAliases) {
+    if ([...aliases].some((alias) => alias.length >= 4 && normalizedText.includes(` ${alias} `))) {
+      matches.add(symbol);
+    }
+  }
+  return [...matches];
+}
+
+function classifyXPost(
+  post: XPost,
+  trackedAliases: Map<string, Set<string>>,
+): { keep: boolean; tickers: string[]; keywords: string[] } {
+  const text = String(post.text || "").replace(/\s+/g, " ").trim();
+  const tickers = extractXTickers(post, trackedAliases);
+  const macroTags = xMacroSignals.filter(([, pattern]) => pattern.test(text)).map(([tag]) => tag);
+  const isMarketEvent = xMarketActionPattern.test(text) && xMarketContextPattern.test(text);
+  const keywords = new Set(["X", "ORIGINAL_POST"]);
+  if (tickers.length) keywords.add("WATCHLIST_SIGNAL");
+  if (macroTags.length) {
+    keywords.add("MARKET_MACRO");
+    macroTags.forEach((tag) => keywords.add(tag));
+  }
+  if (isMarketEvent) keywords.add("MARKET_EVENT");
+  const keep = tickers.length > 0 || macroTags.length > 0 || isMarketEvent;
+  if (keep) keywords.add("X_SIGNAL");
+  return { keep, tickers, keywords: [...keywords] };
 }
 
 async function storeArticlesAndMatches(
@@ -325,12 +385,12 @@ Deno.serve(async (request) => {
 
     let watchlistQuery = admin
       .from("watchlist_items")
-      .select("user_id,instrument_id,instruments!inner(id,symbol,asset_type)");
+      .select("user_id,instrument_id,instruments!inner(id,symbol,display_name,asset_type)");
     if (requestedUserId) watchlistQuery = watchlistQuery.eq("user_id", requestedUserId);
 
     let positionQuery = admin
       .from("position_balances")
-      .select("instrument_id,quantity,portfolios!inner(user_id),instruments!inner(id,symbol,asset_type)")
+      .select("instrument_id,quantity,portfolios!inner(user_id),instruments!inner(id,symbol,display_name,asset_type)")
       .gt("quantity", 0);
     if (requestedUserId) positionQuery = positionQuery.eq("portfolios.user_id", requestedUserId);
 
@@ -343,20 +403,21 @@ Deno.serve(async (request) => {
 
     const scopes = new Map<string, InstrumentScope>();
     for (const row of watchlistData || []) {
-      const instrument = row.instruments as unknown as { symbol?: string; asset_type?: string } | null;
+      const instrument = row.instruments as unknown as { symbol?: string; display_name?: string; asset_type?: string } | null;
       if (!instrument || !["stock", "etf"].includes(String(instrument.asset_type))) continue;
       const symbol = normalizedSymbol(instrument.symbol);
       scopes.set(`${row.user_id}:${row.instrument_id}`, {
         userId: row.user_id,
         instrumentId: row.instrument_id,
         symbol,
+        displayName: String(instrument.display_name || symbol),
         isWatchlist: true,
         isPortfolio: false,
       });
     }
     for (const row of positionData || []) {
       const portfolio = row.portfolios as unknown as { user_id?: string } | null;
-      const instrument = row.instruments as unknown as { symbol?: string; asset_type?: string } | null;
+      const instrument = row.instruments as unknown as { symbol?: string; display_name?: string; asset_type?: string } | null;
       const userId = String(portfolio?.user_id || "");
       if (!userId || !instrument || !["stock", "etf"].includes(String(instrument.asset_type))) continue;
       const key = `${userId}:${row.instrument_id}`;
@@ -365,6 +426,7 @@ Deno.serve(async (request) => {
         userId,
         instrumentId: row.instrument_id,
         symbol: normalizedSymbol(instrument.symbol),
+        displayName: String(instrument.display_name || instrument.symbol || ""),
         isWatchlist: existing?.isWatchlist || false,
         isPortfolio: true,
       });
@@ -374,9 +436,14 @@ Deno.serve(async (request) => {
 
     const since = hoursAgo(regularLookbackHours);
     const scopeBySymbol = new Map<string, InstrumentScope[]>();
+    const trackedAliases = new Map<string, Set<string>>();
     for (const scope of scopes.values()) {
       if (!scope.symbol) continue;
       scopeBySymbol.set(scope.symbol, [...(scopeBySymbol.get(scope.symbol) || []), scope]);
+      const aliases = trackedAliases.get(scope.symbol) || new Set<string>();
+      const displayAlias = companyAlias(scope.displayName);
+      if (displayAlias) aliases.add(displayAlias);
+      trackedAliases.set(scope.symbol, aliases);
     }
     const news = await fetchMassiveNews(massiveApiKey, since);
 
@@ -447,6 +514,7 @@ Deno.serve(async (request) => {
     const now = new Date().toISOString();
     const userIds = [...new Set([...scopes.values()].map((scope) => scope.userId))];
     let xPostsChecked = 0;
+    let xPostsFiltered = 0;
     let xArticles = 0;
     let xMatches = 0;
     let xError: string | null = null;
@@ -478,7 +546,6 @@ Deno.serve(async (request) => {
 
       if (subscriptions.length && !xBearerToken) throw new Error("X_BEARER_TOKEN is not configured");
 
-      const trackedSymbols = new Set(scopeBySymbol.keys());
       for (const originalSubscription of subscriptions) {
         let subscription = { ...originalSubscription };
         if (!subscription.external_user_id) {
@@ -503,9 +570,11 @@ Deno.serve(async (request) => {
 
         const posts = await fetchXPosts(xBearerToken!, subscription);
         xPostsChecked += posts.length;
-        const xRows = posts.map((post) => {
+        const xRows = posts.flatMap((post) => {
           const text = String(post.text || "").replace(/\s+/g, " ").trim();
-          return {
+          const classification = classifyXPost(post, trackedAliases);
+          if (!classification.keep) return [];
+          return [{
             source: "x",
             source_article_id: post.id,
             canonical_url: `https://x.com/${subscription.source_key}/status/${post.id}`,
@@ -515,12 +584,13 @@ Deno.serve(async (request) => {
             publisher_homepage_url: `https://x.com/${subscription.source_key}`,
             publisher_logo_url: null,
             published_at: post.created_at || now,
-            tickers: extractXTickers(post, trackedSymbols),
-            keywords: ["X", `@${subscription.source_key}`],
+            tickers: classification.tickers,
+            keywords: [...classification.keywords, `@${subscription.source_key}`],
             raw_payload: post,
             updated_at: now,
-          };
+          }];
         });
+        xPostsFiltered += posts.length - xRows.length;
         if (xRows.length) {
           const { error } = await admin
             .from("research_articles")
@@ -592,6 +662,7 @@ Deno.serve(async (request) => {
       news_checked: news.length,
       sec_8k_checked: secChecked,
       x_posts_checked: xPostsChecked,
+      x_posts_filtered: xPostsFiltered,
       matched_articles: articleRows.length + secRows.length + xArticles,
       news_articles: articleRows.length,
       sec_8k_filings: secRows.length,

@@ -496,7 +496,7 @@
         throw new Error(detail);
       }
       if (data?.error) throw new Error(data.error);
-      if (notify) toast(`${data?.matched_articles || 0} matching news and SEC filings synced`);
+      if (notify) toast(`${data?.matched_articles || 0} matching news, SEC filings and X posts synced`);
       await loadResearchPage({ renderAfter: false });
       return data;
     } catch (error) {
@@ -1055,7 +1055,7 @@
     const tickers = (article.tickers || []).slice(0, 5);
     const publisher = article.publisher_name || "Source unavailable";
     const description = String(article.description || "").trim();
-    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : "NEWS";
+    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : article.source === "x" ? "X POST" : "NEWS";
     return `<article class="news-item ${article.is_read ? "is-read" : "is-unread"}">
       <div class="news-item__rail"><span>${article.is_read ? "READ" : "NEW"}</span><i></i></div>
       <div class="news-item__body">
@@ -1090,7 +1090,7 @@
     ];
 
     viewRoot.innerHTML = `
-      ${pageHead("Research desk · News + SEC 8-K", "A clean feed for what changed.", "News and official SEC 8-K filings for the stocks and ETFs you track. No AI ranking or quarterly-model math.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
+      ${pageHead("Research desk · News + SEC 8-K + X", "A clean feed for what changed.", "News, official SEC 8-K filings and selected X accounts in one source-first inbox. No AI ranking or quarterly-model math.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
       ${!state.researchReady ? `<div class="warning-box research-setup"><strong>News schema is not installed yet.</strong> Run <code>021_research_news.sql</code>, then deploy <code>sync-research-news</code>.</div>` : ""}
       <section class="news-ledger" aria-label="News summary">
         <div class="news-ledger__lead"><small>MATCHING STORIES</small><strong>${state.researchTotal}</strong><span>${esc(state.researchFilter.toUpperCase())} view</span></div>
@@ -1108,7 +1108,7 @@
           ? `<div class="news-empty"><span></span><p>Reading the latest source index…</p></div>`
           : state.researchEntries.length
             ? state.researchEntries.map(researchArticleMarkup).join("")
-            : `<div class="news-empty"><strong>No stories in this view.</strong><p>${state.researchSearch ? `No news or SEC 8-K filings matched ticker ${esc(state.researchSearch.trim().toUpperCase())}.` : state.researchFilter === "saved" ? "Save useful articles and they will stay here." : "Run the collector or choose another filter."}</p></div>`}
+            : `<div class="news-empty"><strong>No stories in this view.</strong><p>${state.researchSearch ? `No news, SEC 8-K filings or tagged X posts matched ticker ${esc(state.researchSearch.trim().toUpperCase())}.` : state.researchFilter === "saved" ? "Save useful articles and they will stay here." : "Run the collector or choose another filter."}</p></div>`}
       </section>
       <div class="pagination news-pagination">
         <span>${state.researchTotal.toLocaleString()} matching stories · 25 at a time</span>

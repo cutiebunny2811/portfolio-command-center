@@ -1078,7 +1078,7 @@
   ]);
 
   function researchNumericAnchors(value) {
-    const text = String(value || "").toUpperCase().replace(/,/g, "");
+    const text = String(value || "").replace(/https?:\/\/\S+/gi, " ").toUpperCase().replace(/,/g, "");
     const anchors = new Set();
     for (const match of text.matchAll(/\$?(\d+(?:\.\d+)?)\s*(TRILLION|BILLION|MILLION|[TBM])?\b/g)) {
       let amount = Number(match[1]);
@@ -1088,17 +1088,18 @@
       else if (suffix === "BILLION" || suffix === "B") amount *= 1e9;
       else if (suffix === "MILLION" || suffix === "M") amount *= 1e6;
       if (amount < 3 && !suffix) continue;
+      if (!suffix && amount >= 1900 && amount <= 2100 && Number.isInteger(amount)) continue;
       anchors.add(amount >= 1e6 ? String(Math.round(amount / 1000) * 1000) : String(amount));
     }
     return anchors;
   }
 
-  function researchWordAnchors(value) {
+  function researchWordAnchors(value, excluded = new Set()) {
     const anchors = new Set();
     const text = String(value || "").replace(/https?:\/\/\S+/gi, " ");
     for (const token of text.toUpperCase().match(/[A-Z][A-Z0-9.-]{3,}/g) || []) {
       const clean = token.replace(/^[.$]+|[.$]+$/g, "");
-      if (clean.length >= 4 && !researchAnchorStopwords.has(clean)) anchors.add(clean);
+      if (clean.length >= 4 && !researchAnchorStopwords.has(clean) && !excluded.has(clean)) anchors.add(clean);
     }
     return anchors;
   }
@@ -1117,17 +1118,21 @@
     const leftTickers = new Set((left.tickers || []).map((ticker) => String(ticker).toUpperCase()));
     const rightTickers = new Set((right.tickers || []).map((ticker) => String(ticker).toUpperCase()));
     if (!researchSetsOverlap(leftTickers, rightTickers)) return false;
+    const sharedTickers = new Set([...leftTickers].filter((ticker) => rightTickers.has(ticker)));
     const leftText = `${left.title || ""} ${left.description || ""}`;
     const rightText = `${right.title || ""} ${right.description || ""}`;
     const numberOverlap = researchSetsOverlap(researchNumericAnchors(leftText), researchNumericAnchors(rightText));
-    const wordOverlap = researchSetsOverlap(researchWordAnchors(leftText), researchWordAnchors(rightText));
-    return numberOverlap >= 2 || wordOverlap >= 2 || (numberOverlap >= 1 && wordOverlap >= 1);
+    const wordOverlap = researchSetsOverlap(
+      researchWordAnchors(leftText, sharedTickers),
+      researchWordAnchors(rightText, sharedTickers)
+    );
+    return numberOverlap >= 2 || wordOverlap >= 4 || (numberOverlap >= 1 && wordOverlap >= 2);
   }
 
   function groupResearchEntries(entries) {
     const groups = [];
     for (const article of entries) {
-      const group = groups.find((candidate) => candidate.members.some((member) => researchArticlesMatch(article, member)));
+      const group = groups.find((candidate) => candidate.members.every((member) => researchArticlesMatch(article, member)));
       if (group) group.members.push(article);
       else groups.push({ members: [article] });
     }

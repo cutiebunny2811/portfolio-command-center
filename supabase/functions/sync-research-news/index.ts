@@ -259,16 +259,36 @@ function extractXTickers(post: XPost, trackedAliases: Map<string, Set<string>>):
   return [...matches];
 }
 
+function extractExplicitXTickers(post: XPost): string[] {
+  const matches = new Set((post.entities?.cashtags || [])
+    .map((cashtag) => normalizedSymbol(cashtag.tag))
+    .filter(Boolean));
+  const rawText = String(post.text || "");
+  for (const token of rawText.match(/\$[A-Z][A-Z0-9.-]{1,5}\b/g) || []) {
+    const symbol = normalizedSymbol(token.slice(1));
+    if (symbol) matches.add(symbol);
+  }
+  // Thai market accounts commonly write a symbol as “Company (ARM)” instead of $ARM.
+  for (const match of rawText.matchAll(/\(([A-Z][A-Z0-9.-]{1,5})\)/g)) {
+    const symbol = normalizedSymbol(match[1]);
+    if (symbol && !/^(Q[1-4]|FY\d{2,4})$/.test(symbol)) matches.add(symbol);
+  }
+  return [...matches];
+}
+
 function classifyXPost(
   post: XPost,
   trackedAliases: Map<string, Set<string>>,
 ): { keep: boolean; tickers: string[]; keywords: string[] } {
   const text = String(post.text || "").replace(/\s+/g, " ").trim();
-  const tickers = extractXTickers(post, trackedAliases);
+  const trackedTickers = extractXTickers(post, trackedAliases);
+  const explicitTickers = extractExplicitXTickers(post);
+  const tickers = [...new Set([...trackedTickers, ...explicitTickers])];
   const macroTags = xMacroSignals.filter(([, pattern]) => pattern.test(text)).map(([tag]) => tag);
   const isMarketEvent = xMarketActionPattern.test(text) && xMarketContextPattern.test(text);
   const keywords = new Set(["X", "ORIGINAL_POST"]);
-  if (tickers.length) keywords.add("WATCHLIST_SIGNAL");
+  if (trackedTickers.length) keywords.add("WATCHLIST_SIGNAL");
+  if (explicitTickers.length) keywords.add("TICKER_EVENT");
   if (macroTags.length) {
     keywords.add("MARKET_MACRO");
     macroTags.forEach((tag) => keywords.add(tag));

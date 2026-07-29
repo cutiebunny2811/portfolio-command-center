@@ -416,6 +416,7 @@
       if (article.is_hidden) return false;
       if (state.researchFilter === "unread" && article.is_read) return false;
       if (state.researchFilter === "portfolio" && !article.is_portfolio) return false;
+      if (state.researchFilter === "macro" && !(article.keywords || []).includes("MARKET_MACRO")) return false;
       if (state.researchFilter === "saved" && !article.is_saved) return false;
       return !term || (article.tickers || []).some((ticker) => String(ticker || "").trim().toUpperCase() === term);
     });
@@ -1053,9 +1054,10 @@
 
   function researchArticleMarkup(article) {
     const tickers = (article.tickers || []).slice(0, 5);
+    const isMacro = article.source === "x" && (article.keywords || []).includes("MARKET_MACRO");
     const publisher = article.publisher_name || "Source unavailable";
     const description = String(article.description || "").trim();
-    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : article.source === "x" ? "X POST" : "NEWS";
+    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : isMacro ? "MARKET / MACRO" : article.source === "x" ? "X POST" : "NEWS";
     return `<article class="news-item ${article.is_read ? "is-read" : "is-unread"}">
       <div class="news-item__rail"><span>${article.is_read ? "READ" : "NEW"}</span><i></i></div>
       <div class="news-item__body">
@@ -1067,7 +1069,7 @@
         </div>
         <h2><a href="${esc(article.canonical_url)}" target="_blank" rel="noopener noreferrer" data-action="research-open" data-article-id="${article.id}">${esc(article.title)}</a></h2>
         ${description ? `<p>${esc(description)}</p>` : ""}
-        <div class="news-item__tickers">${tickers.map((ticker) => `<span>${esc(ticker)}</span>`).join("")}${(article.tickers || []).length > tickers.length ? `<small>+${article.tickers.length - tickers.length}</small>` : ""}</div>
+        <div class="news-item__tickers">${tickers.map((ticker) => `<span>${esc(ticker)}</span>`).join("")}${(article.tickers || []).length > tickers.length ? `<small>+${article.tickers.length - tickers.length}</small>` : ""}${isMacro && !tickers.length ? `<span>MARKET / MACRO</span>` : ""}</div>
       </div>
       <div class="news-item__actions">
         <button class="button button--small" type="button" data-action="research-read" data-article-id="${article.id}" data-value="${article.is_read ? "false" : "true"}">${article.is_read ? "Mark unread" : "Mark read"}</button>
@@ -1086,11 +1088,12 @@
       ["all", "All"],
       ["unread", "Unread"],
       ["portfolio", "Portfolio"],
+      ["macro", "Market / Macro"],
       ["saved", "Saved"]
     ];
 
     viewRoot.innerHTML = `
-      ${pageHead("Research desk · News + SEC 8-K + X", "A clean feed for what changed.", "News, official SEC 8-K filings and selected X accounts in one source-first inbox. No AI ranking or quarterly-model math.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
+      ${pageHead("Research desk · News + SEC 8-K + X", "A clean feed for what changed.", "Ticker-linked stories and a separate Market / Macro lane for important policy, rates and geopolitical posts. No AI usage.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
       ${!state.researchReady ? `<div class="warning-box research-setup"><strong>News schema is not installed yet.</strong> Run <code>021_research_news.sql</code>, then deploy <code>sync-research-news</code>.</div>` : ""}
       <section class="news-ledger" aria-label="News summary">
         <div class="news-ledger__lead"><small>MATCHING STORIES</small><strong>${state.researchTotal}</strong><span>${esc(state.researchFilter.toUpperCase())} view</span></div>
@@ -2421,7 +2424,7 @@
     else if (action === "smart-money-window") { state.smartMoneyWindow = num(target.dataset.days) || 30; renderSmartMoney(); }
     else if (action === "research-sync") await syncResearchNews({ notify: true });
     else if (action === "research-filter") {
-      state.researchFilter = ["all", "unread", "portfolio", "saved"].includes(target.dataset.filter) ? target.dataset.filter : "all";
+      state.researchFilter = ["all", "unread", "portfolio", "macro", "saved"].includes(target.dataset.filter) ? target.dataset.filter : "all";
       state.researchPage = 1;
       await loadResearchPage();
     }

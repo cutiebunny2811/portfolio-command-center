@@ -8,6 +8,7 @@ const corsHeaders = {
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const massiveNewsUrl = "https://api.massive.com/v2/reference/news";
 const massive8KUrl = "https://api.massive.com/stocks/filings/8-K/vX/text";
+const xApiBaseUrl = "https://api.x.com/2";
 const regularLookbackHours = 72;
 const maxPages = 5;
 
@@ -42,6 +43,34 @@ type Massive8K = Record<string, unknown> & {
   form_type?: string;
   items_text?: string;
   ticker?: string;
+};
+
+type XSubscription = {
+  user_id: string;
+  source: "x";
+  source_key: string;
+  display_name?: string | null;
+  external_user_id?: string | null;
+  last_resource_id?: string | null;
+};
+
+type XUser = {
+  id: string;
+  name?: string;
+  username?: string;
+  profile_image_url?: string;
+};
+
+type XPost = {
+  id: string;
+  text?: string;
+  created_at?: string;
+  lang?: string;
+  entities?: {
+    cashtags?: Array<{ tag?: string }>;
+    urls?: Array<{ expanded_url?: string }>;
+  };
+  public_metrics?: Record<string, number>;
 };
 
 function response(payload: unknown, status = 200): Response {
@@ -139,6 +168,57 @@ async function fetchMassive8K(apiKey: string, trackedSymbols: Set<string>, since
   return filings;
 }
 
+function xBearerHeaders(token: string): HeadersInit {
+  return {
+    Accept: "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+async function fetchXUser(token: string, handle: string): Promise<XUser> {
+  const normalizedHandle = handle.replace(/^@/, "").trim();
+  const url = new URL(`${xApiBaseUrl}/users/by/username/${encodeURIComponent(normalizedHandle)}`);
+  url.searchParams.set("user.fields", "id,name,username,profile_image_url");
+  const result = await fetch(url, { headers: xBearerHeaders(token) });
+  const payload = await result.json().catch(() => null) as { data?: XUser; detail?: string; title?: string } | null;
+  if (!result.ok || !payload?.data?.id) {
+    throw new Error(`X user lookup failed for @${normalizedHandle}: ${payload?.detail || payload?.title || `HTTP ${result.status}`}`);
+  }
+  return payload.data;
+}
+
+async function fetchXPosts(token: string, subscription: XSubscription): Promise<XPost[]> {
+  if (!subscription.external_user_id) throw new Error(`X user ID missing for @${subscription.source_key}`);
+  const url = new URL(`${xApiBaseUrl}/users/${encodeURIComponent(subscription.external_user_id)}/tweets`);
+  url.searchParams.set("exclude", "retweets,replies");
+  url.searchParams.set("max_results", subscription.last_resource_id ? "100" : "10");
+  url.searchParams.set("tweet.fields", "id,text,created_at,lang,entities,public_metrics");
+  if (subscription.last_resource_id) url.searchParams.set("since_id", subscription.last_resource_id);
+  const result = await fetch(url, { headers: xBearerHeaders(token) });
+  const payload = await result.json().catch(() => null) as { data?: XPost[]; detail?: string; title?: string } | null;
+  if (!result.ok) {
+    throw new Error(`X timeline request failed for @${subscription.source_key}: ${payload?.detail || payload?.title || `HTTP ${result.status}`}`);
+  }
+  return Array.isArray(payload?.data) ? payload.data : [];
+}
+
+function highestResourceId(values: string[]): string | null {
+  if (!values.length) return null;
+  return values.reduce((highest, current) => {
+    try {
+      return BigInt(current) > BigInt(highest) ? current : highest;
+    } catch {
+      return current > highest ? current : highest;
+    }
+  });
+}
+
+function extractXTickers(post: XPost, trackedSymbols: Set<string>): string[] {
+  return [...new Set((post.entities?.cashtags || [])
+    .map((cashtag) => normalizedSymbol(cashtag.tag))
+    .filter((ticker) => ticker && trackedSymbols.has(ticker)))];
+}
+
 async function storeArticlesAndMatches(
   admin: ReturnType<typeof createClient>,
   source: string,
@@ -188,6 +268,35 @@ async function storeArticlesAndMatches(
   return matches.length;
 }
 
+async function storeSourceArticleMatches(
+  admin: ReturnType<typeof createClient>,
+  subscription: XSubscription,
+  articleRows: Record<string, unknown>[],
+): Promise<number> {
+  const sourceIds = articleRows.map((row) => String(row.source_article_id));
+  if (!sourceIds.length) return 0;
+  const { data: storedArticles, error: articleError } = await admin
+    .from("research_articles")
+    .select("id,source_article_id")
+    .eq("source", subscription.source)
+    .in("source_article_id", sourceIds);
+  if (articleError) throw articleError;
+
+  const rows = (storedArticles || []).map((article) => ({
+    user_id: subscription.user_id,
+    article_id: article.id,
+    source: subscription.source,
+    source_key: subscription.source_key,
+  }));
+  if (rows.length) {
+    const { error } = await admin
+      .from("research_source_article_matches")
+      .upsert(rows, { onConflict: "user_id,article_id,source,source_key" });
+    if (error) throw error;
+  }
+  return rows.length;
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return response({ error: "Method not allowed" }, 405);
@@ -196,6 +305,11 @@ Deno.serve(async (request) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim();
     const massiveApiKey = Deno.env.get("MASSIVE_API_KEY")?.trim();
+    const xBearerToken = Deno.env.get("X_BEARER_TOKEN")?.trim();
+    const xDefaultHandles = (Deno.env.get("X_SOURCE_HANDLES") || "")
+      .split(",")
+      .map((handle) => handle.replace(/^@/, "").trim().toLowerCase())
+      .filter(Boolean);
     const syncSecret = Deno.env.get("RESEARCH_SYNC_SECRET")?.trim();
     if (!serviceRoleKey) return response({ error: "SUPABASE_SERVICE_ROLE_KEY is not configured" }, 500);
     if (!massiveApiKey) return response({ error: "MASSIVE_API_KEY is not configured" }, 503);
@@ -332,6 +446,107 @@ Deno.serve(async (request) => {
 
     const now = new Date().toISOString();
     const userIds = [...new Set([...scopes.values()].map((scope) => scope.userId))];
+    let xPostsChecked = 0;
+    let xArticles = 0;
+    let xMatches = 0;
+    let xError: string | null = null;
+    try {
+      if (requestedUserId && xDefaultHandles.length) {
+        const defaults = xDefaultHandles.map((handle) => ({
+          user_id: requestedUserId,
+          source: "x",
+          source_key: handle,
+          display_name: `@${handle}`,
+          is_active: true,
+          updated_at: now,
+        }));
+        const { error } = await admin
+          .from("research_source_subscriptions")
+          .upsert(defaults, { onConflict: "user_id,source,source_key", ignoreDuplicates: true });
+        if (error) throw error;
+      }
+
+      let subscriptionQuery = admin
+        .from("research_source_subscriptions")
+        .select("user_id,source,source_key,display_name,external_user_id,last_resource_id")
+        .eq("source", "x")
+        .eq("is_active", true);
+      if (requestedUserId) subscriptionQuery = subscriptionQuery.eq("user_id", requestedUserId);
+      const { data: subscriptionData, error: subscriptionError } = await subscriptionQuery;
+      if (subscriptionError) throw subscriptionError;
+      const subscriptions = (subscriptionData || []) as XSubscription[];
+
+      if (subscriptions.length && !xBearerToken) throw new Error("X_BEARER_TOKEN is not configured");
+
+      const trackedSymbols = new Set(scopeBySymbol.keys());
+      for (const originalSubscription of subscriptions) {
+        let subscription = { ...originalSubscription };
+        if (!subscription.external_user_id) {
+          const xUser = await fetchXUser(xBearerToken!, subscription.source_key);
+          subscription = {
+            ...subscription,
+            external_user_id: xUser.id,
+            display_name: xUser.name || `@${subscription.source_key}`,
+          };
+          const { error } = await admin
+            .from("research_source_subscriptions")
+            .update({
+              external_user_id: xUser.id,
+              display_name: xUser.name || `@${subscription.source_key}`,
+              updated_at: now,
+            })
+            .eq("user_id", subscription.user_id)
+            .eq("source", "x")
+            .eq("source_key", subscription.source_key);
+          if (error) throw error;
+        }
+
+        const posts = await fetchXPosts(xBearerToken!, subscription);
+        xPostsChecked += posts.length;
+        const xRows = posts.map((post) => {
+          const text = String(post.text || "").replace(/\s+/g, " ").trim();
+          return {
+            source: "x",
+            source_article_id: post.id,
+            canonical_url: `https://x.com/${subscription.source_key}/status/${post.id}`,
+            title: text || `New post from @${subscription.source_key}`,
+            description: null,
+            publisher_name: `X · @${subscription.source_key}`,
+            publisher_homepage_url: `https://x.com/${subscription.source_key}`,
+            publisher_logo_url: null,
+            published_at: post.created_at || now,
+            tickers: extractXTickers(post, trackedSymbols),
+            keywords: ["X", `@${subscription.source_key}`],
+            raw_payload: post,
+            updated_at: now,
+          };
+        });
+        if (xRows.length) {
+          const { error } = await admin
+            .from("research_articles")
+            .upsert(xRows, { onConflict: "source,source_article_id" });
+          if (error) throw error;
+        }
+        xMatches += await storeSourceArticleMatches(admin, subscription, xRows);
+        xMatches += await storeArticlesAndMatches(admin, "x", xRows, scopeBySymbol);
+        xArticles += xRows.length;
+
+        const latestPostId = highestResourceId(posts.map((post) => post.id));
+        if (latestPostId) {
+          const { error } = await admin
+            .from("research_source_subscriptions")
+            .update({ last_resource_id: latestPostId, updated_at: now })
+            .eq("user_id", subscription.user_id)
+            .eq("source", "x")
+            .eq("source_key", subscription.source_key);
+          if (error) throw error;
+        }
+      }
+    } catch (error) {
+      xError = error instanceof Error ? error.message : String(error);
+      console.warn("X source sync skipped:", xError);
+    }
+
     const latestPublished = (rows: Record<string, unknown>[]) => rows.reduce<string | null>((latest, row) => {
       const value = String(row.published_at || "");
       return value && (!latest || value > latest) ? value : latest;
@@ -355,6 +570,15 @@ Deno.serve(async (request) => {
         last_error: secError,
         updated_at: now,
       },
+      {
+        user_id: userId,
+        source: "x-selected",
+        last_checked_at: now,
+        last_success_at: xError ? null : now,
+        last_published_at: null,
+        last_error: xError,
+        updated_at: now,
+      },
     ]);
     const { error: syncError } = await admin
       .from("research_sync_state")
@@ -367,11 +591,14 @@ Deno.serve(async (request) => {
       tracked: scopes.size,
       news_checked: news.length,
       sec_8k_checked: secChecked,
-      matched_articles: articleRows.length + secRows.length,
+      x_posts_checked: xPostsChecked,
+      matched_articles: articleRows.length + secRows.length + xArticles,
       news_articles: articleRows.length,
       sec_8k_filings: secRows.length,
-      matches: massiveMatches + secMatches,
+      x_articles: xArticles,
+      matches: massiveMatches + secMatches + xMatches,
       sec_error: secError,
+      x_error: xError,
       since,
       truncated: Boolean(news.length && news.length >= maxPages * 1000),
     });

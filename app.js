@@ -416,7 +416,7 @@
       if (article.is_hidden) return false;
       if (state.researchFilter === "unread" && article.is_read) return false;
       if (state.researchFilter === "portfolio" && !article.is_portfolio) return false;
-      if (state.researchFilter === "macro" && !(article.keywords || []).includes("MARKET_MACRO")) return false;
+      if (state.researchFilter === "macro" && (!(article.keywords || []).includes("MARKET_MACRO") || (article.keywords || []).includes("TICKER_EVENT"))) return false;
       if (state.researchFilter === "saved" && !article.is_saved) return false;
       return !term || (article.tickers || []).some((ticker) => String(ticker || "").trim().toUpperCase() === term);
     });
@@ -482,6 +482,24 @@
       p_action: action,
       p_value: value
     });
+    await loadResearchPage();
+  }
+
+  async function setResearchGroupState(articleIds, action, value = true) {
+    const ids = [...new Set(String(articleIds || "").split(",").map((id) => id.trim()).filter(Boolean))];
+    if (!ids.length) return;
+    if (localPreviewEnabled) {
+      for (const article of state.researchPreviewSource) {
+        if (ids.includes(String(article.id))) article[`is_${action}`] = value;
+      }
+      await loadResearchPage();
+      return;
+    }
+    await Promise.all(ids.map((articleId) => rpc("api_set_research_article_state", {
+      p_article_id: articleId,
+      p_action: action,
+      p_value: value
+    })));
     await loadResearchPage();
   }
 
@@ -1052,12 +1070,89 @@
     return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   }
 
+  const researchAnchorStopwords = new Set([
+    "ABOUT", "AFTER", "AGAIN", "ALONG", "ANNOUNCED", "BEFORE", "BREAKING", "COMPANY",
+    "COULD", "FIRST", "FROM", "HOLDINGS", "HTTPS", "INTO", "MARKET", "MILLION",
+    "MORE", "REPORT", "REPORTED", "REPORTS", "SHARES", "STOCK", "THROUGH", "TODAY",
+    "UNDER", "WITH", "WOULD"
+  ]);
+
+  function researchNumericAnchors(value) {
+    const text = String(value || "").toUpperCase().replace(/,/g, "");
+    const anchors = new Set();
+    for (const match of text.matchAll(/\$?(\d+(?:\.\d+)?)\s*(TRILLION|BILLION|MILLION|[TBM])?\b/g)) {
+      let amount = Number(match[1]);
+      if (!Number.isFinite(amount)) continue;
+      const suffix = match[2] || "";
+      if (suffix === "TRILLION" || suffix === "T") amount *= 1e12;
+      else if (suffix === "BILLION" || suffix === "B") amount *= 1e9;
+      else if (suffix === "MILLION" || suffix === "M") amount *= 1e6;
+      if (amount < 3 && !suffix) continue;
+      anchors.add(amount >= 1e6 ? String(Math.round(amount / 1000) * 1000) : String(amount));
+    }
+    return anchors;
+  }
+
+  function researchWordAnchors(value) {
+    const anchors = new Set();
+    const text = String(value || "").replace(/https?:\/\/\S+/gi, " ");
+    for (const token of text.toUpperCase().match(/[A-Z][A-Z0-9.-]{3,}/g) || []) {
+      const clean = token.replace(/^[.$]+|[.$]+$/g, "");
+      if (clean.length >= 4 && !researchAnchorStopwords.has(clean)) anchors.add(clean);
+    }
+    return anchors;
+  }
+
+  function researchSetsOverlap(left, right) {
+    let count = 0;
+    for (const value of left) if (right.has(value)) count += 1;
+    return count;
+  }
+
+  function researchArticlesMatch(left, right) {
+    if (left.source !== "x" || right.source !== "x") return false;
+    const leftTime = new Date(left.published_at).getTime();
+    const rightTime = new Date(right.published_at).getTime();
+    if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || Math.abs(leftTime - rightTime) > 24 * 60 * 60 * 1000) return false;
+    const leftTickers = new Set((left.tickers || []).map((ticker) => String(ticker).toUpperCase()));
+    const rightTickers = new Set((right.tickers || []).map((ticker) => String(ticker).toUpperCase()));
+    if (!researchSetsOverlap(leftTickers, rightTickers)) return false;
+    const leftText = `${left.title || ""} ${left.description || ""}`;
+    const rightText = `${right.title || ""} ${right.description || ""}`;
+    const numberOverlap = researchSetsOverlap(researchNumericAnchors(leftText), researchNumericAnchors(rightText));
+    const wordOverlap = researchSetsOverlap(researchWordAnchors(leftText), researchWordAnchors(rightText));
+    return numberOverlap >= 2 || wordOverlap >= 2 || (numberOverlap >= 1 && wordOverlap >= 1);
+  }
+
+  function groupResearchEntries(entries) {
+    const groups = [];
+    for (const article of entries) {
+      const group = groups.find((candidate) => candidate.members.some((member) => researchArticlesMatch(article, member)));
+      if (group) group.members.push(article);
+      else groups.push({ members: [article] });
+    }
+    return groups.map(({ members }) => ({
+      ...members[0],
+      members,
+      is_read: members.every((article) => article.is_read),
+      is_saved: members.some((article) => article.is_saved),
+      is_portfolio: members.some((article) => article.is_portfolio),
+      is_watchlist: members.some((article) => article.is_watchlist),
+      tickers: [...new Set(members.flatMap((article) => article.tickers || []))],
+      keywords: [...new Set(members.flatMap((article) => article.keywords || []))]
+    }));
+  }
+
   function researchArticleMarkup(article) {
+    const members = article.members || [article];
+    const articleIds = members.map((item) => item.id).join(",");
     const tickers = (article.tickers || []).slice(0, 5);
+    const isTickerEvent = article.source === "x" && (article.keywords || []).includes("TICKER_EVENT");
     const isMacro = article.source === "x" && (article.keywords || []).includes("MARKET_MACRO");
     const publisher = article.publisher_name || "Source unavailable";
     const description = String(article.description || "").trim();
-    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : isMacro ? "MARKET / MACRO" : article.source === "x" ? "X POST" : "NEWS";
+    const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : isTickerEvent ? "TICKER EVENT" : isMacro ? "MARKET / MACRO" : article.source === "x" ? "X POST" : "NEWS";
+    const sources = [...new Map(members.map((item) => [item.publisher_name || item.canonical_url, item])).values()];
     return `<article class="news-item ${article.is_read ? "is-read" : "is-unread"}">
       <div class="news-item__rail"><span>${article.is_read ? "READ" : "NEW"}</span><i></i></div>
       <div class="news-item__body">
@@ -1067,20 +1162,22 @@
           <time datetime="${esc(article.published_at)}">${esc(researchTime(article.published_at))}</time>
           ${article.is_portfolio ? `<strong>IN PORTFOLIO</strong>` : ""}
         </div>
-        <h2><a href="${esc(article.canonical_url)}" target="_blank" rel="noopener noreferrer" data-action="research-open" data-article-id="${article.id}">${esc(article.title)}</a></h2>
+        <h2><a href="${esc(article.canonical_url)}" target="_blank" rel="noopener noreferrer" data-action="research-open" data-article-ids="${esc(articleIds)}">${esc(article.title)}</a></h2>
         ${description ? `<p>${esc(description)}</p>` : ""}
+        ${sources.length > 1 ? `<div class="news-item__sources"><strong>${sources.length} SOURCES</strong>${sources.map((source) => `<a href="${esc(source.canonical_url)}" target="_blank" rel="noopener noreferrer" data-action="research-open" data-article-ids="${esc(articleIds)}">${esc(source.publisher_name || "Source")}</a>`).join("")}</div>` : ""}
         <div class="news-item__tickers">${tickers.map((ticker) => `<span>${esc(ticker)}</span>`).join("")}${(article.tickers || []).length > tickers.length ? `<small>+${article.tickers.length - tickers.length}</small>` : ""}${isMacro && !tickers.length ? `<span>MARKET / MACRO</span>` : ""}</div>
       </div>
       <div class="news-item__actions">
-        <button class="button button--small" type="button" data-action="research-read" data-article-id="${article.id}" data-value="${article.is_read ? "false" : "true"}">${article.is_read ? "Mark unread" : "Mark read"}</button>
-        <button class="button button--small ${article.is_saved ? "is-active" : ""}" type="button" data-action="research-save" data-article-id="${article.id}" data-value="${article.is_saved ? "false" : "true"}">${article.is_saved ? "Saved" : "Save"}</button>
-        <button class="button button--small button--ghost" type="button" data-action="research-hide" data-article-id="${article.id}">Hide</button>
+        <button class="button button--small" type="button" data-action="research-read" data-article-ids="${esc(articleIds)}" data-value="${article.is_read ? "false" : "true"}">${article.is_read ? "Mark unread" : "Mark read"}</button>
+        <button class="button button--small ${article.is_saved ? "is-active" : ""}" type="button" data-action="research-save" data-article-ids="${esc(articleIds)}" data-value="${article.is_saved ? "false" : "true"}">${article.is_saved ? "Saved" : "Save"}</button>
+        <button class="button button--small button--ghost" type="button" data-action="research-hide" data-article-ids="${esc(articleIds)}">Hide</button>
       </div>
     </article>`;
   }
 
   function renderResearch() {
     const pages = Math.max(Math.ceil(state.researchTotal / state.researchPageSize), 1);
+    const researchGroups = groupResearchEntries(state.researchEntries);
     const unread = state.researchEntries.filter((item) => !item.is_read).length;
     const portfolio = state.researchEntries.filter((item) => item.is_portfolio).length;
     const saved = state.researchEntries.filter((item) => item.is_saved).length;
@@ -1106,11 +1203,11 @@
         <label class="news-search"><span>SEARCH TICKER</span><input type="search" data-research-search autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" placeholder="NVDA, BE, RKLB…" value="${esc(state.researchSearch)}"></label>
       </section>
       <section class="news-feed" aria-live="polite" aria-busy="${state.researchBusy}">
-        <header class="section-head news-feed__head"><div><span class="section-index">01 / SOURCE TAPE</span><h2>Latest from the wire.</h2></div><p>${state.researchTotal ? `Page ${state.researchPage} of ${pages} · newest first` : "Waiting for the first matching story"}</p></header>
+        <header class="section-head news-feed__head"><div><span class="section-index">01 / SOURCE TAPE</span><h2>Latest from the wire.</h2></div><p>${state.researchTotal ? `Page ${state.researchPage} of ${pages} · ${researchGroups.length} events from ${state.researchEntries.length} source posts` : "Waiting for the first matching story"}</p></header>
         ${state.researchBusy
           ? `<div class="news-empty"><span></span><p>Reading the latest source index…</p></div>`
-          : state.researchEntries.length
-            ? state.researchEntries.map(researchArticleMarkup).join("")
+          : researchGroups.length
+            ? researchGroups.map(researchArticleMarkup).join("")
             : `<div class="news-empty"><strong>No stories in this view.</strong><p>${state.researchSearch ? `No news, SEC 8-K filings or tagged X posts matched ticker ${esc(state.researchSearch.trim().toUpperCase())}.` : state.researchFilter === "saved" ? "Save useful articles and they will stay here." : "Run the collector or choose another filter."}</p></div>`}
       </section>
       <div class="pagination news-pagination">
@@ -2429,17 +2526,17 @@
       await loadResearchPage();
     }
     else if (action === "research-open") {
-      void setResearchState(target.dataset.articleId, "read", true).catch((error) => toast(friendlyError(error), true));
+      void setResearchGroupState(target.dataset.articleIds || target.dataset.articleId, "read", true).catch((error) => toast(friendlyError(error), true));
     }
     else if (action === "research-read") {
-      await setResearchState(target.dataset.articleId, "read", target.dataset.value === "true");
+      await setResearchGroupState(target.dataset.articleIds || target.dataset.articleId, "read", target.dataset.value === "true");
     }
     else if (action === "research-save") {
-      await setResearchState(target.dataset.articleId, "saved", target.dataset.value === "true");
+      await setResearchGroupState(target.dataset.articleIds || target.dataset.articleId, "saved", target.dataset.value === "true");
     }
     else if (action === "research-hide") {
-      await setResearchState(target.dataset.articleId, "hidden", true);
-      toast("Story hidden from News");
+      await setResearchGroupState(target.dataset.articleIds || target.dataset.articleId, "hidden", true);
+      toast("Event hidden from News");
     }
     else if (action === "research-page-prev" || action === "research-page-next") {
       state.researchPage += action === "research-page-next" ? 1 : -1;

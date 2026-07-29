@@ -854,6 +854,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .news-item h2 a { color: var(--paper); text-decoration: none; }
 .news-item h2 a:hover { color: var(--gold-bright); }
 .news-item__body > p { max-width: 76ch; margin: 0; color: var(--paper-dim); font-size: 12px; }
+.news-item__sources { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 16px; }
+.news-item__sources strong { color: var(--gold-bright); font: 700 8px/1 var(--mono); letter-spacing: .08em; }
+.news-item__sources a { border-bottom: 1px solid var(--rule-strong); color: var(--paper-dim); font: 600 9px/1.25 var(--mono); text-decoration: none; }
+.news-item__sources a:hover { border-color: var(--gold); color: var(--paper); }
 .news-item__tickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .news-item__tickers span,
 .news-item__tickers small { color: var(--paper-faint); font: 600 8px/1 var(--mono); }

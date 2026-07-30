@@ -1072,9 +1072,10 @@
 
   const researchAnchorStopwords = new Set([
     "ABOUT", "AFTER", "AGAIN", "ALONG", "ANNOUNCED", "BEFORE", "BREAKING", "COMPANY",
-    "COULD", "FIRST", "FROM", "HOLDINGS", "HTTPS", "INTO", "MARKET", "MILLION",
-    "MORE", "REPORT", "REPORTED", "REPORTS", "SHARES", "STOCK", "THROUGH", "TODAY",
-    "UNDER", "WITH", "WOULD"
+    "COULD", "DESIGNED", "EARNINGS", "EVERYTHING", "FIRST", "FROM", "GUIDANCE",
+    "HOLDINGS", "HTTPS", "INTO", "LAUNCHED", "MARKET", "MILLION", "MODEL", "MORE",
+    "QUARTER", "REPORT", "REPORTED", "REPORTS", "REVENUE", "SHARES", "STOCK",
+    "THROUGH", "TODAY", "UNDER", "USING", "WITH", "WOULD"
   ]);
 
   function researchNumericAnchors(value) {
@@ -1084,10 +1085,14 @@
       let amount = Number(match[1]);
       if (!Number.isFinite(amount)) continue;
       const suffix = match[2] || "";
+      const decimalPlaces = (match[1].split(".")[1] || "").length;
       if (suffix === "TRILLION" || suffix === "T") amount *= 1e12;
       else if (suffix === "BILLION" || suffix === "B") amount *= 1e9;
       else if (suffix === "MILLION" || suffix === "M") amount *= 1e6;
-      if (amount < 3 && !suffix) continue;
+      // Small, precise measurements such as 0.018 litres/kWh are often the
+      // strongest fingerprint shared by bilingual reports of one event.
+      // Keep those while still dropping noisy small integers and one-decimal values.
+      if (amount < 3 && !suffix && decimalPlaces < 2) continue;
       if (!suffix && amount >= 1900 && amount <= 2100 && Number.isInteger(amount)) continue;
       anchors.add(amount >= 1e6 ? String(Math.round(amount / 1000) * 1000) : String(amount));
     }
@@ -1123,7 +1128,11 @@
 
   function researchWordAnchors(value, excluded = new Set()) {
     const anchors = new Set();
-    const text = String(value || "").replace(/https?:\/\/\S+/gi, " ");
+    const text = String(value || "")
+      .replace(/https?:\/\/\S+/gi, " ")
+      // Treat compound forms as words so "liquid-cooled" can match
+      // "Liquid Cooling" without weakening the event-level thresholds.
+      .replace(/[-_/]+/g, " ");
     for (const token of text.toUpperCase().match(/[A-Z][A-Z0-9.-]{3,}/g) || []) {
       const clean = token.replace(/^[.$]+|[.$]+$/g, "");
       if (clean.length >= 4 && !researchAnchorStopwords.has(clean) && !excluded.has(clean)) anchors.add(clean);
@@ -1141,7 +1150,8 @@
     if (left.source !== "x" || right.source !== "x") return false;
     const leftTime = new Date(left.published_at).getTime();
     const rightTime = new Date(right.published_at).getTime();
-    if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || Math.abs(leftTime - rightTime) > 24 * 60 * 60 * 1000) return false;
+    const timeDelta = Math.abs(leftTime - rightTime);
+    if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || timeDelta > 24 * 60 * 60 * 1000) return false;
     const leftTickers = new Set((left.tickers || []).map((ticker) => String(ticker).toUpperCase()));
     const rightTickers = new Set((right.tickers || []).map((ticker) => String(ticker).toUpperCase()));
     if (!researchSetsOverlap(leftTickers, rightTickers)) return false;
@@ -1153,7 +1163,15 @@
       researchWordAnchors(leftText, sharedTickers),
       researchWordAnchors(rightText, sharedTickers)
     );
-    return numberOverlap >= 2 || wordOverlap >= 3 || (numberOverlap >= 1 && wordOverlap >= 1);
+    // Event fingerprints are discovered from each pair of posts rather than
+    // from a fixed topic-keyword list. Two distinctive shared names in a
+    // tight window (for example GEMINI + ROBOTICS) are enough, while older
+    // pairs still need stronger numeric or textual evidence.
+    const isTightWindow = timeDelta <= 6 * 60 * 60 * 1000;
+    return numberOverlap >= 2
+      || wordOverlap >= 3
+      || (numberOverlap >= 1 && wordOverlap >= 1)
+      || (isTightWindow && wordOverlap >= 2);
   }
 
   function groupResearchEntries(entries) {

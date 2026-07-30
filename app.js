@@ -1222,7 +1222,7 @@
     ];
 
     viewRoot.innerHTML = `
-      ${pageHead("Research desk · News + SEC 8-K + X", "A clean feed for what changed.", "Ticker-linked stories and a separate Market / Macro lane for important policy, rates and geopolitical posts. No AI usage.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
+      ${pageHead("Research desk · News + SEC 8-K + X", "A clean feed for what changed.", "Ticker-linked stories plus a focused Macro lane for FED, economic data, war, oil, gold and BTC. No AI usage.", `<button class="button button--primary" type="button" data-action="research-sync" ${state.researchSyncBusy || !state.researchReady ? "disabled" : ""}>${state.researchSyncBusy ? "Checking sources…" : "Check sources"}</button>`)}
       ${!state.researchReady ? `<div class="warning-box research-setup"><strong>News schema is not installed yet.</strong> Run <code>021_research_news.sql</code>, then deploy <code>sync-research-news</code>.</div>` : ""}
       <section class="news-ledger" aria-label="News summary">
         <div class="news-ledger__lead"><small>MATCHING STORIES</small><strong>${state.researchTotal}</strong><span>${esc(state.researchFilter.toUpperCase())} view</span></div>

@@ -1091,6 +1091,12 @@
       if (!suffix && amount >= 1900 && amount <= 2100 && Number.isInteger(amount)) continue;
       anchors.add(amount >= 1e6 ? String(Math.round(amount / 1000) * 1000) : String(amount));
     }
+    // Capacity figures are strong bilingual event fingerprints. For example,
+    // "1.6GW / $15B" can match the Thai report of the same event without
+    // treating every story about the same ticker as one event.
+    for (const match of text.matchAll(/\b(\d+(?:\.\d+)?)\s*(GW|MW|KW|GWH|MWH|TWH)\b/g)) {
+      anchors.add(`${match[2]}:${Number(match[1])}`);
+    }
     return anchors;
   }
 
@@ -1126,7 +1132,7 @@
       researchWordAnchors(leftText, sharedTickers),
       researchWordAnchors(rightText, sharedTickers)
     );
-    return numberOverlap >= 2 || wordOverlap >= 4 || (numberOverlap >= 1 && wordOverlap >= 2);
+    return numberOverlap >= 2 || wordOverlap >= 3 || (numberOverlap >= 1 && wordOverlap >= 1);
   }
 
   function groupResearchEntries(entries) {

@@ -1091,11 +1091,32 @@
       if (!suffix && amount >= 1900 && amount <= 2100 && Number.isInteger(amount)) continue;
       anchors.add(amount >= 1e6 ? String(Math.round(amount / 1000) * 1000) : String(amount));
     }
+    // Normalize Thai financial shorthand to the same anchor as English
+    // headlines: "15,000 ล้านดอลลาร์" and "$15B" both become 15000000000.
+    for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*(ล้านล้าน|พันล้าน|ล้าน)\s*(?:ดอลลาร์|บาท)?/g)) {
+      let amount = Number(match[1]);
+      if (!Number.isFinite(amount)) continue;
+      if (match[2] === "ล้านล้าน") amount *= 1e12;
+      else if (match[2] === "พันล้าน") amount *= 1e9;
+      else amount *= 1e6;
+      anchors.add(String(Math.round(amount / 1000) * 1000));
+    }
     // Capacity figures are strong bilingual event fingerprints. For example,
     // "1.6GW / $15B" can match the Thai report of the same event without
     // treating every story about the same ticker as one event.
     for (const match of text.matchAll(/\b(\d+(?:\.\d+)?)\s*(GW|MW|KW|GWH|MWH|TWH)\b/g)) {
       anchors.add(`${match[2]}:${Number(match[1])}`);
+    }
+    for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*(กิกะวัตต์ชั่วโมง|เมกะวัตต์ชั่วโมง|เทราวัตต์ชั่วโมง|กิกะวัตต์|เมกะวัตต์|กิโลวัตต์)/g)) {
+      const units = {
+        "กิกะวัตต์": "GW",
+        "เมกะวัตต์": "MW",
+        "กิโลวัตต์": "KW",
+        "กิกะวัตต์ชั่วโมง": "GWH",
+        "เมกะวัตต์ชั่วโมง": "MWH",
+        "เทราวัตต์ชั่วโมง": "TWH"
+      };
+      anchors.add(`${units[match[2]]}:${Number(match[1])}`);
     }
     return anchors;
   }

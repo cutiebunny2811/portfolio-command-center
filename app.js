@@ -63,6 +63,8 @@
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     researchEntries: [], researchPreviewSource: [], researchReady: true, researchBusy: false, researchSyncBusy: false,
     researchTotal: 0, researchPage: 1, researchPageSize: 25, researchFilter: "all", researchSearch: "",
+    earningsEntries: [], earningsReady: true, earningsBusy: false, earningsSyncBusy: false,
+    earningsFilter: "30d", earningsTrackedCount: 0, earningsLastSynced: null,
     agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
@@ -148,6 +150,9 @@
     }
     if (/api_get_research_feed|research_articles|research_article_/i.test(message)) {
       return "News is not installed yet. Run 021_research_news.sql in Supabase first.";
+    }
+    if (/api_get_earnings_calendar|earnings_events|earnings_sync_state/i.test(message)) {
+      return "Earnings Calendar is not installed yet. Run 032_earnings_calendar.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -565,6 +570,75 @@
     }
   }
 
+  function emptyEarningsFeed() {
+    return { entries: [], tracked_count: 0, last_synced_at: null };
+  }
+
+  async function fetchEarningsFeed() {
+    if (localPreviewEnabled) {
+      return {
+        entries: state.earningsEntries,
+        tracked_count: state.watchlist.length,
+        last_synced_at: new Date().toISOString()
+      };
+    }
+    const { data, error } = await db.rpc("api_get_earnings_calendar");
+    if (error) {
+      if (/api_get_earnings_calendar|earnings_events|schema cache|does not exist/i.test(error.message)) {
+        state.earningsReady = false;
+        return emptyEarningsFeed();
+      }
+      throw error;
+    }
+    state.earningsReady = true;
+    return { ...emptyEarningsFeed(), ...(data || {}), entries: Array.isArray(data?.entries) ? data.entries : [] };
+  }
+
+  function applyEarningsFeed(feed) {
+    state.earningsEntries = Array.isArray(feed?.entries) ? feed.entries : [];
+    state.earningsTrackedCount = num(feed?.tracked_count);
+    state.earningsLastSynced = feed?.last_synced_at || null;
+  }
+
+  async function loadEarningsPage({ renderAfter = true } = {}) {
+    state.earningsBusy = true;
+    if (renderAfter && state.route === "earnings") renderEarnings();
+    try {
+      applyEarningsFeed(await fetchEarningsFeed());
+    } catch (error) {
+      console.error(error);
+      toast(friendlyError(error), true);
+    } finally {
+      state.earningsBusy = false;
+      if (renderAfter && state.route === "earnings") renderEarnings();
+    }
+  }
+
+  async function syncEarningsCalendar({ notify = false } = {}) {
+    if (localPreviewEnabled || !state.user || state.earningsSyncBusy || !state.earningsReady) return null;
+    state.earningsSyncBusy = true;
+    if (state.route === "earnings") renderEarnings();
+    try {
+      const { data, error } = await db.functions.invoke("sync-earnings-calendar", { body: {} });
+      if (error) {
+        let detail = error.message;
+        try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(data.error);
+      await loadEarningsPage({ renderAfter: false });
+      if (notify) toast(`${data?.updated || 0} watchlist earnings events synced`);
+      return data;
+    } catch (error) {
+      console.warn(error);
+      if (notify) toast(`Earnings: ${friendlyError(error)}`, true);
+      return null;
+    } finally {
+      state.earningsSyncBusy = false;
+      if (state.route === "earnings") renderEarnings();
+    }
+  }
+
   function emptyJournalView() {
     return {
       entries: [], total_count: 0, daily: [], monthly: [],
@@ -775,7 +849,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -788,11 +862,13 @@
         optionalWatchlistQuery(),
         optionalMarketPulseQuery(),
         optionalSmartMoneyQuery(),
-        fetchResearchFeed()
+        fetchResearchFeed(),
+        fetchEarningsFeed()
       ]);
       Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
       state.researchEntries = researchFeed.entries;
       state.researchTotal = num(researchFeed.total_count);
+      applyEarningsFeed(earningsFeed);
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
@@ -805,6 +881,7 @@
       }
       if (state.route === "journal") await loadJournalPage({ renderAfter: false });
       if (state.route === "research") await loadResearchPage({ renderAfter: false });
+      if (state.route === "earnings") await loadEarningsPage({ renderAfter: false });
       state.lastSync = new Date();
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
@@ -859,6 +936,7 @@
     else if (state.route === "watchlist") renderWatchlist();
     else if (state.route === "smart-money") renderSmartMoney();
     else if (state.route === "research") renderResearch();
+    else if (state.route === "earnings") renderEarnings();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -1313,6 +1391,107 @@
         <span>${state.researchTotal.toLocaleString()} matching stories · 25 at a time</span>
         <div><button class="button button--small" type="button" data-action="research-page-prev" ${state.researchPage <= 1 || state.researchBusy ? "disabled" : ""}>← Prev</button> <span class="pagination__page">Page ${state.researchPage} / ${pages}</span> <button class="button button--small" type="button" data-action="research-page-next" ${state.researchPage >= pages || state.researchBusy ? "disabled" : ""}>Next →</button></div>
       </div>`;
+  }
+
+  function calendarDate(value) {
+    const date = new Date(`${value}T12:00:00`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function localDayKey(value = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function earningsVisibleEntries() {
+    const start = calendarDate(localDayKey()) || new Date();
+    const end = new Date(start);
+    const days = state.earningsFilter === "today" ? 0 : state.earningsFilter === "week" ? 7 : 30;
+    end.setDate(end.getDate() + days);
+    return state.earningsEntries
+      .filter((event) => {
+        const date = calendarDate(event.earnings_date);
+        return date && date >= start && date <= end;
+      })
+      .sort((a, b) => String(a.earnings_date).localeCompare(String(b.earnings_date)) || num(a.report_sort) - num(b.report_sort) || String(a.symbol).localeCompare(String(b.symbol)));
+  }
+
+  function earningsHourLabel(hour) {
+    return ({ bmo: "Before open", amc: "After close", dmh: "During market", tbd: "Time TBD" })[String(hour || "tbd").toLowerCase()] || "Time TBD";
+  }
+
+  function earningsMetric(actual, estimate, label) {
+    const hasActual = actual != null && Number.isFinite(Number(actual));
+    const hasEstimate = estimate != null && Number.isFinite(Number(estimate));
+    const format = label === "Revenue" ? compactMoney : (value) => money(value, 2);
+    return `<div class="earnings-metric"><small>${esc(label)}</small><strong>${hasActual ? format(actual) : hasEstimate ? format(estimate) : "—"}</strong><span>${hasActual ? "ACTUAL" : hasEstimate ? "ESTIMATE" : "NOT PROVIDED"}</span></div>`;
+  }
+
+  function earningsEventMarkup(event) {
+    const instrument = state.instruments.find((item) => item.id === event.instrument_id) || event;
+    const hasActual = event.eps_actual != null || event.revenue_actual != null;
+    const quarter = event.fiscal_year && event.fiscal_quarter ? `FY${event.fiscal_year} · Q${event.fiscal_quarter}` : "Fiscal period TBD";
+    return `<article class="earnings-event ${hasActual ? "is-reported" : "is-estimated"}">
+      <header class="earnings-event__head">
+        ${assetIdentity(instrument)}
+        <div class="earnings-event__badges"><span class="earnings-time earnings-time--${esc(event.report_hour || "tbd")}">${esc(earningsHourLabel(event.report_hour))}</span><span>${hasActual ? "REPORTED" : "ESTIMATED"}</span></div>
+      </header>
+      <div class="earnings-event__metrics">
+        ${earningsMetric(event.eps_actual, event.eps_estimate, "EPS")}
+        ${earningsMetric(event.revenue_actual, event.revenue_estimate, "Revenue")}
+      </div>
+      <footer><span>${esc(quarter)}</span><small>FINNHUB · WATCHLIST</small></footer>
+    </article>`;
+  }
+
+  function renderEarnings() {
+    const entries = earningsVisibleEntries();
+    const groups = new Map();
+    entries.forEach((event) => {
+      if (!groups.has(event.earnings_date)) groups.set(event.earnings_date, []);
+      groups.get(event.earnings_date).push(event);
+    });
+    const todayKey = localDayKey();
+    const filterLabels = { today: "Today", week: "Next 7 days", "30d": "Next 30 days" };
+    const nextEvent = state.earningsEntries
+      .filter((event) => event.earnings_date >= todayKey)
+      .sort((a, b) => String(a.earnings_date).localeCompare(String(b.earnings_date)))[0];
+    const syncLabel = state.earningsLastSynced
+      ? new Date(state.earningsLastSynced).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : "Not synced yet";
+
+    viewRoot.innerHTML = `
+      ${pageHead("Watchlist intelligence · Earnings", "Know what reports next.", "A focused earnings calendar for stocks and ETFs already in your watchlist. Dates can move, so every event stays marked estimated until results arrive.", `<button class="button button--primary" type="button" data-action="earnings-sync" ${state.earningsSyncBusy || !state.earningsReady ? "disabled" : ""}>${state.earningsSyncBusy ? "Checking Finnhub…" : "Update calendar"}</button>`)}
+      ${!state.earningsReady ? `<div class="warning-box earnings-setup"><strong>Earnings Calendar is not installed yet.</strong> Run <code>032_earnings_calendar.sql</code>, add <code>FINNHUB_API_KEY</code>, then deploy <code>sync-earnings-calendar</code>.</div>` : ""}
+      <section class="earnings-ledger" aria-label="Earnings calendar summary">
+        <div class="earnings-ledger__lead"><small>NEXT REPORT</small><strong>${esc(nextEvent?.symbol || "—")}</strong><span>${nextEvent ? `${esc(nextEvent.earnings_date)} · ${esc(earningsHourLabel(nextEvent.report_hour))}` : "No scheduled event loaded"}</span></div>
+        <div><small>EVENTS IN VIEW</small><strong>${entries.length}</strong><span>${esc(filterLabels[state.earningsFilter])}</span></div>
+        <div><small>WATCHLIST NAMES</small><strong>${state.earningsTrackedCount}</strong><span>Stocks and ETFs tracked</span></div>
+        <div><small>LAST UPDATED</small><strong class="earnings-ledger__time">${esc(syncLabel)}</strong><span>Server-side Finnhub sync</span></div>
+      </section>
+      <section class="earnings-commandbar" aria-label="Earnings window">
+        <div><span>CALENDAR WINDOW</span><nav>${Object.entries(filterLabels).map(([value, label]) => `<button type="button" class="${state.earningsFilter === value ? "is-active" : ""}" data-action="earnings-filter" data-filter="${value}">${esc(label)}</button>`).join("")}</nav></div>
+        <p>Watchlist only · Times shown in U.S. market sessions · BMO before open · AMC after close</p>
+      </section>
+      <section class="earnings-agenda" aria-live="polite" aria-busy="${state.earningsBusy}">
+        <header class="section-head earnings-agenda__head"><div><span class="section-index">01 / REPORTING TAPE</span><h2>The dates that matter.</h2></div><p>${entries.length ? `${groups.size} reporting days · ${entries.length} watchlist events` : "No events inside this window"}</p></header>
+        ${state.earningsBusy
+          ? `<div class="earnings-empty"><span></span><p>Reading the watchlist calendar…</p></div>`
+          : groups.size
+            ? [...groups.entries()].map(([dateKey, events]) => {
+              const date = calendarDate(dateKey);
+              const isToday = dateKey === todayKey;
+              return `<section class="earnings-day ${isToday ? "is-today" : ""}">
+                <header><span>${isToday ? "TODAY" : esc(date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase())}</span><strong>${esc(date.toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</strong><small>${events.length} ${events.length === 1 ? "REPORT" : "REPORTS"}</small></header>
+                <div class="earnings-day__events">${events.map(earningsEventMarkup).join("")}</div>
+              </section>`;
+            }).join("")
+            : `<div class="earnings-empty"><strong>No watchlist earnings in this window.</strong><p>${state.earningsTrackedCount ? "Try a wider date window or update the calendar." : "Add stock or ETF symbols to Watchlist, then update the calendar."}</p></div>`}
+      </section>
+      <p class="earnings-disclaimer">Earnings dates and session times are supplied by Finnhub and can be revised by the company. “Estimated” is a schedule status, not an investment signal.</p>`;
   }
 
   function smartMoneyCodeLabel(code) {
@@ -2676,6 +2855,7 @@
       renderNav();
       if (state.route === "journal") await loadJournalPage();
       else if (state.route === "research") await loadResearchPage();
+      else if (state.route === "earnings") await loadEarningsPage();
       else {
         render();
         if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
@@ -2746,6 +2926,11 @@
       state.researchPage += action === "research-page-next" ? 1 : -1;
       await loadResearchPage();
       $(".news-commandbar")?.scrollIntoView({ block: "start" });
+    }
+    else if (action === "earnings-sync") await syncEarningsCalendar({ notify: true });
+    else if (action === "earnings-filter") {
+      state.earningsFilter = ["today", "week", "30d"].includes(target.dataset.filter) ? target.dataset.filter : "30d";
+      renderEarnings();
     }
     else if (action === "account") await openAccountDialog();
     else if (action === "portfolio-create") openCreatePortfolioDialog();
@@ -2978,7 +3163,13 @@
       { id: "news-4", source: "massive", canonical_url: "https://example.com/eose-project", title: "Eos Energy announces a new long-duration storage project milestone", description: "The latest project update covers commissioning work and the expected delivery sequence.", publisher_name: "Energy Journal", published_at: "2026-07-28T12:30:00Z", tickers: ["EOSE"], is_portfolio: true, is_watchlist: false, is_read: false, is_saved: false },
       { id: "news-5", source: "massive", canonical_url: "https://example.com/meta-policy", title: "Meta updates platform policy ahead of its next product rollout", description: "The policy change will roll out in stages across advertising and creator tools.", publisher_name: "Digital Media News", published_at: "2026-07-27T19:40:00Z", tickers: ["META"], is_portfolio: true, is_watchlist: false, is_read: true, is_saved: true }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    const previewEarningsDate = (days) => { const date = new Date(); date.setDate(date.getDate() + days); return localDayKey(date); };
+    const earningsEntries = [
+      { id: "er-1", instrument_id: "i-nvda", symbol: "NVDA", display_name: "NVIDIA", asset_type: "stock", earnings_date: previewEarningsDate(2), report_hour: "amc", report_sort: 3, fiscal_quarter: 3, fiscal_year: 2026, eps_estimate: 1.18, revenue_estimate: 45800000000 },
+      { id: "er-2", instrument_id: "i-googl", symbol: "GOOGL", display_name: "Alphabet", asset_type: "stock", earnings_date: previewEarningsDate(5), report_hour: "amc", report_sort: 3, fiscal_quarter: 3, fiscal_year: 2026, eps_estimate: 2.21, revenue_estimate: 96700000000 },
+      { id: "er-3", instrument_id: "i-rklb", symbol: "RKLB", display_name: "Rocket Lab", asset_type: "stock", earnings_date: previewEarningsDate(8), report_hour: "bmo", report_sort: 1, fiscal_quarter: 2, fiscal_year: 2026, eps_estimate: -0.08, revenue_estimate: 162000000 }
+    ];
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;

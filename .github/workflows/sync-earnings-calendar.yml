@@ -1,0 +1,25 @@
+name: Sync earnings calendar
+
+on:
+  schedule:
+    - cron: "15 0,12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refresh watchlist earnings
+        env:
+          EARNINGS_SYNC_SECRET: ${{ secrets.EARNINGS_SYNC_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 2 \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-sync-secret: ${EARNINGS_SYNC_SECRET}" \
+            --data '{}' \
+            https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/sync-earnings-calendar

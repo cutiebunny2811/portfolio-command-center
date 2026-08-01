@@ -1417,3 +1417,21 @@ tbody tr:last-child td { border-bottom: 0; }
 
 /* Authentication and dashboard are mutually exclusive document states. */
 body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
+.portfolio-manager { border-top: 1px solid var(--line); }
+.portfolio-manager__row { display: grid; grid-template-columns: 52px minmax(220px, 1fr) 170px 130px auto; align-items: center; min-height: 92px; border-bottom: 1px solid var(--line); }
+.portfolio-manager__index { color: var(--gold); font: 700 11px/1 var(--mono); }
+.portfolio-manager__identity { display: grid; gap: 5px; }
+.portfolio-manager__identity strong { font-size: 20px; }
+.portfolio-manager__identity span,
+.portfolio-manager__metric small { color: var(--muted); font: 600 10px/1.45 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.portfolio-manager__metric { display: grid; gap: 6px; }
+.portfolio-manager__metric strong { font: 700 16px/1 var(--mono); }
+
+@media (max-width: 760px) {
+  .portfolio-manager__row { grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding: 18px 0; }
+  .portfolio-manager__identity,
+  .portfolio-manager__metric,
+  .portfolio-manager__row .row-actions { grid-column: 2; padding-left: 0; }
+  .portfolio-manager__metric { grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; }
+  .portfolio-manager__metric strong { font-size: 15px; }
+}

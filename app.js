@@ -1458,8 +1458,16 @@
     const matching = hour === "tbd"
       ? events.filter((event) => !["bmo", "amc"].includes(String(event.report_hour || "tbd")))
       : events.filter((event) => String(event.report_hour || "tbd") === hour);
+    const session = ({
+      bmo: { icon: "☀", text: "Before open" },
+      amc: { icon: "☾", text: "After close" },
+      tbd: { icon: "?", text: "Time TBD" },
+    })[hour] || { icon: "?", text: label };
     return `<section class="earnings-session earnings-session--${hour}">
-      <header><span>${esc(label)}</span><small>${matching.length || "—"}</small></header>
+      <header>
+        <span class="earnings-session__label"><b aria-hidden="true">${session.icon}</b><em>${esc(session.text)}</em></span>
+        <small>${matching.length || "—"}</small>
+      </header>
       <div class="earnings-session__tickers">${matching.length ? matching.map(earningsTickerMarkup).join("") : `<p>No reports</p>`}</div>
     </section>`;
   }
@@ -1519,7 +1527,7 @@
       </section>
       <section class="earnings-commandbar" aria-label="Weeks in ${esc(monthLabel)}">
         <div><span>${esc(monthLabel.toUpperCase())} · WEEK</span><nav>${calendar.weeks.map((week, index) => `<button type="button" class="${state.earningsWeekIndex === index ? "is-active" : ""}" data-action="earnings-week" data-week="${index}" aria-label="Week ${index + 1}, ${week.start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} to ${week.end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}"><b>${String(index + 1).padStart(2, "0")}</b><small>${week.start.getDate()}—${week.end.getDate()}</small></button>`).join("")}</nav></div>
-        <p>Monday—Friday · BMO before open · AMC after close · ${esc(syncLabel)}</p>
+        <p>Monday—Friday · ☀ before open · ☾ after close · ${esc(syncLabel)}</p>
       </section>
       <section class="earnings-agenda" aria-live="polite" aria-busy="${state.earningsBusy}">
         <header class="section-head earnings-agenda__head"><div><span class="section-index">01 / WEEK ${String(state.earningsWeekIndex + 1).padStart(2, "0")}</span><h2>The week at a glance.</h2></div><p>${entries.length ? `${entries.length} watchlist events · tap a name for estimates` : "No watchlist earnings this week"}</p></header>

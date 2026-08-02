@@ -923,11 +923,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .earnings-week-day.is-outside { opacity: .34; }
 .earnings-session { min-height: 132px; border-top: 1px solid var(--rule); }
 .earnings-session > header { display: flex; align-items: center; justify-content: space-between; min-height: 34px; border-bottom: 1px solid var(--rule); padding: 0 12px; }
-.earnings-session > header span,
 .earnings-session > header small { font: 700 7px/1 var(--mono); letter-spacing: .08em; }
-.earnings-session--bmo > header span { color: var(--gold-bright); }
-.earnings-session--amc > header span { color: var(--green); }
-.earnings-session--tbd > header span { color: var(--paper-faint); }
+.earnings-session__label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.earnings-session__label b { width: 16px; font: 700 15px/1 var(--sans); text-align: center; }
+.earnings-session__label em { overflow: hidden; font: 700 7px/1 var(--mono); font-style: normal; letter-spacing: .08em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.earnings-session--bmo .earnings-session__label { color: var(--gold-bright); }
+.earnings-session--amc .earnings-session__label { color: var(--green); }
+.earnings-session--tbd .earnings-session__label { color: var(--paper-faint); }
 .earnings-session > header small { color: var(--paper-faint); }
 .earnings-session__tickers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .earnings-session__tickers > p { grid-column: 1 / -1; margin: 0; padding: 18px 12px; color: var(--paper-faint); font: 8px/1.3 var(--mono); }

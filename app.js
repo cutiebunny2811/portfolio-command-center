@@ -64,7 +64,7 @@
     researchEntries: [], researchPreviewSource: [], researchReady: true, researchBusy: false, researchSyncBusy: false,
     researchTotal: 0, researchPage: 1, researchPageSize: 25, researchFilter: "all", researchSearch: "",
     earningsEntries: [], earningsReady: true, earningsBusy: false, earningsSyncBusy: false,
-    earningsFilter: "30d", earningsTrackedCount: 0, earningsLastSynced: null,
+    earningsWeekIndex: 0, earningsTrackedCount: 0, earningsLastSynced: null,
     agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
@@ -1406,15 +1406,29 @@
     return `${year}-${month}-${day}`;
   }
 
-  function earningsVisibleEntries() {
-    const start = calendarDate(localDayKey()) || new Date();
-    const end = new Date(start);
-    const days = state.earningsFilter === "today" ? 0 : state.earningsFilter === "week" ? 7 : 30;
-    end.setDate(end.getDate() + days);
+  function earningsMonthWeeks(reference = new Date()) {
+    const year = reference.getFullYear();
+    const month = reference.getMonth();
+    const monthStart = new Date(year, month, 1, 12);
+    const monthEnd = new Date(year, month + 1, 0, 12);
+    const firstWeekday = new Date(monthStart);
+    while ([0, 6].includes(firstWeekday.getDay())) firstWeekday.setDate(firstWeekday.getDate() + 1);
+    const firstMonday = new Date(firstWeekday);
+    firstMonday.setDate(firstMonday.getDate() - ((firstMonday.getDay() + 6) % 7));
+    const weeks = [];
+    for (let monday = firstMonday; monday <= monthEnd; monday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 7, 12)) {
+      const days = Array.from({ length: 5 }, (_, offset) => new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offset, 12));
+      if (days.some((day) => day.getMonth() === month)) weeks.push({ start: days[0], end: days[4], days });
+    }
+    return { year, month, monthStart, monthEnd, weeks };
+  }
+
+  function earningsMonthEntries(reference = new Date()) {
+    const { year, month } = earningsMonthWeeks(reference);
     return state.earningsEntries
       .filter((event) => {
         const date = calendarDate(event.earnings_date);
-        return date && date >= start && date <= end;
+        return date && date.getFullYear() === year && date.getMonth() === month;
       })
       .sort((a, b) => String(a.earnings_date).localeCompare(String(b.earnings_date)) || num(a.report_sort) - num(b.report_sort) || String(a.symbol).localeCompare(String(b.symbol)));
   }
@@ -1430,68 +1444,98 @@
     return `<div class="earnings-metric"><small>${esc(label)}</small><strong>${hasActual ? format(actual) : hasEstimate ? format(estimate) : "—"}</strong><span>${hasActual ? "ACTUAL" : hasEstimate ? "ESTIMATE" : "NOT PROVIDED"}</span></div>`;
   }
 
-  function earningsEventMarkup(event) {
+  function earningsTickerMarkup(event) {
     const instrument = state.instruments.find((item) => item.id === event.instrument_id) || event;
     const hasActual = event.eps_actual != null || event.revenue_actual != null;
-    const quarter = event.fiscal_year && event.fiscal_quarter ? `FY${event.fiscal_year} · Q${event.fiscal_quarter}` : "Fiscal period TBD";
-    return `<article class="earnings-event ${hasActual ? "is-reported" : "is-estimated"}">
-      <header class="earnings-event__head">
-        ${assetIdentity(instrument)}
-        <div class="earnings-event__badges"><span class="earnings-time earnings-time--${esc(event.report_hour || "tbd")}">${esc(earningsHourLabel(event.report_hour))}</span><span>${hasActual ? "REPORTED" : "ESTIMATED"}</span></div>
-      </header>
-      <div class="earnings-event__metrics">
-        ${earningsMetric(event.eps_actual, event.eps_estimate, "EPS")}
-        ${earningsMetric(event.revenue_actual, event.revenue_estimate, "Revenue")}
-      </div>
-      <footer><span>${esc(quarter)}</span><small>FINNHUB · WATCHLIST</small></footer>
-    </article>`;
+    return `<button class="earnings-ticker ${hasActual ? "is-reported" : ""}" type="button" data-action="earnings-detail" data-earnings-id="${esc(event.id)}" aria-label="Open ${esc(event.symbol)} earnings details">
+      ${assetMark(instrument, "small")}
+      <strong>${esc(event.symbol)}</strong>
+      <span aria-hidden="true">↗</span>
+    </button>`;
+  }
+
+  function earningsSessionMarkup(events, hour, label) {
+    const matching = hour === "tbd"
+      ? events.filter((event) => !["bmo", "amc"].includes(String(event.report_hour || "tbd")))
+      : events.filter((event) => String(event.report_hour || "tbd") === hour);
+    return `<section class="earnings-session earnings-session--${hour}">
+      <header><span>${esc(label)}</span><small>${matching.length || "—"}</small></header>
+      <div class="earnings-session__tickers">${matching.length ? matching.map(earningsTickerMarkup).join("") : `<p>No reports</p>`}</div>
+    </section>`;
+  }
+
+  function openEarningsDetail(earningsId) {
+    const event = state.earningsEntries.find((item) => String(item.id) === String(earningsId));
+    if (!event) return toast("Earnings event was not found", true);
+    const instrument = state.instruments.find((item) => item.id === event.instrument_id) || event;
+    const hasActual = event.eps_actual != null || event.revenue_actual != null;
+    const quarter = event.fiscal_year && event.fiscal_quarter ? `FY${event.fiscal_year} · Q${event.fiscal_quarter}` : "Fiscal period not supplied";
+    const date = calendarDate(event.earnings_date);
+    openDialog({
+      kicker: `${date ? date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : event.earnings_date} · ${earningsHourLabel(event.report_hour)}`,
+      title: `${event.symbol} earnings`,
+      cancelLabel: "Done",
+      body: `<article class="earnings-detail">
+        <header>${assetIdentity(instrument)}<span class="earnings-time earnings-time--${esc(event.report_hour || "tbd")}">${esc(earningsHourLabel(event.report_hour))}</span></header>
+        <div class="earnings-event__metrics">
+          ${earningsMetric(event.eps_actual, event.eps_estimate, "EPS")}
+          ${earningsMetric(event.revenue_actual, event.revenue_estimate, "Revenue")}
+        </div>
+        <dl><div><dt>Schedule status</dt><dd>${hasActual ? "Reported" : "Estimated"}</dd></div><div><dt>Fiscal period</dt><dd>${esc(quarter)}</dd></div><div><dt>Coverage</dt><dd>Watchlist only</dd></div><div><dt>Calendar sources</dt><dd>Alpha Vantage + Finnhub</dd></div></dl>
+        <p>Dates and market sessions can be revised by the company. Use this card as a calendar reminder, not an investment signal.</p>
+      </article>`,
+    });
   }
 
   function renderEarnings() {
-    const entries = earningsVisibleEntries();
-    const groups = new Map();
-    entries.forEach((event) => {
-      if (!groups.has(event.earnings_date)) groups.set(event.earnings_date, []);
-      groups.get(event.earnings_date).push(event);
+    const calendar = earningsMonthWeeks();
+    state.earningsWeekIndex = Math.max(0, Math.min(num(state.earningsWeekIndex), calendar.weeks.length - 1));
+    const selectedWeek = calendar.weeks[state.earningsWeekIndex];
+    const monthEntries = earningsMonthEntries();
+    const entries = monthEntries.filter((event) => {
+      const date = calendarDate(event.earnings_date);
+      return date && date >= selectedWeek.start && date <= selectedWeek.end && ![0, 6].includes(date.getDay());
     });
+    const groups = new Map(selectedWeek.days.map((day) => [localDayKey(day), []]));
+    entries.forEach((event) => groups.get(event.earnings_date)?.push(event));
     const todayKey = localDayKey();
-    const filterLabels = { today: "Today", week: "Next 7 days", "30d": "Next 30 days" };
-    const nextEvent = state.earningsEntries
+    const nextEvent = monthEntries
       .filter((event) => event.earnings_date >= todayKey)
       .sort((a, b) => String(a.earnings_date).localeCompare(String(b.earnings_date)))[0];
     const syncLabel = state.earningsLastSynced
       ? new Date(state.earningsLastSynced).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
       : "Not synced yet";
+    const monthLabel = calendar.monthStart.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    const weekLabel = `${selectedWeek.start.toLocaleDateString("en-US", { month: "short", day: "numeric" })}—${selectedWeek.end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 
     viewRoot.innerHTML = `
-      ${pageHead("Watchlist intelligence · Earnings", "Know what reports next.", "A focused earnings calendar for stocks and ETFs already in your watchlist. Dates can move, so every event stays marked estimated until results arrive.", `<button class="button button--primary" type="button" data-action="earnings-sync" ${state.earningsSyncBusy || !state.earningsReady ? "disabled" : ""}>${state.earningsSyncBusy ? "Checking Finnhub…" : "Update calendar"}</button>`)}
-      ${!state.earningsReady ? `<div class="warning-box earnings-setup"><strong>Earnings Calendar is not installed yet.</strong> Run <code>032_earnings_calendar.sql</code>, add <code>FINNHUB_API_KEY</code>, then deploy <code>sync-earnings-calendar</code>.</div>` : ""}
+      ${pageHead("Watchlist intelligence · Earnings", "One month. Week by week.", `Only ${monthLabel} is on the board. Move week by week, then open a ticker only when you need its EPS and revenue context.`, `<button class="button button--primary" type="button" data-action="earnings-sync" ${state.earningsSyncBusy || !state.earningsReady ? "disabled" : ""}>${state.earningsSyncBusy ? "Checking sources…" : "Update calendar"}</button>`)}
+      ${!state.earningsReady ? `<div class="warning-box earnings-setup"><strong>Earnings Calendar is not installed yet.</strong> Run <code>032_earnings_calendar.sql</code>, add the calendar provider secrets, then deploy <code>sync-earnings-calendar</code>.</div>` : ""}
       <section class="earnings-ledger" aria-label="Earnings calendar summary">
-        <div class="earnings-ledger__lead"><small>NEXT REPORT</small><strong>${esc(nextEvent?.symbol || "—")}</strong><span>${nextEvent ? `${esc(nextEvent.earnings_date)} · ${esc(earningsHourLabel(nextEvent.report_hour))}` : "No scheduled event loaded"}</span></div>
-        <div><small>EVENTS IN VIEW</small><strong>${entries.length}</strong><span>${esc(filterLabels[state.earningsFilter])}</span></div>
+        <div class="earnings-ledger__lead"><small>MONTH ON DECK</small><strong>${esc(calendar.monthStart.toLocaleDateString("en-US", { month: "short" }).toUpperCase())}</strong><span>${monthEntries.length} watchlist events loaded</span></div>
+        <div><small>THIS WEEK</small><strong>${entries.length}</strong><span>${esc(weekLabel)}</span></div>
         <div><small>WATCHLIST NAMES</small><strong>${state.earningsTrackedCount}</strong><span>Stocks and ETFs tracked</span></div>
-        <div><small>LAST UPDATED</small><strong class="earnings-ledger__time">${esc(syncLabel)}</strong><span>Server-side Finnhub sync</span></div>
+        <div><small>NEXT REPORT</small><strong>${esc(nextEvent?.symbol || "—")}</strong><span>${nextEvent ? `${esc(nextEvent.earnings_date)} · ${esc(earningsHourLabel(nextEvent.report_hour))}` : `No remaining ${esc(monthLabel)} event`}</span></div>
       </section>
-      <section class="earnings-commandbar" aria-label="Earnings window">
-        <div><span>CALENDAR WINDOW</span><nav>${Object.entries(filterLabels).map(([value, label]) => `<button type="button" class="${state.earningsFilter === value ? "is-active" : ""}" data-action="earnings-filter" data-filter="${value}">${esc(label)}</button>`).join("")}</nav></div>
-        <p>Watchlist only · Times shown in U.S. market sessions · BMO before open · AMC after close</p>
+      <section class="earnings-commandbar" aria-label="Weeks in ${esc(monthLabel)}">
+        <div><span>${esc(monthLabel.toUpperCase())} · WEEK</span><nav>${calendar.weeks.map((week, index) => `<button type="button" class="${state.earningsWeekIndex === index ? "is-active" : ""}" data-action="earnings-week" data-week="${index}" aria-label="Week ${index + 1}, ${week.start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} to ${week.end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}"><b>${String(index + 1).padStart(2, "0")}</b><small>${week.start.getDate()}—${week.end.getDate()}</small></button>`).join("")}</nav></div>
+        <p>Monday—Friday · BMO before open · AMC after close · ${esc(syncLabel)}</p>
       </section>
       <section class="earnings-agenda" aria-live="polite" aria-busy="${state.earningsBusy}">
-        <header class="section-head earnings-agenda__head"><div><span class="section-index">01 / REPORTING TAPE</span><h2>The dates that matter.</h2></div><p>${entries.length ? `${groups.size} reporting days · ${entries.length} watchlist events` : "No events inside this window"}</p></header>
+        <header class="section-head earnings-agenda__head"><div><span class="section-index">01 / WEEK ${String(state.earningsWeekIndex + 1).padStart(2, "0")}</span><h2>The week at a glance.</h2></div><p>${entries.length ? `${entries.length} watchlist events · tap a name for estimates` : "No watchlist earnings this week"}</p></header>
         ${state.earningsBusy
           ? `<div class="earnings-empty"><span></span><p>Reading the watchlist calendar…</p></div>`
-          : groups.size
-            ? [...groups.entries()].map(([dateKey, events]) => {
+          : `<div class="earnings-week-grid">${[...groups.entries()].map(([dateKey, events]) => {
               const date = calendarDate(dateKey);
               const isToday = dateKey === todayKey;
-              return `<section class="earnings-day ${isToday ? "is-today" : ""}">
-                <header><span>${isToday ? "TODAY" : esc(date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase())}</span><strong>${esc(date.toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</strong><small>${events.length} ${events.length === 1 ? "REPORT" : "REPORTS"}</small></header>
-                <div class="earnings-day__events">${events.map(earningsEventMarkup).join("")}</div>
+              const insideMonth = date.getMonth() === calendar.month;
+              return `<section class="earnings-week-day ${isToday ? "is-today" : ""} ${insideMonth ? "" : "is-outside"}">
+                <header><span>${isToday ? "TODAY" : esc(date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase())}</span><strong>${esc(date.toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</strong><small>${insideMonth ? `${events.length} REPORT${events.length === 1 ? "" : "S"}` : "OUTSIDE MONTH"}</small></header>
+                ${insideMonth ? `${earningsSessionMarkup(events, "bmo", "BMO")}${earningsSessionMarkup(events, "amc", "AMC")}${events.some((event) => !["bmo", "amc"].includes(event.report_hour)) ? earningsSessionMarkup(events, "tbd", "TBD") : ""}` : ""}
               </section>`;
-            }).join("")
-            : `<div class="earnings-empty"><strong>No watchlist earnings in this window.</strong><p>${state.earningsTrackedCount ? "Try a wider date window or update the calendar." : "Add stock or ETF symbols to Watchlist, then update the calendar."}</p></div>`}
+            }).join("")}</div>`}
       </section>
-      <p class="earnings-disclaimer">Earnings dates and session times are supplied by Finnhub and can be revised by the company. “Estimated” is a schedule status, not an investment signal.</p>`;
+      <p class="earnings-disclaimer">Alpha Vantage supplies the broad calendar; Finnhub enriches matching events with market session and estimates when available. Dates can be revised by the company. “Estimated” is a schedule status, not an investment signal.</p>`;
   }
 
   function smartMoneyCodeLabel(code) {
@@ -2928,10 +2972,11 @@
       $(".news-commandbar")?.scrollIntoView({ block: "start" });
     }
     else if (action === "earnings-sync") await syncEarningsCalendar({ notify: true });
-    else if (action === "earnings-filter") {
-      state.earningsFilter = ["today", "week", "30d"].includes(target.dataset.filter) ? target.dataset.filter : "30d";
+    else if (action === "earnings-week") {
+      state.earningsWeekIndex = Math.max(0, num(target.dataset.week));
       renderEarnings();
     }
+    else if (action === "earnings-detail") openEarningsDetail(target.dataset.earningsId);
     else if (action === "account") await openAccountDialog();
     else if (action === "portfolio-create") openCreatePortfolioDialog();
     else if (action === "portfolio-manage") openPortfolioManagerDialog();

@@ -21,6 +21,13 @@ type FinnhubEvent = {
 
 type AlphaEvent = Record<string, string>;
 
+type YahooEvent = {
+  symbol: string;
+  date: string;
+  hour: "bmo" | "amc" | "dmh" | "tbd";
+  raw: Record<string, unknown>;
+};
+
 const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
 const shiftDays = (date: Date, days: number) => {
   const copy = new Date(date);
@@ -35,6 +42,24 @@ const monthWindow = (date: Date) => {
 const normalizeHour = (value: unknown) => {
   const hour = String(value || "").toLowerCase();
   return ["bmo", "amc", "dmh"].includes(hour) ? hour : "tbd";
+};
+const normalizeYahooHour = (value: unknown): YahooEvent["hour"] => {
+  const hour = String(value || "").trim().toLowerCase();
+  if (["bmo", "before market open", "before open"].includes(hour)) return "bmo";
+  if (["amc", "after market close", "after close"].includes(hour)) return "amc";
+  if (["dmh", "during market hours"].includes(hour)) return "dmh";
+  return "tbd";
+};
+const inferYahooHour = (start: unknown, label: unknown): YahooEvent["hour"] => {
+  const labelled = normalizeYahooHour(label);
+  if (labelled !== "tbd") return labelled;
+  const match = String(start || "").match(/T(\d{2}):(\d{2})/i);
+  if (!match) return "tbd";
+  const hour = Number(match[1]);
+  if (!Number.isFinite(hour) || hour === 0) return "tbd";
+  if (hour <= 14) return "bmo";
+  if (hour >= 16) return "amc";
+  return "dmh";
 };
 const finiteOrNull = (value: unknown) => {
   if (value == null || value === "" || String(value).toLowerCase() === "none") return null;
@@ -117,7 +142,12 @@ async function fetchAlphaVantage(key: string) {
   url.searchParams.set("function", "EARNINGS_CALENDAR");
   url.searchParams.set("horizon", "3month");
   url.searchParams.set("apikey", key);
-  const response = await fetch(url, { headers: { Accept: "text/csv, text/plain;q=0.9" } });
+  const response = await fetch(url, {
+    headers: {
+      Accept: "text/csv, text/plain;q=0.9, */*;q=0.8",
+      "User-Agent": "Mozilla/5.0 (compatible; PortfolioCommandCenter/1.0; +https://cutiebunny2811.github.io/portfolio-command-center/)",
+    },
+  });
   if (!response.ok) throw new Error(`Alpha Vantage returned ${response.status}`);
   const body = await response.text();
   if (body.trimStart().startsWith("{")) {
@@ -127,6 +157,116 @@ async function fetchAlphaVantage(key: string) {
   const rows = parseCsv(body);
   if (!rows.length) throw new Error("Alpha Vantage returned an empty earnings calendar");
   return rows;
+}
+
+const yahooHeaders = {
+  Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+  "User-Agent": "Mozilla/5.0 (compatible; PortfolioCommandCenter/1.0; +https://cutiebunny2811.github.io/portfolio-command-center/)",
+};
+
+function yahooCookieFrom(headers: Headers) {
+  const setCookie = headers.get("set-cookie") || "";
+  const match = setCookie.match(/(?:^|[,;]\s*)A3=([^;,\s]+)/i);
+  return match ? `A3=${match[1]}` : "";
+}
+
+async function fetchYahooSession() {
+  let url = "https://fc.yahoo.com";
+  let cookie = "";
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const response = await fetch(url, {
+      headers: { ...yahooHeaders, ...(cookie ? { Cookie: cookie } : {}) },
+      redirect: "manual",
+    });
+    cookie ||= yahooCookieFrom(response.headers);
+    const location = response.headers.get("location");
+    if (!location || response.status < 300 || response.status >= 400) break;
+    url = new URL(location, url).toString();
+  }
+
+  const crumbResponse = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+    headers: { ...yahooHeaders, ...(cookie ? { Cookie: cookie } : {}) },
+    redirect: "follow",
+  });
+  const crumb = (await crumbResponse.text()).trim();
+  if (!crumbResponse.ok || !crumb || crumb.includes("Too Many Requests") || crumb.includes("<html")) {
+    throw new Error(`Yahoo session returned ${crumbResponse.status}`);
+  }
+  return { cookie, crumb };
+}
+
+function yahooRows(payload: any, forcedSymbol = ""): YahooEvent[] {
+  const document = payload?.finance?.result?.[0]?.documents?.[0];
+  const columns = Array.isArray(document?.columns) ? document.columns : [];
+  const rows = Array.isArray(document?.rows) ? document.rows : [];
+  if (!columns.length || !rows.length) return [];
+
+  const labels = columns.map((column: any) => {
+    const label = String(column?.label || column?.field || column?.id || "").trim();
+    if (label === "Event Start Date" && String(column?.type || "").toUpperCase() === "STRING") return "Timing";
+    return label;
+  });
+  return rows.map((values: unknown[]) => {
+    const raw = Object.fromEntries(labels.map((label: string, index: number) => [label, values?.[index] ?? null]));
+    const symbol = String(forcedSymbol || raw.Symbol || raw.Ticker || raw.ticker || "").trim().toUpperCase();
+    const start = String(raw["Event Start Date"] || raw.startdatetime || "");
+    return {
+      symbol,
+      date: start.slice(0, 10),
+      hour: inferYahooHour(start, raw.Timing || raw.startdatetimetype || raw.timeZoneShortName),
+      raw,
+    };
+  }).filter((event: YahooEvent) => event.symbol && event.date);
+}
+
+async function fetchYahooEarnings(symbols: string[], windowFrom: string, windowTo: string) {
+  if (!symbols.length) return [] as YahooEvent[];
+  const session = await fetchYahooSession();
+  const events: YahooEvent[] = [];
+  let successfulRequests = 0;
+  const failures: string[] = [];
+  for (let offset = 0; offset < symbols.length; offset += 8) {
+    const batch = symbols.slice(offset, offset + 8);
+    const results = await Promise.allSettled(batch.map(async (symbol) => {
+      const url = new URL("https://query1.finance.yahoo.com/v1/finance/visualization");
+      url.searchParams.set("lang", "en-US");
+      url.searchParams.set("region", "US");
+      url.searchParams.set("crumb", session.crumb);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          ...yahooHeaders,
+          "Content-Type": "application/json",
+          ...(session.cookie ? { Cookie: session.cookie } : {}),
+        },
+        body: JSON.stringify({
+          size: 8,
+          offset: 0,
+          query: { operator: "eq", operands: ["ticker", symbol] },
+          sortField: "startdatetime",
+          sortType: "DESC",
+          entityIdType: "earnings",
+          includeFields: [
+            "startdatetime", "timeZoneShortName", "epsestimate", "epsactual", "epssurprisepct", "eventtype",
+          ],
+        }),
+      });
+      if (!response.ok) throw new Error(`${symbol}: HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload?.finance?.error) throw new Error(`${symbol}: ${payload.finance.error?.description || payload.finance.error?.code || "unknown error"}`);
+      return yahooRows(payload, symbol).filter((event) => event.date >= windowFrom && event.date <= windowTo);
+    }));
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        successfulRequests += 1;
+        events.push(...result.value);
+      } else {
+        failures.push(String(result.reason?.message || result.reason));
+      }
+    }
+  }
+  if (!successfulRequests && failures.length) throw new Error(`Yahoo ticker lookup failed: ${failures[0]}`);
+  return events;
 }
 
 Deno.serve(async (request) => {
@@ -211,26 +351,62 @@ Deno.serve(async (request) => {
       }
     }
 
+    const yahooSymbols = [...tracked].filter((symbol) => {
+      const alphaEvent = alphaBySymbol.get(symbol);
+      const alphaDate = alphaEvent ? alphaValue(alphaEvent, "reportDate", "earningsDate", "date") : "";
+      const finnhubEvents = finnhubBySymbol.get(symbol) || [];
+      const finnhubEvent = alphaDate
+        ? finnhubEvents.find((event) => String(event.date || "") === alphaDate)
+        : finnhubEvents.sort((a, b) => String(a.date).localeCompare(String(b.date)))[0];
+      return !finnhubEvent || normalizeHour(finnhubEvent.hour) === "tbd";
+    });
+
+    let yahooCalendar: YahooEvent[] = [];
+    let yahooWarning = "";
+    try {
+      yahooCalendar = await fetchYahooEarnings(yahooSymbols, windowFrom, windowTo);
+    } catch (error) {
+      yahooWarning = `Yahoo Finance: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    const yahooBySymbol = new Map<string, YahooEvent[]>();
+    for (const event of yahooCalendar) {
+      if (!tracked.has(event.symbol) || event.date < windowFrom || event.date > windowTo) continue;
+      const list = yahooBySymbol.get(event.symbol) || [];
+      list.push(event);
+      yahooBySymbol.set(event.symbol, list);
+    }
+
     const canonical = new Map<string, Record<string, unknown>>();
     for (const symbol of tracked) {
       const alphaEvent = alphaBySymbol.get(symbol);
       const finnhubEvents = finnhubBySymbol.get(symbol) || [];
+      const yahooEvents = yahooBySymbol.get(symbol) || [];
       const alphaDate = alphaEvent ? alphaValue(alphaEvent, "reportDate", "earningsDate", "date") : "";
       const exactFinnhub = finnhubEvents.find((event) => String(event.date || "") === alphaDate);
       const finnhubEvent = exactFinnhub || (!alphaEvent ? finnhubEvents.sort((a, b) => String(a.date).localeCompare(String(b.date)))[0] : undefined);
-      if (!alphaEvent && !finnhubEvent) continue;
+      const yahooFallback = !alphaEvent && !finnhubEvent
+        ? yahooEvents.sort((a, b) => a.date.localeCompare(b.date))[0]
+        : undefined;
+      if (!alphaEvent && !finnhubEvent && !yahooFallback) continue;
 
-      const earningsDate = alphaDate || String(finnhubEvent?.date || "");
+      const earningsDate = alphaDate || String(finnhubEvent?.date || yahooFallback?.date || "");
+      const yahooEvent = yahooEvents.find((event) => event.date === earningsDate);
       const epsEstimate = alphaEvent
         ? finiteOrNull(alphaValue(alphaEvent, "estimate", "epsEstimate", "estimatedEPS"))
         : finiteOrNull(finnhubEvent?.epsEstimate);
-      const payloadSources = [alphaEvent ? "alpha_vantage" : "", finnhubEvent ? "finnhub" : ""].filter(Boolean);
+      const payloadSources = [
+        alphaEvent ? "alpha_vantage" : "",
+        finnhubEvent ? "finnhub" : "",
+        yahooEvent ? "yahoo_finance" : "",
+      ].filter(Boolean);
+      const finnhubHour = normalizeHour(finnhubEvent?.hour);
       canonical.set(symbol, {
         source: "finnhub",
         event_key: `${symbol}:${earningsDate}`,
         symbol,
         earnings_date: earningsDate,
-        report_hour: normalizeHour(finnhubEvent?.hour),
+        report_hour: finnhubHour !== "tbd" ? finnhubHour : yahooEvent?.hour || "tbd",
         fiscal_quarter: finnhubEvent?.quarter ?? null,
         fiscal_year: finnhubEvent?.year ?? null,
         eps_estimate: epsEstimate ?? finiteOrNull(finnhubEvent?.epsEstimate),
@@ -238,11 +414,17 @@ Deno.serve(async (request) => {
         revenue_estimate: finiteOrNull(finnhubEvent?.revenueEstimate),
         revenue_actual: finiteOrNull(finnhubEvent?.revenueActual),
         is_active: true,
-        raw_payload: { providers: payloadSources, alpha_vantage: alphaEvent || null, finnhub: finnhubEvent || null },
+        raw_payload: {
+          providers: payloadSources,
+          alpha_vantage: alphaEvent || null,
+          finnhub: finnhubEvent || null,
+          yahoo_finance: yahooEvent?.raw || null,
+        },
         fetched_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
     }
+
     const rows = [...canonical.values()];
 
     const symbols = [...tracked];
@@ -268,6 +450,7 @@ Deno.serve(async (request) => {
     const warnings = [
       finnhubResult.status === "rejected" ? `Finnhub: ${String(finnhubResult.reason?.message || finnhubResult.reason)}` : "",
       alphaResult.status === "rejected" ? `Alpha Vantage: ${String(alphaResult.reason?.message || alphaResult.reason)}` : "",
+      yahooWarning,
     ].filter(Boolean);
     const syncRow = {
       source: "finnhub",
@@ -275,7 +458,7 @@ Deno.serve(async (request) => {
       last_success_at: new Date().toISOString(),
       window_from: windowFrom,
       window_to: windowTo,
-      fetched_count: finnhubCalendar.length + alphaCalendar.length,
+      fetched_count: finnhubCalendar.length + alphaCalendar.length + yahooCalendar.length,
       matched_count: rows.length,
       last_error: warnings.length ? warnings.join(" | ") : null,
       updated_at: new Date().toISOString(),
@@ -286,7 +469,7 @@ Deno.serve(async (request) => {
     return new Response(JSON.stringify({
       updated: rows.length,
       tracked: tracked.size,
-      providers: { finnhub: finnhubCalendar.length, alpha_vantage: alphaCalendar.length },
+      providers: { finnhub: finnhubCalendar.length, alpha_vantage: alphaCalendar.length, yahoo_finance: yahooCalendar.length },
       warnings,
       window_from: windowFrom,
       window_to: windowTo,

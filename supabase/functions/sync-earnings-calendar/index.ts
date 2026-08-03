@@ -43,6 +43,13 @@ const normalizeHour = (value: unknown) => {
   const hour = String(value || "").toLowerCase();
   return ["bmo", "amc", "dmh"].includes(hour) ? hour : "tbd";
 };
+const normalizeAlphaHour = (value: unknown) => {
+  const hour = String(value || "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (["post-market", "after-market-close", "after-close", "amc"].includes(hour)) return "amc";
+  if (["pre-market", "before-market-open", "before-open", "bmo"].includes(hour)) return "bmo";
+  if (["during-market-hours", "market-hours", "dmh"].includes(hour)) return "dmh";
+  return "tbd";
+};
 const normalizeYahooHour = (value: unknown): YahooEvent["hour"] => {
   const hour = String(value || "").trim().toLowerCase();
   if (["bmo", "before market open", "before open"].includes(hour)) return "bmo";
@@ -401,12 +408,19 @@ Deno.serve(async (request) => {
         yahooEvent ? "yahoo_finance" : "",
       ].filter(Boolean);
       const finnhubHour = normalizeHour(finnhubEvent?.hour);
+      const alphaHour = normalizeAlphaHour(
+        alphaEvent ? alphaValue(alphaEvent, "timeOfTheDay", "reportTime", "time") : "",
+      );
       canonical.set(symbol, {
         source: "finnhub",
         event_key: `${symbol}:${earningsDate}`,
         symbol,
         earnings_date: earningsDate,
-        report_hour: finnhubHour !== "tbd" ? finnhubHour : yahooEvent?.hour || "tbd",
+        report_hour: finnhubHour !== "tbd"
+          ? finnhubHour
+          : alphaHour !== "tbd"
+            ? alphaHour
+            : yahooEvent?.hour || "tbd",
         fiscal_quarter: finnhubEvent?.quarter ?? null,
         fiscal_year: finnhubEvent?.year ?? null,
         eps_estimate: epsEstimate ?? finiteOrNull(finnhubEvent?.epsEstimate),

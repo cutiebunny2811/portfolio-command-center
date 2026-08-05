@@ -1489,7 +1489,7 @@
           ${earningsMetric(event.eps_actual, event.eps_estimate, "EPS")}
           ${earningsMetric(event.revenue_actual, event.revenue_estimate, "Revenue")}
         </div>
-        <dl><div><dt>Schedule status</dt><dd>${hasActual ? "Reported" : "Estimated"}</dd></div><div><dt>Fiscal period</dt><dd>${esc(quarter)}</dd></div><div><dt>Coverage</dt><dd>Watchlist only</dd></div><div><dt>Calendar sources</dt><dd>Alpha Vantage + Finnhub</dd></div></dl>
+        <dl><div><dt>Schedule status</dt><dd>${hasActual ? "Reported" : "Estimated"}</dd></div><div><dt>Fiscal period</dt><dd>${esc(quarter)}</dd></div><div><dt>Coverage</dt><dd>Watchlist only</dd></div><div><dt>Calendar sources</dt><dd>Finnhub + verified gaps</dd></div></dl>
         <p>Dates and market sessions can be revised by the company. Use this card as a calendar reminder, not an investment signal.</p>
       </article>`,
     });
@@ -1543,7 +1543,7 @@
               </section>`;
             }).join("")}</div>`}
       </section>
-      <p class="earnings-disclaimer">Finnhub supplies the calendar date and market session. Alpha Vantage may fill an EPS estimate only when its ticker and date match Finnhub exactly. Unknown sessions stay TBD instead of being guessed. Dates can still be revised by the company.</p>`;
+      <p class="earnings-disclaimer">Finnhub is the primary calendar. A missing ticker is added only when Alpha Vantage and Yahoo Finance agree on its exact date; this fallback can never move a Finnhub event. Unknown sessions stay TBD instead of being guessed. Dates can still be revised by the company.</p>`;
   }
 
   function smartMoneyCodeLabel(code) {

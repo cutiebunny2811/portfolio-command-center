@@ -1543,7 +1543,7 @@
               </section>`;
             }).join("")}</div>`}
       </section>
-      <p class="earnings-disclaimer">Alpha Vantage supplies the broad calendar; Finnhub enriches matching events with market session and estimates when available. Dates can be revised by the company. “Estimated” is a schedule status, not an investment signal.</p>`;
+      <p class="earnings-disclaimer">Finnhub supplies the calendar date and market session. Alpha Vantage may fill an EPS estimate only when its ticker and date match Finnhub exactly. Unknown sessions stay TBD instead of being guessed. Dates can still be revised by the company.</p>`;
   }
 
   function smartMoneyCodeLabel(code) {

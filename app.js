@@ -162,9 +162,15 @@
   }
 
   function portfolioMode(portfolio) {
-    return portfolio?.portfolio_mode === "options" || portfolio?.allocation_basis === "maximum_loss" || portfolio?.kind === "options"
-      ? "options"
-      : "standard";
+    return portfolio?.portfolio_mode === "mixed" ? "mixed" : "legacy";
+  }
+
+  function brokerProfile(portfolio) {
+    return String(portfolio?.broker_profile || "webull").toLowerCase() === "dime" ? "dime" : "webull";
+  }
+
+  function isOptionInstrument(instrumentId) {
+    return String(instrumentMap().get(instrumentId)?.asset_type || "").toLowerCase() === "option";
   }
 
   function instrumentMap() {
@@ -1037,7 +1043,7 @@
         return `<tr>
         <td>${assetIdentity(row.instrument)}</td>
         <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
-        <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${portfolio.kind === "options" ? `<span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
+        <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${row.instrument.asset_type === "option" ? `<span class="cell-sub">MAX LOSS ${money(row.position?.maximum_loss)}</span><span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
         <td class="allocation-cell ${trim ? "is-over" : ""}"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track is-${allocationState} ${allocationProgress > 100 ? "is-over" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="${trim ? "negative" : "gold"}">${trim ? `${money(trim.excess)} over` : `${money(row.remaining)} left`}</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div>${trim ? `<div class="allocation-cell__advice"><strong>Suggested trim</strong><span>Sell ~${formatTradeQuantity(trim.quantity)} ${trim.unit}${trim.estimatedProceeds != null ? ` · about ${money(trim.estimatedProceeds)} at market` : ""} to return near ${percent(row.targetPercent)}.</span></div>` : ""}</td>
         <td><div class="row-actions">${canPlanBuy ? `<button class="button button--small button--plan-buy" type="button" data-action="buy-simulate" data-instrument-id="${row.id}">Plan buy</button>` : ""}<button class="button button--small" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button><button class="button button--small" type="button" data-action="price-record" data-instrument-id="${row.id}">Price</button>${row.target ? `<button class="button button--small button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${num(row.position?.quantity) > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}</div></td>
@@ -1142,7 +1148,7 @@
     const rows = portfolioRows(portfolio);
     const plan = allocationSummary(portfolio, rows);
     viewRoot.innerHTML = `
-      ${pageHead(`${portfolio.name} · ${portfolio.allocation_basis === "maximum_loss" ? "Maximum loss basis" : "Market value allocation"}`, portfolio.name, "Record what you bought or sold, then use live market value to see each stock or ETF's share of this portfolio.", `
+      ${pageHead(`${portfolio.name} · ${brokerProfile(portfolio).toUpperCase()} ledger`, portfolio.name, "Stocks and ETFs allocate by market value; options allocate by maximum loss. Each trade follows this portfolio's broker cost method.", `
         <button class="button button--ghost" type="button" data-action="cash-add">Add / withdraw money</button>
         <button class="button button--ghost" type="button" data-action="execution-history">History</button>
         <button class="button button--ghost" type="button" data-action="trade-sell">Sell</button>
@@ -1160,7 +1166,7 @@
       </section>
       <section class="section">
         <div class="section-head"><div><span class="section-index">01 / ASSETS</span><h2>Positions, P/L and allocation.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
-        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${portfolio.kind === "options" ? "Options use manual prices" : esc(priceFreshnessLabel())}</span><button class="button button--small" type="button" data-action="${portfolio.kind === "options" ? "refresh" : "price-refresh"}">${portfolio.kind === "options" ? "Refresh data" : "Update prices"}</button></div></div>
+        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${esc(priceFreshnessLabel())} · options use manual prices</span><button class="button button--small" type="button" data-action="price-refresh">Update stock prices</button></div></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
       </section>
       `;
@@ -2377,12 +2383,13 @@
       kicker: "Portfolio workspace · New ledger",
       title: "Create a portfolio",
       submitLabel: "Create portfolio",
-      body: `<div class="field-row"><label class="field"><span>Portfolio name</span><input name="name" maxlength="80" placeholder="Income, Momentum, Retirement…" required></label><label class="field"><span>Portfolio type</span><select name="mode"><option value="standard">Stocks / ETFs</option><option value="options">Long options</option></select></label></div><label class="field"><span>Fixed budget (USD)</span><input name="budget" type="number" min="0" step="0.01" value="0" required></label><div class="warning-box">The new portfolio starts with $0 cash. After creation, use Add / withdraw money to record its actual funding. Stocks and ETFs allocate by market value; long options allocate by maximum loss.</div>`,
+      body: `<div class="field-row"><label class="field"><span>Portfolio name</span><input name="name" maxlength="80" placeholder="Income, Momentum, Retirement…" required></label><label class="field"><span>Broker</span><select name="broker"><option value="webull">Webull · weighted average</option><option value="dime">Dime · FIFO</option></select></label></div><label class="field"><span>Fixed budget (USD)</span><input name="budget" type="number" min="0" step="0.01" value="0" required></label><div class="warning-box">One portfolio can hold stocks, ETFs and long options. Stocks and ETFs allocate by market value; options allocate by maximum loss. The broker method locks after the first transaction.</div>`,
       onSubmit: async (form) => {
         const created = await rpc("api_create_portfolio", {
           p_name: form.get("name"),
-          p_portfolio_mode: form.get("mode"),
-          p_fixed_budget: num(form.get("budget"))
+          p_portfolio_mode: "mixed",
+          p_fixed_budget: num(form.get("budget")),
+          p_broker_profile: form.get("broker")
         });
         closeDialog();
         await loadData({ quiet: true });
@@ -2400,10 +2407,10 @@
       const mode = portfolioMode(portfolio);
       return `<article class="portfolio-manager__row">
         <div class="portfolio-manager__index">${String(index + 1).padStart(2, "0")}</div>
-        <div class="portfolio-manager__identity"><strong>${esc(portfolio.name)}</strong><span>${mode === "options" ? "Long options · maximum loss" : "Stocks / ETFs · market value"}</span></div>
+        <div class="portfolio-manager__identity"><strong>${esc(portfolio.name)}</strong><span>${mode === "mixed" ? "Stocks / ETFs / options" : "Legacy portfolio"} · ${brokerProfile(portfolio).toUpperCase()}</span></div>
         <div class="portfolio-manager__metric"><small>Total capital</small><strong>${money(stats.capital)}</strong></div>
         <div class="portfolio-manager__metric"><small>Open positions</small><strong>${stats.positions.length}</strong></div>
-        <div class="row-actions"><button class="button button--small" type="button" data-action="portfolio-rename" data-portfolio-manage-id="${portfolio.id}">Rename</button><button class="button button--small button--remove" type="button" data-action="portfolio-archive" data-portfolio-manage-id="${portfolio.id}">Archive</button></div>
+        <div class="row-actions"><button class="button button--small" type="button" data-action="portfolio-broker" data-portfolio-manage-id="${portfolio.id}">Broker</button><button class="button button--small" type="button" data-action="portfolio-rename" data-portfolio-manage-id="${portfolio.id}">Rename</button><button class="button button--small button--remove" type="button" data-action="portfolio-archive" data-portfolio-manage-id="${portfolio.id}">Archive</button></div>
       </article>`;
     }).join("")}</div><p class="form-hint">Archive preserves trade, journal and audit history. A portfolio must have no open positions, pending drafts or remaining cash first.</p>`;
   }
@@ -2432,6 +2439,26 @@
         await loadData({ quiet: true });
         openPortfolioManagerDialog();
         toast("Portfolio renamed");
+      }
+    });
+  }
+
+  function openPortfolioBrokerDialog(portfolioId) {
+    const portfolio = state.portfolios.find((item) => item.id === portfolioId);
+    if (!portfolio) return;
+    const hasTransactions = state.executions.some((item) => item.portfolio_id === portfolio.id);
+    openDialog({
+      kicker: `${portfolio.name} · Cost method`,
+      title: "Broker profile",
+      submitLabel: "Save broker",
+      body: `<label class="field"><span>Broker</span><select name="broker" ${hasTransactions ? "disabled" : ""}><option value="webull" ${brokerProfile(portfolio) === "webull" ? "selected" : ""}>Webull · weighted average · buy fees in cost</option><option value="dime" ${brokerProfile(portfolio) === "dime" ? "selected" : ""}>Dime · FIFO · cost display excludes buy fees</option></select></label><div class="warning-box">${hasTransactions ? "This portfolio already has transactions, so its broker profile is locked to preserve cost basis and realized P/L." : "The selected broker profile becomes permanent after the first transaction."}</div>`,
+      onSubmit: async (form) => {
+        if (hasTransactions) { closeDialog(); return; }
+        await rpc("api_set_portfolio_broker", { p_portfolio_id: portfolio.id, p_broker_profile: form.get("broker") });
+        closeDialog();
+        await loadData({ quiet: true });
+        openPortfolioManagerDialog();
+        toast("Broker profile updated");
       }
     });
   }
@@ -2517,11 +2544,10 @@
 
   function openAssetDialog() {
     const portfolio = currentPortfolio();
-    const isOptions = portfolio.kind === "options";
     openDialog({
       kicker: `${portfolio.name} · 100% plan`, title: "Add a ticker to the plan", submitLabel: "Add to plan",
-      body: `<div class="field-row"><label class="field"><span>${isOptions ? "Underlying symbol" : "Ticker symbol"}</span><input name="symbol" maxlength="20" placeholder="NVDA" required></label><label class="field"><span>Display name</span><input name="display_name" maxlength="160" placeholder="NVIDIA Corporation"></label></div>
-        ${isOptions ? `<input name="asset_type" type="hidden" value="option">${optionFields()}` : `<label class="field"><span>Asset type</span><select name="asset_type"><option value="stock">Stock</option><option value="etf">ETF</option></select></label>`}
+      body: `<div class="field-row"><label class="field"><span>Ticker / underlying symbol</span><input name="symbol" maxlength="20" placeholder="NVDA" required></label><label class="field"><span>Display name</span><input name="display_name" maxlength="160" placeholder="NVIDIA Corporation"></label></div>
+        <label class="field"><span>Asset type</span><select name="asset_type"><option value="stock">Stock</option><option value="etf">ETF</option><option value="option">Long option</option></select></label><div data-option-fields hidden>${optionFields()}</div>
         <div class="field-row"><label class="field"><span>Target % of this portfolio</span><input name="target" type="number" min="0.01" max="100" step="0.01" required></label><label class="field"><span>Split into how many buys?</span><input name="tranches" type="number" min="1" max="20" step="1" value="3" required></label></div>
         <label class="field"><span>Notes (optional)</span><input name="notes" maxlength="500" placeholder="Why this ticker belongs in the plan"></label>
         <p class="form-hint">This only creates a plan. Use Buy after an order has filled; cash and average cost will update from that transaction.</p>`,
@@ -2529,9 +2555,9 @@
         const assetType = form.get("asset_type");
         const instrumentId = await rpc("api_upsert_instrument", {
           p_asset_type: assetType, p_symbol: String(form.get("symbol")).toUpperCase().trim(), p_display_name: form.get("display_name") || null,
-          p_exchange: null, p_currency: "USD", p_option_type: isOptions ? form.get("option_type") : null,
-          p_strike: isOptions ? num(form.get("strike")) : null, p_expiry: isOptions ? form.get("expiry") : null,
-          p_multiplier: isOptions ? num(form.get("multiplier")) : 1
+          p_exchange: null, p_currency: "USD", p_option_type: assetType === "option" ? form.get("option_type") : null,
+          p_strike: assetType === "option" ? num(form.get("strike")) : null, p_expiry: assetType === "option" ? form.get("expiry") : null,
+          p_multiplier: assetType === "option" ? num(form.get("multiplier")) : 1
         });
         await rpc("api_set_allocation_target", {
           p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_target_percent: num(form.get("target")),
@@ -2541,6 +2567,16 @@
         closeDialog(); toast("Ticker added to the plan"); await loadData({ quiet: true });
       }
     });
+    const body = $("#dialog-body");
+    const assetType = $('[name="asset_type"]', body);
+    const optionFieldsNode = $("[data-option-fields]", body);
+    const syncOptionFields = () => {
+      const isOption = assetType.value === "option";
+      optionFieldsNode.hidden = !isOption;
+      $$("input, select", optionFieldsNode).forEach((input) => { input.disabled = !isOption; });
+    };
+    assetType.addEventListener("change", syncOptionFields);
+    syncOptionFields();
   }
 
   function openTargetDialog(instrumentId) {
@@ -2692,10 +2728,9 @@
       if (sidePreset === "buy") openAssetDialog();
       return;
     }
-    const isOptions = portfolio.kind === "options";
     openDialog({
       kicker: `${portfolio.name} · Saved to Supabase`, title: `Record a ${sidePreset}`, submitLabel: `Review ${sidePreset}`,
-      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Ticker</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" required>${sidePreset === "sell" ? '<button class="button button--primary button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="any" inputmode="decimal" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label>${isOptions ? '<label class="field"><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01"></label>' : '<span></span>'}</div>${sidePreset === "buy" && !isOptions ? '<div class="trade-projection" data-trade-projection></div>' : ""}<label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
+      body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Asset</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" required>${sidePreset === "sell" ? '<button class="button button--primary button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="any" inputmode="decimal" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label><label class="field" data-underlying-field hidden><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01" disabled></label></div><div class="trade-projection" data-trade-projection></div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
         const instrumentId = form.get("instrument");
         const draft = await rpc("api_create_trade_draft", {
@@ -2703,7 +2738,7 @@
           p_quantity: num(form.get("quantity")), p_price: num(form.get("price")), p_idempotency_key: uid("web-trade"),
           p_fee: num(form.get("fee")), p_executed_at: new Date(form.get("executed")).toISOString(),
           p_tranche_number: form.get("tranche") ? num(form.get("tranche")) : null,
-          p_underlying_price: isOptions && form.get("underlying_price") !== "" ? num(form.get("underlying_price")) : null, p_campaign_id: null
+          p_underlying_price: isOptionInstrument(instrumentId) && form.get("underlying_price") !== "" ? num(form.get("underlying_price")) : null, p_campaign_id: null
         });
         if (form.get("side") === "buy") {
           const row = portfolioRows(portfolio).find((item) => item.id === instrumentId);
@@ -2725,18 +2760,23 @@
     if (prefills?.quantity) quantityInput.value = Number(prefills.quantity.toFixed(8));
     if (prefills?.price) priceInput.value = Number(prefills.price.toFixed(4));
     if (prefills?.fee != null) feeInput.value = num(prefills.fee);
-    if (sidePreset === "buy" && !isOptions) {
-      const projectionRegion = $("[data-trade-projection]", tradeBody);
-      const renderTradeProjection = () => {
-        const row = portfolioRows(portfolio).find((item) => item.id === instrumentSelect.value);
-        if (!row) { projectionRegion.innerHTML = ""; return; }
-        const amount = num(quantityInput.value) * num(priceInput.value);
-        projectionRegion.innerHTML = buyProjectionSummary(
-          buyProjection(portfolio, row, amount, num(priceInput.value), num(feeInput.value)),
-          row
-        );
-      };
-      instrumentSelect.addEventListener("change", renderTradeProjection);
+    const projectionRegion = $("[data-trade-projection]", tradeBody);
+    const underlyingField = $("[data-underlying-field]", tradeBody);
+    const underlyingInput = $('[name="underlying_price"]', tradeBody);
+    const renderTradeProjection = () => {
+      const row = portfolioRows(portfolio).find((item) => item.id === instrumentSelect.value);
+      const isOption = isOptionInstrument(instrumentSelect.value);
+      underlyingField.hidden = !isOption;
+      underlyingInput.disabled = !isOption;
+      if (sidePreset !== "buy" || !row || isOption) { projectionRegion.innerHTML = ""; return; }
+      const amount = num(quantityInput.value) * num(priceInput.value);
+      projectionRegion.innerHTML = buyProjectionSummary(
+        buyProjection(portfolio, row, amount, num(priceInput.value), num(feeInput.value)),
+        row
+      );
+    };
+    instrumentSelect.addEventListener("change", renderTradeProjection);
+    if (sidePreset === "buy") {
       quantityInput.addEventListener("input", renderTradeProjection);
       priceInput.addEventListener("input", renderTradeProjection);
       feeInput.addEventListener("input", renderTradeProjection);
@@ -2988,6 +3028,7 @@
     else if (action === "account") await openAccountDialog();
     else if (action === "portfolio-create") openCreatePortfolioDialog();
     else if (action === "portfolio-manage") openPortfolioManagerDialog();
+    else if (action === "portfolio-broker") openPortfolioBrokerDialog(target.dataset.portfolioManageId);
     else if (action === "portfolio-rename") openRenamePortfolioDialog(target.dataset.portfolioManageId);
     else if (action === "portfolio-archive") openArchivePortfolioDialog(target.dataset.portfolioManageId);
     else if (action === "agent-token-create") openCreateAgentTokenDialog();
@@ -3133,10 +3174,10 @@
 
   function loadLocalPreview() {
     const portfolios = [
-      { id: "p-long", kind: "long_term", name: "Long Term", fixed_budget: 40000, allocation_basis: "cost_basis", sort_order: 1, is_active: true },
-      { id: "p-swing", kind: "swing_trade", name: "Swing Trade", fixed_budget: 18000, allocation_basis: "cost_basis", sort_order: 2, is_active: true },
-      { id: "p-spec", kind: "speculative", name: "Speculative", fixed_budget: 10000, allocation_basis: "cost_basis", sort_order: 3, is_active: true },
-      { id: "p-opt", kind: "options", name: "Options", fixed_budget: 8000, allocation_basis: "maximum_loss", sort_order: 4, is_active: true }
+      { id: "p-long", kind: "long_term", name: "Long Term", fixed_budget: 40000, allocation_basis: "cost_basis", portfolio_mode: "mixed", broker_profile: "dime", sort_order: 1, is_active: true },
+      { id: "p-swing", kind: "swing_trade", name: "Swing Trade", fixed_budget: 18000, allocation_basis: "cost_basis", portfolio_mode: "mixed", broker_profile: "webull", sort_order: 2, is_active: true },
+      { id: "p-spec", kind: "speculative", name: "Speculative", fixed_budget: 10000, allocation_basis: "cost_basis", portfolio_mode: "mixed", broker_profile: "webull", sort_order: 3, is_active: true },
+      { id: "p-opt", kind: "options", name: "Options", fixed_budget: 8000, allocation_basis: "cost_basis", portfolio_mode: "mixed", broker_profile: "dime", sort_order: 4, is_active: true }
     ];
     const instruments = [
       ["i-googl", "GOOGL", "Alphabet Inc.", "stock", 1], ["i-meta", "META", "Meta Platforms", "stock", 1],

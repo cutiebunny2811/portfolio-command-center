@@ -1,0 +1,26 @@
+name: Sync macro calendar
+
+on:
+  schedule:
+    - cron: "0,30 12-22 * * 1-5"
+    - cron: "15 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refresh high-impact US macro events
+        env:
+          MACRO_SYNC_SECRET: ${{ secrets.MACRO_SYNC_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 2 \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-sync-secret: ${MACRO_SYNC_SECRET}" \
+            --data '{}' \
+            https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/sync-macro-calendar

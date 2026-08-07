@@ -65,6 +65,8 @@
     researchTotal: 0, researchPage: 1, researchPageSize: 25, researchFilter: "all", researchSearch: "",
     earningsEntries: [], earningsReady: true, earningsBusy: false, earningsSyncBusy: false,
     earningsWeekIndex: 0, earningsTrackedCount: 0, earningsLastSynced: null,
+    macroEntries: [], macroNextEvent: null, macroNextFomc: null, macroReady: true,
+    macroBusy: false, macroSyncBusy: false, macroLastSynced: null,
     agentTokens: [], agentDrafts: [],
     route: "overview", selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
@@ -153,6 +155,9 @@
     }
     if (/api_get_earnings_calendar|earnings_events|earnings_sync_state/i.test(message)) {
       return "Earnings Calendar is not installed yet. Run 032_earnings_calendar.sql in Supabase first.";
+    }
+    if (/api_get_macro_calendar|macro_events|macro_sync_state/i.test(message)) {
+      return "Macro Calendar is not installed yet. Run 035_us_macro_calendar.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -645,6 +650,86 @@
     }
   }
 
+  function emptyMacroFeed() {
+    return { entries: [], next_event: null, next_fomc: null, last_synced_at: null };
+  }
+
+  async function fetchMacroFeed() {
+    if (localPreviewEnabled) {
+      const sorted = [...state.macroEntries].sort((a, b) => String(a.scheduled_at).localeCompare(String(b.scheduled_at)));
+      const upcoming = sorted.filter((event) => new Date(event.scheduled_at).getTime() >= Date.now());
+      return {
+        entries: sorted,
+        next_event: upcoming[0] || null,
+        next_fomc: upcoming.find((event) => /^FOMC Rate Decision/i.test(event.event_name)) || null,
+        last_synced_at: state.macroLastSynced || new Date().toISOString()
+      };
+    }
+    const from = new Date();
+    from.setDate(from.getDate() - 2);
+    const to = new Date();
+    to.setDate(to.getDate() + 120);
+    const { data, error } = await db.rpc("api_get_macro_calendar", {
+      p_from: localDayKey(from),
+      p_to: localDayKey(to)
+    });
+    if (error) {
+      if (/api_get_macro_calendar|macro_events|schema cache|does not exist/i.test(error.message)) {
+        state.macroReady = false;
+        return emptyMacroFeed();
+      }
+      throw error;
+    }
+    state.macroReady = true;
+    return { ...emptyMacroFeed(), ...(data || {}), entries: Array.isArray(data?.entries) ? data.entries : [] };
+  }
+
+  function applyMacroFeed(feed) {
+    state.macroEntries = Array.isArray(feed?.entries) ? feed.entries : [];
+    state.macroNextEvent = feed?.next_event || null;
+    state.macroNextFomc = feed?.next_fomc || null;
+    state.macroLastSynced = feed?.last_synced_at || null;
+  }
+
+  async function loadMacroPage({ renderAfter = true } = {}) {
+    state.macroBusy = true;
+    if (renderAfter && state.route === "macro") renderMacro();
+    try {
+      applyMacroFeed(await fetchMacroFeed());
+    } catch (error) {
+      console.error(error);
+      toast(friendlyError(error), true);
+    } finally {
+      state.macroBusy = false;
+      if (renderAfter && state.route === "macro") renderMacro();
+    }
+  }
+
+  async function syncMacroCalendar({ notify = false } = {}) {
+    if (localPreviewEnabled || !state.user || state.macroSyncBusy || !state.macroReady) return null;
+    state.macroSyncBusy = true;
+    if (state.route === "macro") renderMacro();
+    try {
+      const { data, error } = await db.functions.invoke("sync-macro-calendar", { body: {} });
+      if (error) {
+        let detail = error.message;
+        try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(data.error);
+      await loadMacroPage({ renderAfter: false });
+      if (notify) toast(`${data?.updated || 0} high-impact macro events synced`);
+      return data;
+    } catch (error) {
+      console.warn(error);
+      if (notify) toast(`Macro: ${friendlyError(error)}`, true);
+      return null;
+    } finally {
+      state.macroSyncBusy = false;
+      if (state.route === "macro") renderMacro();
+    }
+  }
+
   function emptyJournalView() {
     return {
       entries: [], total_count: 0, daily: [], monthly: [],
@@ -855,7 +940,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -869,12 +954,14 @@
         optionalMarketPulseQuery(),
         optionalSmartMoneyQuery(),
         fetchResearchFeed(),
-        fetchEarningsFeed()
+        fetchEarningsFeed(),
+        fetchMacroFeed()
       ]);
       Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
       state.researchEntries = researchFeed.entries;
       state.researchTotal = num(researchFeed.total_count);
       applyEarningsFeed(earningsFeed);
+      applyMacroFeed(macroFeed);
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
@@ -888,6 +975,7 @@
       if (state.route === "journal") await loadJournalPage({ renderAfter: false });
       if (state.route === "research") await loadResearchPage({ renderAfter: false });
       if (state.route === "earnings") await loadEarningsPage({ renderAfter: false });
+      if (state.route === "macro") await loadMacroPage({ renderAfter: false });
       state.lastSync = new Date();
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
@@ -943,6 +1031,7 @@
     else if (state.route === "smart-money") renderSmartMoney();
     else if (state.route === "research") renderResearch();
     else if (state.route === "earnings") renderEarnings();
+    else if (state.route === "macro") renderMacro();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -1550,6 +1639,151 @@
             }).join("")}</div>`}
       </section>
       <p class="earnings-disclaimer">Finnhub is the primary calendar. A missing ticker is added only when Alpha Vantage and Yahoo Finance agree on its exact date; this fallback can never move a Finnhub event. Unknown sessions stay TBD instead of being guessed. Dates can still be revised by the company.</p>`;
+  }
+
+  function macroDateParts(value, timeZone = "America/New_York") {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false
+    }).formatToParts(date).map((part) => [part.type, part.value]));
+  }
+
+  function macroDayKey(value) {
+    const parts = macroDateParts(value);
+    return parts ? `${parts.year}-${parts.month}-${parts.day}` : "";
+  }
+
+  function macroTime(value, timeZone, hour12 = false) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleTimeString("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hour12 });
+  }
+
+  function macroNumber(value) {
+    const text = String(value || "").replace(/,/g, "");
+    const matches = text.match(/-?\d+(?:\.\d+)?/g);
+    if (!matches?.length) return null;
+    const multiplier = /M/i.test(text) ? 1_000_000 : /K/i.test(text) ? 1_000 : 1;
+    const numbers = matches.map(Number).filter(Number.isFinite);
+    if (!numbers.length) return null;
+    return (numbers.reduce((total, item) => total + item, 0) / numbers.length) * multiplier;
+  }
+
+  function macroRead(event) {
+    if (!event?.actual) return { label: "UPCOMING", tone: "upcoming" };
+    const actual = macroNumber(event.actual);
+    const previous = macroNumber(event.previous);
+    if (actual == null || previous == null) return { label: "RELEASED", tone: "neutral" };
+    if (Math.abs(actual - previous) < 0.000001) return { label: "UNCHANGED", tone: "neutral" };
+    const higher = actual > previous;
+    if (event.signal_family === "inflation") return { label: higher ? "HOTTER" : "COOLER", tone: higher ? "hot" : "cool" };
+    if (event.signal_family === "labor_strength") return { label: higher ? "FIRMER" : "SOFTER", tone: higher ? "hot" : "cool" };
+    if (event.signal_family === "labor_inverse") return { label: higher ? "WEAKER" : "FIRMER", tone: higher ? "hot" : "cool" };
+    if (event.signal_family === "policy") return { label: higher ? "TIGHTER" : "EASIER", tone: higher ? "hot" : "cool" };
+    return { label: higher ? "STRONGER" : "SOFTER", tone: higher ? "hot" : "cool" };
+  }
+
+  function macroCountdown(event) {
+    if (!event?.scheduled_at) return { value: "—", unit: "DAYS", detail: "No scheduled FOMC meeting" };
+    const date = new Date(event.scheduled_at);
+    const diff = Math.max(date.getTime() - Date.now(), 0);
+    const days = Math.ceil(diff / 86_400_000);
+    const detail = `${date.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric", year: "numeric" })} · ${macroTime(event.scheduled_at, "America/New_York", true)} ET`;
+    if (days >= 1) return { value: days, unit: days === 1 ? "DAY" : "DAYS", detail };
+    const hours = Math.max(1, Math.ceil(diff / 3_600_000));
+    return { value: hours, unit: hours === 1 ? "HOUR" : "HOURS", detail };
+  }
+
+  function macroEventMarkup(event) {
+    const read = macroRead(event);
+    const sourceUrl = /^https:\/\//i.test(event.source_url || "") ? event.source_url : "";
+    const consensus = event.forecast ? `<small>CONSENSUS ${esc(event.forecast)}</small>` : "";
+    return `<article class="macro-event">
+      <div class="macro-event__time">
+        <span class="macro-impact" aria-label="High impact"><i></i><i></i><i></i></span>
+        <strong>${esc(macroTime(event.scheduled_at, "America/New_York", true))}</strong>
+        <small>${esc(macroTime(event.scheduled_at, "Asia/Bangkok"))} BKK</small>
+      </div>
+      <div class="macro-event__body">
+        <span>${esc(String(event.event_group || "macro").toUpperCase())} · ${esc(event.reference_period || event.category || "US")}</span>
+        <h3>${esc(event.event_name)}</h3>
+        <p>${esc(event.source_name || "Official release")}</p>
+      </div>
+      <div class="macro-event__metrics">
+        <div><small>ACTUAL</small><strong>${esc(event.actual || "—")}</strong>${consensus}</div>
+        <div><small>PREVIOUS</small><strong>${esc(event.previous || "—")}</strong></div>
+        <div class="macro-read macro-read--${read.tone}"><small>READ</small><strong>${esc(read.label)}</strong></div>
+      </div>
+      <div class="macro-event__source">${sourceUrl ? `<a href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">SOURCE ↗</a>` : `<span>SOURCE PENDING</span>`}</div>
+    </article>`;
+  }
+
+  function renderMacro() {
+    const now = Date.now();
+    const tapeEnd = now + 35 * 86_400_000;
+    const entries = [...state.macroEntries]
+      .filter((event) => {
+        const time = new Date(event.scheduled_at).getTime();
+        return Number.isFinite(time) && time >= now - 2 * 86_400_000 && time <= tapeEnd;
+      })
+      .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at) || String(a.event_name).localeCompare(String(b.event_name)));
+    const upcoming = entries.filter((event) => new Date(event.scheduled_at).getTime() >= now);
+    const nextEvent = state.macroNextEvent || upcoming[0] || null;
+    const nextFomc = state.macroNextFomc || state.macroEntries.find((event) => /^FOMC Rate Decision/i.test(event.event_name) && new Date(event.scheduled_at).getTime() >= now) || null;
+    const countdown = macroCountdown(nextFomc);
+    const sevenDays = upcoming.filter((event) => new Date(event.scheduled_at).getTime() <= now + 7 * 86_400_000).length;
+    const released = entries.filter((event) => event.actual && new Date(event.scheduled_at).getTime() < now).length;
+    const groups = new Map();
+    entries.forEach((event) => {
+      const key = macroDayKey(event.scheduled_at);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(event);
+    });
+    const syncLabel = state.macroLastSynced
+      ? new Date(state.macroLastSynced).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : "Not synced yet";
+    const nextRead = nextEvent ? macroRead(nextEvent) : { label: "CLEAR", tone: "neutral" };
+
+    viewRoot.innerHTML = `
+      ${pageHead("US macro · High impact only", "The releases that move the tape.", "FOMC, inflation, labor, growth and activity — a deliberately narrow calendar built from official schedules and FRED observations.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources…" : "Update sources"}</button>`)}
+      ${!state.macroReady ? `<div class="warning-box macro-setup"><strong>Macro Calendar is not installed yet.</strong> Run <code>035_us_macro_calendar.sql</code>, add <code>FRED_API_KEY</code>, then deploy <code>sync-macro-calendar</code>.</div>` : ""}
+      <section class="macro-hero" aria-label="Macro command summary">
+        <article class="macro-fomc">
+          <div><span>01 / NEXT POLICY GATE</span><small>${esc(nextFomc?.event_name || "FOMC schedule")}</small></div>
+          <div class="macro-countdown"><strong>${esc(countdown.value)}</strong><span>${esc(countdown.unit)}</span></div>
+          <footer><b>${esc(countdown.detail)}</b><small>${esc(nextFomc?.previous ? `Current target ${nextFomc.previous}` : "Federal Reserve calendar")}</small></footer>
+        </article>
+        <article class="macro-next">
+          <span>02 / NEXT MARKET DRIVER</span>
+          <strong>${esc(nextEvent?.event_name || "No event scheduled")}</strong>
+          <p>${nextEvent ? `${esc(new Date(nextEvent.scheduled_at).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "short", day: "numeric" }))} · ${esc(macroTime(nextEvent.scheduled_at, "America/New_York", true))} ET` : "The 35-day tape is clear."}</p>
+          <div class="macro-read macro-read--${nextRead.tone}">${esc(nextRead.label)}</div>
+        </article>
+      </section>
+      <section class="macro-ledger" aria-label="Macro calendar status">
+        <div><small>NEXT 7 DAYS</small><strong>${sevenDays}</strong><span>high-impact releases</span></div>
+        <div><small>35-DAY TAPE</small><strong>${entries.length}</strong><span>curated events</span></div>
+        <div><small>JUST REPORTED</small><strong>${released}</strong><span>actual values loaded</span></div>
+        <div><small>LAST SOURCE READ</small><strong class="macro-ledger__time">${esc(syncLabel)}</strong><span>FRED + official calendars</span></div>
+      </section>
+      <section class="macro-tape" aria-live="polite" aria-busy="${state.macroBusy}">
+        <header class="section-head macro-tape__head"><div><span class="section-index">03 / EVENT TAPE</span><h2>Thirty-five days. No filler.</h2></div><p>Times shown in New York and Bangkok.</p></header>
+        ${state.macroBusy && !entries.length
+          ? `<div class="macro-empty"><span></span><p>Reading official macro sources…</p></div>`
+          : groups.size
+            ? [...groups.entries()].map(([dayKey, events]) => {
+                const date = new Date(`${dayKey}T12:00:00Z`);
+                const isToday = dayKey === macroDayKey(new Date());
+                return `<section class="macro-day">
+                  <header><span>${isToday ? "TODAY" : esc(date.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "long" }).toUpperCase())}</span><strong>${esc(date.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" }))}</strong><small>${events.length} EVENT${events.length === 1 ? "" : "S"}</small></header>
+                  <div>${events.map(macroEventMarkup).join("")}</div>
+                </section>`;
+              }).join("")
+            : `<div class="macro-empty"><strong>No high-impact events loaded.</strong><p>The official calendar has no entries in this 35-day window.</p></div>`}
+      </section>
+      <p class="macro-disclaimer">Actual and previous values come from FRED; release dates come from FRED, the Federal Reserve and ISM. Consensus forecasts are left blank unless a verified source is added. “Hotter”, “firmer” and related labels compare only with the previous reading — they are not trade signals.</p>`;
   }
 
   function smartMoneyCodeLabel(code) {
@@ -2948,6 +3182,7 @@
       if (state.route === "journal") await loadJournalPage();
       else if (state.route === "research") await loadResearchPage();
       else if (state.route === "earnings") await loadEarningsPage();
+      else if (state.route === "macro") await loadMacroPage();
       else {
         render();
         if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
@@ -3025,6 +3260,7 @@
       renderEarnings();
     }
     else if (action === "earnings-detail") openEarningsDetail(target.dataset.earningsId);
+    else if (action === "macro-sync") await syncMacroCalendar({ notify: true });
     else if (action === "account") await openAccountDialog();
     else if (action === "portfolio-create") openCreatePortfolioDialog();
     else if (action === "portfolio-manage") openPortfolioManagerDialog();
@@ -3263,7 +3499,23 @@
       { id: "er-2", instrument_id: "i-googl", symbol: "GOOGL", display_name: "Alphabet", asset_type: "stock", earnings_date: previewEarningsDate(5), report_hour: "amc", report_sort: 3, fiscal_quarter: 3, fiscal_year: 2026, eps_estimate: 2.21, revenue_estimate: 96700000000 },
       { id: "er-3", instrument_id: "i-rklb", symbol: "RKLB", display_name: "Rocket Lab", asset_type: "stock", earnings_date: previewEarningsDate(8), report_hour: "bmo", report_sort: 1, fiscal_quarter: 2, fiscal_year: 2026, eps_estimate: -0.08, revenue_estimate: 162000000 }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    const previewMacroAt = (days, hour = 19, minute = 30) => {
+      const date = new Date();
+      date.setDate(date.getDate() + days);
+      date.setHours(hour, minute, 0, 0);
+      return date.toISOString();
+    };
+    const macroEntries = [
+      { id: "macro-1", external_id: "preview-nfp", event_group: "labor", signal_family: "labor_strength", event_name: "Nonfarm Payrolls", category: "Employment Situation", reference_period: "Jul 2026", scheduled_at: previewMacroAt(-1), actual: "73K", previous: "147K", source_name: "BLS via FRED", source_url: "https://www.bls.gov/news.release/empsit.nr0.htm" },
+      { id: "macro-2", external_id: "preview-cpi", event_group: "inflation", signal_family: "inflation", event_name: "CPI Inflation (MoM)", category: "CPI", reference_period: "Jul 2026", scheduled_at: previewMacroAt(2), actual: null, previous: "0.3%", source_name: "BLS via FRED", source_url: "https://www.bls.gov/cpi/" },
+      { id: "macro-3", external_id: "preview-core-cpi", event_group: "inflation", signal_family: "inflation", event_name: "Core CPI (MoM)", category: "Core CPI", reference_period: "Jul 2026", scheduled_at: previewMacroAt(2), actual: null, previous: "0.2%", source_name: "BLS via FRED", source_url: "https://www.bls.gov/cpi/" },
+      { id: "macro-4", external_id: "preview-ppi", event_group: "inflation", signal_family: "inflation", event_name: "Producer Price Index (MoM)", category: "PPI", reference_period: "Jul 2026", scheduled_at: previewMacroAt(3), actual: null, previous: "0.0%", source_name: "BLS via FRED", source_url: "https://www.bls.gov/ppi/" },
+      { id: "macro-5", external_id: "preview-claims", event_group: "labor", signal_family: "labor_inverse", event_name: "Initial Jobless Claims", category: "Weekly Claims", reference_period: "Aug 8, 2026", scheduled_at: previewMacroAt(5), actual: null, previous: "226K", source_name: "DOL via FRED", source_url: "https://www.dol.gov/ui/data.pdf" },
+      { id: "macro-6", external_id: "preview-retail", event_group: "consumption", signal_family: "growth", event_name: "Retail Sales (MoM)", category: "Retail Sales", reference_period: "Jul 2026", scheduled_at: previewMacroAt(8), actual: null, previous: "0.6%", source_name: "Census via FRED", source_url: "https://www.census.gov/retail/index.html" },
+      { id: "macro-7", external_id: "preview-fomc", event_group: "policy", signal_family: "policy", event_name: "FOMC Rate Decision + SEP", category: "FOMC", scheduled_at: previewMacroAt(25, 1, 0), actual: null, previous: "4.75–5.00%", source_name: "Federal Reserve", source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" },
+      { id: "macro-8", external_id: "preview-powell", event_group: "policy", signal_family: "policy", event_name: "Fed Chair Press Conference", category: "Fed Chair", scheduled_at: previewMacroAt(25, 1, 30), actual: null, previous: null, source_name: "Federal Reserve", source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" }
+    ];
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroLastSynced: new Date().toISOString(), selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;

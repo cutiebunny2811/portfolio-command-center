@@ -1,0 +1,14 @@
+{
+  "name": "portfolio-command-center-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Draft-only MCP adapter for Hermes and Portfolio Command Center",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

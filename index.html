@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260808-macro-v1">
+  <link rel="stylesheet" href="styles.css?v=20260809-briefs-v1">
 </head>
 <body>
   <a class="skip-link" href="#view-root">Skip to dashboard</a>
@@ -55,7 +55,11 @@
       <div class="topbar__status">
         <span id="sync-status" class="sync-status"><i></i> Supabase connected</span>
         <button id="refresh-button" class="icon-button" type="button" title="Refresh data" aria-label="Refresh data">↻</button>
+        <button id="notification-button" class="icon-button notification-button" type="button" data-action="notification-toggle" title="Notifications" aria-label="Open notifications" aria-expanded="false" aria-controls="notification-panel">
+          <i data-lucide="bell" aria-hidden="true"></i><span id="notification-badge" class="notification-badge" hidden>0</span>
+        </button>
         <button id="account-button" class="account-button" type="button" data-action="account">Account</button>
+        <section id="notification-panel" class="notification-panel" aria-label="Notifications" hidden></section>
       </div>
     </header>
 
@@ -70,6 +74,7 @@
         <button class="nav-item" type="button" data-route="research"><span>06</span> News</button>
         <button class="nav-item" type="button" data-route="earnings"><span>07</span> Earnings</button>
         <button class="nav-item" type="button" data-route="macro"><span>08</span> Macro</button>
+        <button class="nav-item" type="button" data-route="briefs"><span>09</span> Briefs</button>
       </div>
       <div>
         <p class="nav-label">Portfolios</p>
@@ -95,6 +100,7 @@
       <button type="button" data-route="research"><span>◉</span>News</button>
       <button type="button" data-route="earnings"><span>◷</span>Earn</button>
       <button type="button" data-route="macro"><span>▦</span>Macro</button>
+      <button type="button" data-route="briefs"><span>▤</span>Brief</button>
     </nav>
   </div>
 
@@ -115,8 +121,9 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://unpkg.com/lightweight-charts@5.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
   <script src="config.js"></script>
   <script src="portfolio-math.js?v=20260802-dynamic-portfolios-v1"></script>
-  <script src="app.js?v=20260808-macro-v1"></script>
+  <script src="app.js?v=20260809-briefs-v1"></script>
 </body>
 </html>

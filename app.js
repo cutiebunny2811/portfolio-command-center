@@ -46,6 +46,8 @@
     options: "Options"
   };
   const localPreviewParams = new URLSearchParams(location.search);
+  const initialRoute = ["overview", "portfolio", "journal", "watchlist", "smart-money", "research", "earnings", "macro", "briefs"].includes(localPreviewParams.get("route"))
+    ? localPreviewParams.get("route") : "overview";
   const localPreviewEnabled = (["127.0.0.1", "localhost"].includes(location.hostname) || location.protocol === "file:")
     && localPreviewParams.get("preview") === "1";
   const localStressEnabled = localPreviewEnabled && localPreviewParams.get("stress") === "1";
@@ -67,8 +69,10 @@
     earningsWeekIndex: 0, earningsTrackedCount: 0, earningsLastSynced: null,
     macroEntries: [], macroNextEvent: null, macroNextFomc: null, macroReady: true,
     macroBusy: false, macroSyncBusy: false, macroLastSynced: null,
+    briefs: [], notifications: [], briefReady: true, briefBusy: false,
+    selectedBriefId: null, notificationsOpen: false,
     agentTokens: [], agentDrafts: [],
-    route: "overview", selectedPortfolioId: null,
+    route: initialRoute, selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
     loading: false, lastSync: null
   };
@@ -109,6 +113,10 @@
     node.classList.add("is-visible");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => node.classList.remove("is-visible"), 3200);
+  }
+
+  function refreshIcons() {
+    window.lucide?.createIcons?.({ attrs: { "stroke-width": 1.8 } });
   }
 
   function setLoading(value, text = "Reading portfolio ledger…") {
@@ -158,6 +166,9 @@
     }
     if (/api_get_macro_calendar|macro_events|macro_sync_state/i.test(message)) {
       return "Macro Calendar is not installed yet. Run 035_us_macro_calendar.sql in Supabase first.";
+    }
+    if (/api_get_market_brief_feed|market_briefs|market_brief_updates|pcc_notifications/i.test(message)) {
+      return "Daily Market Brief is not installed yet. Run 036_daily_market_briefs.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -457,6 +468,50 @@
       return [];
     }
     throw new Error(`Smart Money: ${error.message}`);
+  }
+
+  function emptyBriefFeed() {
+    return { briefs: [], notifications: [] };
+  }
+
+  async function fetchBriefFeed() {
+    if (localPreviewEnabled) return { briefs: state.briefs, notifications: state.notifications };
+    const { data, error } = await db.rpc("api_get_market_brief_feed", { p_limit: 30 });
+    if (!error) {
+      state.briefReady = true;
+      return {
+        briefs: Array.isArray(data?.briefs) ? data.briefs : [],
+        notifications: Array.isArray(data?.notifications) ? data.notifications : []
+      };
+    }
+    if (/api_get_market_brief_feed|market_briefs|schema cache|does not exist/i.test(error.message)) {
+      state.briefReady = false;
+      return emptyBriefFeed();
+    }
+    throw new Error(`Daily Market Brief: ${error.message}`);
+  }
+
+  function applyBriefFeed(feed) {
+    state.briefs = Array.isArray(feed?.briefs) ? feed.briefs : [];
+    state.notifications = Array.isArray(feed?.notifications) ? feed.notifications : [];
+    if (!state.briefs.some((brief) => brief.id === state.selectedBriefId)) {
+      state.selectedBriefId = state.briefs[0]?.id || null;
+    }
+  }
+
+  async function loadBriefPage({ renderAfter = true } = {}) {
+    state.briefBusy = true;
+    if (renderAfter && state.route === "briefs") renderBriefs();
+    try {
+      applyBriefFeed(await fetchBriefFeed());
+    } catch (error) {
+      console.error(error);
+      toast(friendlyError(error), true);
+    } finally {
+      state.briefBusy = false;
+      renderNotificationCenter();
+      if (renderAfter && state.route === "briefs") renderBriefs();
+    }
   }
 
   function emptyResearchFeed() {
@@ -940,7 +995,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, briefFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -955,13 +1010,15 @@
         optionalSmartMoneyQuery(),
         fetchResearchFeed(),
         fetchEarningsFeed(),
-        fetchMacroFeed()
+        fetchMacroFeed(),
+        fetchBriefFeed()
       ]);
       Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
       state.researchEntries = researchFeed.entries;
       state.researchTotal = num(researchFeed.total_count);
       applyEarningsFeed(earningsFeed);
       applyMacroFeed(macroFeed);
+      applyBriefFeed(briefFeed);
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
       if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
@@ -976,9 +1033,11 @@
       if (state.route === "research") await loadResearchPage({ renderAfter: false });
       if (state.route === "earnings") await loadEarningsPage({ renderAfter: false });
       if (state.route === "macro") await loadMacroPage({ renderAfter: false });
+      if (state.route === "briefs") await loadBriefPage({ renderAfter: false });
       state.lastSync = new Date();
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
+      renderNotificationCenter();
     } catch (error) {
       console.error(error);
       setSync(false, "Sync failed");
@@ -1016,6 +1075,7 @@
     switcher.hidden = state.route !== "portfolio";
     switcher.innerHTML = state.route === "portfolio" ? state.portfolios.map((portfolio) => `<button type="button" class="${portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">${esc(portfolio.name)}</button>`).join("") : "";
     $$(".brand-button[data-route], .nav-item[data-route], .mobile-nav [data-route]").forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
+    refreshIcons();
   }
 
   function render() {
@@ -1032,6 +1092,7 @@
     else if (state.route === "research") renderResearch();
     else if (state.route === "earnings") renderEarnings();
     else if (state.route === "macro") renderMacro();
+    else if (state.route === "briefs") renderBriefs();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -1839,6 +1900,136 @@
       </div>
       <div class="smart-event__source">${sourceUrl ? `<a href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">SEC filing ↗</a>` : `<span>SEC link pending</span>`}</div>
     </article>`;
+  }
+
+  function briefArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function briefDateLabel(value, options = {}) {
+    const date = new Date(`${value}T12:00:00`);
+    if (Number.isNaN(date.getTime())) return String(value || "");
+    return date.toLocaleDateString("en-US", { month: options.short ? "short" : "long", day: "numeric", year: "numeric" });
+  }
+
+  function briefPublishedTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleTimeString("en-US", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+
+  function briefTone(value) {
+    return ["positive", "neutral", "caution", "negative"].includes(value) ? value : "neutral";
+  }
+
+  function briefTextItems(value) {
+    return briefArray(value).map((item) => {
+      if (typeof item === "string") return `<li>${esc(item)}</li>`;
+      const title = item?.title || item?.label || item?.name || item?.date || "Update";
+      const detail = item?.detail || item?.summary || item?.note || item?.value || "";
+      const tone = briefTone(String(item?.tone || item?.impact || "neutral").toLowerCase());
+      return `<li class="brief-note brief-note--${tone}"><strong>${esc(title)}</strong>${detail ? `<p>${esc(detail)}</p>` : ""}</li>`;
+    }).join("");
+  }
+
+  function briefSourceLink(source) {
+    const url = String(source?.url || "").trim();
+    const safeUrl = /^https:\/\//i.test(url) ? url : "";
+    const title = source?.title || source?.publisher || source?.id || "Source";
+    const publisher = source?.publisher && source.publisher !== title ? `<span>${esc(source.publisher)}</span>` : "";
+    return safeUrl
+      ? `<a href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer"><strong>${esc(title)}</strong>${publisher}<small>SOURCE ↗</small></a>`
+      : `<div><strong>${esc(title)}</strong>${publisher}<small>SOURCE UNAVAILABLE</small></div>`;
+  }
+
+  function briefStoryMarkup(story, index, sourceMap) {
+    const facts = briefArray(story?.facts || (story?.fact ? [story.fact] : []));
+    const interpretations = briefArray(story?.interpretation || story?.interpretations || []);
+    const sourceIds = briefArray(story?.source_ids || story?.sources || []);
+    const sources = sourceIds.map((id) => sourceMap.get(String(id))).filter(Boolean);
+    return `<article class="brief-story">
+      <div class="brief-story__index">${String(index + 1).padStart(2, "0")}</div>
+      <div class="brief-story__body">
+        <h3>${esc(story?.title || `Market story ${index + 1}`)}</h3>
+        ${facts.length ? `<div class="brief-story__facts"><span>CONFIRMED</span>${facts.map((fact) => `<p>${esc(typeof fact === "string" ? fact : fact?.detail || fact?.text || "")}</p>`).join("")}</div>` : ""}
+        ${interpretations.length ? `<div class="brief-story__read"><span>MARKET READ</span>${interpretations.map((read) => `<p>${esc(typeof read === "string" ? read : read?.detail || read?.text || "")}</p>`).join("")}</div>` : ""}
+        ${story?.summary ? `<p>${esc(story.summary)}</p>` : ""}
+        ${sources.length ? `<div class="brief-story__sources">${sources.map(briefSourceLink).join("")}</div>` : ""}
+      </div>
+    </article>`;
+  }
+
+  function briefContinuationMarkup(update) {
+    const content = update?.content || {};
+    return `<section class="brief-continuation" id="brief-update-${esc(update.id)}">
+      <header>
+        <div><span class="section-index">CONTINUATION / ${esc(briefPublishedTime(update.published_at))} BKK</span><h2>What changed after publication.</h2></div>
+        <strong class="brief-thesis brief-thesis--${esc(update.thesis_status)}">THESIS ${esc(String(update.thesis_status || "unchanged").toUpperCase())}</strong>
+      </header>
+      <p class="brief-continuation__summary">${esc(update.summary || "")}</p>
+      <div class="brief-continuation__grid">
+        <section><span>01 / MATERIAL CHANGES</span><ul>${briefTextItems(content.changes)}</ul></section>
+        <section><span>02 / PORTFOLIO IMPACT</span><ul>${briefTextItems(content.portfolio_impact)}</ul></section>
+        <section><span>03 / WATCH NEXT</span><ul>${briefTextItems(content.watch_next)}</ul></section>
+      </div>
+      ${briefArray(content.sources).length ? `<div class="brief-update-sources">${briefArray(content.sources).map(briefSourceLink).join("")}</div>` : ""}
+    </section>`;
+  }
+
+  function renderNotificationCenter() {
+    const panel = $("#notification-panel");
+    const badge = $("#notification-badge");
+    const button = $("#notification-button");
+    if (!panel || !badge || !button) return;
+    const unread = state.notifications.filter((notice) => !notice.read_at).length;
+    badge.hidden = unread === 0;
+    badge.textContent = unread > 9 ? "9+" : String(unread);
+    button.setAttribute("aria-expanded", String(state.notificationsOpen));
+    panel.hidden = !state.notificationsOpen;
+    panel.innerHTML = `<header><div><span>NOTIFICATIONS</span><strong>${unread ? `${unread} unread` : "All caught up"}</strong></div>${unread ? '<button type="button" data-action="notification-read-all">Mark all read</button>' : ""}</header>
+      <div class="notification-list">
+        ${state.notifications.length ? state.notifications.slice(0, 12).map((notice) => `<button type="button" class="notification-item${notice.read_at ? "" : " is-unread"}" data-action="notification-open" data-notification-id="${esc(notice.id)}" data-entity-id="${esc(notice.entity_id)}">
+          <span>${notice.notification_type === "brief_continuation" ? "UPDATE" : "BRIEF"}</span><strong>${esc(notice.title)}</strong><p>${esc(notice.preview)}</p><small>${esc(briefPublishedTime(notice.created_at))} BKK</small>
+        </button>`).join("") : '<div class="notification-empty"><strong>No brief notifications yet.</strong><p>Hermes publications will appear here.</p></div>'}
+      </div><footer><button type="button" data-route="briefs">Open brief archive</button></footer>`;
+  }
+
+  function selectedBrief() {
+    return state.briefs.find((brief) => brief.id === state.selectedBriefId) || state.briefs[0] || null;
+  }
+
+  function renderBriefs() {
+    const brief = selectedBrief();
+    if (!state.briefReady) {
+      viewRoot.innerHTML = `${pageHead("Hermes · Canonical market intelligence", "Daily Market Brief", "One published view, continued only when the market meaningfully changes.")}<div class="warning-box"><strong>Daily Market Brief is not installed yet.</strong> Run <code>036_daily_market_briefs.sql</code>, then deploy the updated Portfolio Agent API.</div>`;
+      return;
+    }
+    if (state.briefBusy && !brief) {
+      viewRoot.innerHTML = `${pageHead("Hermes · Canonical market intelligence", "Daily Market Brief", "One published view, continued only when the market meaningfully changes.")}<div class="brief-empty"><span></span><p>Reading the brief archive…</p></div>`;
+      return;
+    }
+    if (!brief) {
+      viewRoot.innerHTML = `${pageHead("Hermes · Canonical market intelligence", "Daily Market Brief", "One published view, continued only when the market meaningfully changes.")}<section class="brief-empty"><span>20:00 BKK</span><h2>The first canonical brief has not been published.</h2><p>Hermes will write the full edition here; Telegram carries only the preview.</p></section>`;
+      return;
+    }
+    const content = brief.content || {};
+    const mood = content.market_mood || {};
+    const sources = briefArray(content.sources);
+    const sourceMap = new Map(sources.map((source) => [String(source.id), source]));
+    const updates = briefArray(brief.updates);
+    viewRoot.innerHTML = `<div class="brief-shell">
+      <aside class="brief-archive" aria-label="Brief archive"><header><span>ARCHIVE / ${state.briefs.length}</span><strong>Daily editions</strong></header><div>${state.briefs.map((item) => `<button type="button" class="${item.id === brief.id ? "is-active" : ""}" data-action="brief-select" data-brief-id="${esc(item.id)}"><span>${esc(briefDateLabel(item.brief_date, { short: true }))}</span><strong>${esc(item.summary)}</strong><small>${briefArray(item.updates).length ? `${briefArray(item.updates).length} continuation` : "Canonical"}</small></button>`).join("")}</div></aside>
+      <article class="brief-document">
+        <header class="brief-masthead"><div><span>DAILY MARKET BRIEF / ${esc(briefDateLabel(brief.brief_date).toUpperCase())}</span><h1>The market,<br>without the reruns.</h1></div><div class="brief-masthead__meta"><span>PUBLISHED</span><strong>${esc(briefPublishedTime(brief.published_at))} BKK</strong><small>HERMES → SUPABASE</small></div></header>
+        <section class="brief-mood brief-mood--${briefTone(mood.tone)}"><span>01 / MARKET MOOD</span><h2>${esc(mood.label || "Market read")}</h2><p>${esc(mood.summary || brief.summary)}</p></section>
+        <section class="brief-section brief-snapshot"><header><span>02 / MARKET SNAPSHOT</span><h2>Numbers before narrative.</h2></header><div>${briefArray(content.market_snapshot).map((item) => `<div><span>${esc(item.label || item.name || item.symbol || "MARKET")}</span><strong>${esc(item.value ?? "—")}</strong><small class="brief-change brief-change--${briefTone(String(item.tone || "neutral").toLowerCase())}">${esc(item.change || item.note || "")}</small></div>`).join("")}</div></section>
+        <section class="brief-section brief-stories"><header><span>03 / TOP STORIES</span><h2>What moved the tape.</h2></header><div>${briefArray(content.top_stories).map((story, index) => briefStoryMarkup(story, index, sourceMap)).join("")}</div></section>
+        <section class="brief-section brief-decision-grid"><div><header><span>04 / INVESTMENT IMPLICATIONS</span><h2>Portfolio read-through.</h2></header><ul>${briefTextItems(content.investment_implications)}</ul></div><div><header><span>05 / WATCH NEXT</span><h2>The next decision points.</h2></header><ul>${briefTextItems(content.watch_next)}</ul></div></section>
+        <section class="brief-bottom-line"><span>06 / BOTTOM LINE</span><h2>Read this twice.</h2><ul>${briefTextItems(content.bottom_line)}</ul></section>
+        ${updates.map(briefContinuationMarkup).join("")}
+        <section class="brief-sources"><header><span>07 / SOURCES</span><h2>Open the evidence.</h2></header><div>${sources.map(briefSourceLink).join("")}</div></section>
+      </article>
+    </div>`;
   }
 
   function renderSmartMoney() {
@@ -3127,7 +3318,7 @@
         const expires = permanent ? null : new Date(`${expiryDate}T23:59:59Z`).toISOString();
         const token = await rpc("api_create_agent_token", {
           p_name: form.get("name"),
-          p_scopes: ["read", "drafts:write", "watchlist:write"],
+          p_scopes: ["read", "drafts:write", "watchlist:write", "briefings:write"],
           p_expires_at: expires
         });
         openDialog({
@@ -3172,17 +3363,29 @@
   }
 
   async function handleClick(event) {
+    if (state.notificationsOpen && !event.target.closest("#notification-panel, #notification-button")) {
+      state.notificationsOpen = false;
+      renderNotificationCenter();
+    }
     const routeButton = event.target.closest("[data-route]");
     if (routeButton) {
       const nextRoute = routeButton.dataset.route;
       if (state.route === "watchlist" && nextRoute !== "watchlist") invalidateWatchlistBarsRequest();
       state.route = nextRoute;
+      state.notificationsOpen = false;
+      if (!localPreviewEnabled) {
+        const url = new URL(location.href);
+        if (nextRoute === "overview") url.searchParams.delete("route");
+        else url.searchParams.set("route", nextRoute);
+        history.replaceState(null, "", url);
+      }
       window.scrollTo(0, 0);
       renderNav();
       if (state.route === "journal") await loadJournalPage();
       else if (state.route === "research") await loadResearchPage();
       else if (state.route === "earnings") await loadEarningsPage();
       else if (state.route === "macro") await loadMacroPage();
+      else if (state.route === "briefs") await loadBriefPage();
       else {
         render();
         if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
@@ -3201,6 +3404,44 @@
     if (!target) return;
     const action = target.dataset.action;
     if (action === "close-dialog") closeDialog();
+    else if (action === "notification-toggle") {
+      state.notificationsOpen = !state.notificationsOpen;
+      renderNotificationCenter();
+    }
+    else if (action === "notification-read-all") {
+      if (!localPreviewEnabled) await rpc("api_mark_notification_read", { p_notification_id: null });
+      const readAt = new Date().toISOString();
+      state.notifications.forEach((notice) => { if (!notice.read_at) notice.read_at = readAt; });
+      renderNotificationCenter();
+    }
+    else if (action === "notification-open") {
+      const entityId = target.dataset.entityId;
+      const notice = state.notifications.find((item) => item.id === target.dataset.notificationId);
+      const brief = state.briefs.find((item) => item.id === entityId || briefArray(item.updates).some((update) => update.id === entityId));
+      if (brief) state.selectedBriefId = brief.id;
+      state.route = "briefs";
+      state.notificationsOpen = false;
+      if (!localPreviewEnabled) {
+        const url = new URL(location.href);
+        url.searchParams.set("route", "briefs");
+        history.replaceState(null, "", url);
+      }
+      if (notice && !notice.read_at) {
+        if (!localPreviewEnabled) await rpc("api_mark_notification_read", { p_notification_id: notice.id });
+        notice.read_at = new Date().toISOString();
+      }
+      window.scrollTo(0, 0);
+      render();
+      renderNotificationCenter();
+      if (entityId && briefArray(brief?.updates).some((update) => update.id === entityId)) {
+        requestAnimationFrame(() => $(`#brief-update-${CSS.escape(entityId)}`)?.scrollIntoView({ block: "start" }));
+      }
+    }
+    else if (action === "brief-select") {
+      state.selectedBriefId = target.dataset.briefId;
+      window.scrollTo(0, 0);
+      renderBriefs();
+    }
     else if (action === "refresh") await loadData();
     else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
     else if (action === "watchlist-view") {
@@ -3515,7 +3756,51 @@
       { id: "macro-7", external_id: "preview-fomc", event_group: "policy", signal_family: "policy", event_name: "FOMC Rate Decision + SEP", category: "FOMC", scheduled_at: previewMacroAt(25, 1, 0), actual: null, previous: "4.75–5.00%", source_name: "Federal Reserve", source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" },
       { id: "macro-8", external_id: "preview-powell", event_group: "policy", signal_family: "policy", event_name: "Fed Chair Press Conference", category: "Fed Chair", scheduled_at: previewMacroAt(25, 1, 30), actual: null, previous: null, source_name: "Federal Reserve", source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroLastSynced: new Date().toISOString(), selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    const previewBriefDate = localDayKey(new Date());
+    const previewSources = [
+      { id: "src-1", title: "US stocks close higher as yields ease", publisher: "Reuters", url: "https://www.reuters.com/markets/us/", published_at: new Date().toISOString() },
+      { id: "src-2", title: "Employment Situation", publisher: "U.S. Bureau of Labor Statistics", url: "https://www.bls.gov/news.release/empsit.nr0.htm", published_at: new Date().toISOString() }
+    ];
+    const briefs = [{
+      id: "brief-preview", brief_date: previewBriefDate, title: "Daily Market Brief",
+      summary: "Risk appetite improved as yields eased, but the next inflation release remains the decision point.",
+      published_at: new Date().toISOString(), content: {
+        market_mood: { label: "Constructive, with CPI risk ahead", tone: "caution", summary: "Growth leadership is intact and volatility is contained. The setup remains constructive, but the next inflation print can change the rate narrative quickly." },
+        market_snapshot: [
+          { label: "S&P 500", value: "7,757.64", change: "+0.62%", tone: "positive" },
+          { label: "NASDAQ", value: "26,690.62", change: "+1.30%", tone: "positive" },
+          { label: "US 10Y", value: "4.64%", change: "Yield eased", tone: "positive" },
+          { label: "VIX", value: "15.43", change: "Risk appetite improved", tone: "neutral" }
+        ],
+        top_stories: [
+          { title: "Soft labor data lowered immediate rate pressure", facts: ["Payroll growth missed expectations while Treasury yields moved lower."], interpretation: ["The market treated weaker labor as support for duration-sensitive growth rather than an immediate recession signal."], source_ids: ["src-1", "src-2"] },
+          { title: "Earnings breadth continues to support the tape", facts: ["Most large-cap reporters have delivered positive EPS surprises."], interpretation: ["Forward guidance remains more important than the headline beat."], source_ids: ["src-1"] }
+        ],
+        investment_implications: [
+          { title: "AI and semiconductors", detail: "Lower yields remain supportive, but avoid chasing gap-ups into CPI.", tone: "positive" },
+          { title: "Long Term portfolio", detail: "No thesis change; keep position sizing tied to the existing allocation plan.", tone: "neutral" }
+        ],
+        watch_next: [
+          { title: "Core CPI (MoM)", detail: "The next major test for yields and growth multiples.", tone: "caution" },
+          { title: "Watchlist earnings", detail: "Read guidance before reacting to EPS beats.", tone: "neutral" }
+        ],
+        bottom_line: ["The bullish setup remains intact while yields stay contained.", "A hotter inflation print is the clearest near-term risk to the current market narrative."],
+        sources: previewSources
+      },
+      updates: [{
+        id: "update-preview", thesis_status: "unchanged", summary: "Indexes softened after the open, but yields and volatility did not confirm a broader risk-off move.", published_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString(), content: {
+          changes: [{ title: "Selective rotation", detail: "Semiconductors held up better than software and financials.", tone: "neutral" }],
+          portfolio_impact: [{ title: "No allocation change", detail: "The original Long Term thesis remains current.", tone: "neutral" }],
+          watch_next: [{ title: "Closing breadth", detail: "Watch whether weakness broadens into the final hour.", tone: "caution" }],
+          sources: [previewSources[0]]
+        }
+      }]
+    }];
+    const notifications = [
+      { id: "notice-update", notification_type: "brief_continuation", title: "Daily Market Brief · Continuation", preview: "Indexes softened, but the original thesis remains current.", entity_id: "update-preview", created_at: new Date().toISOString(), read_at: null },
+      { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
+    ];
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroLastSynced: new Date().toISOString(), briefs, notifications, selectedBriefId: "brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;
@@ -3526,6 +3811,7 @@
     appShell.hidden = false;
     setSync(true, "Local preview");
     render();
+    renderNotificationCenter();
   }
 
   (async () => {

@@ -112,3 +112,11 @@ The MCP tools can read every dashboard area, manage the separate Watchlist, and
 create expiring trade/cash drafts. They cannot confirm drafts, run SQL, edit
 balances directly, delete history, or place broker orders. Confirm pending
 Hermes drafts from `Account > Agent drafts`.
+
+### Daily Market Brief
+
+Run [`supabase/036_daily_market_briefs.sql`](supabase/036_daily_market_briefs.sql)
+and deploy `portfolio-agent-api`. Hermes receives a narrow
+`briefings:write` scope for the canonical 20:00 Asia/Bangkok Brief and material
+00:00 Continuations. Supabase stores the full publication and notification
+state; Telegram carries a concise preview and a link to `?route=briefs`.

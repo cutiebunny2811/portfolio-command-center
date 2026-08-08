@@ -70,7 +70,7 @@
     macroEntries: [], macroNextEvent: null, macroNextFomc: null, macroReady: true,
     macroBusy: false, macroSyncBusy: false, macroLastSynced: null,
     briefs: [], notifications: [], briefReady: true, briefBusy: false,
-    selectedBriefId: null, notificationsOpen: false,
+    selectedBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
     agentTokens: [], agentDrafts: [],
     route: initialRoute, selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
@@ -1066,6 +1066,9 @@
   function renderNav() {
     const nav = $("#portfolio-nav");
     const switcher = $("#portfolio-switcher");
+    const mobileMorePanel = $("#mobile-more-panel");
+    const mobileMoreButton = $("#mobile-more-button");
+    const mobileMoreRoutes = new Set(["smart-money", "research", "earnings", "macro"]);
     nav.innerHTML = state.portfolios.map((portfolio) => {
       const stats = portfolioStats(portfolio);
       return `<button type="button" class="${state.route === "portfolio" && portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">
@@ -1074,7 +1077,10 @@
     }).join("");
     switcher.hidden = state.route !== "portfolio";
     switcher.innerHTML = state.route === "portfolio" ? state.portfolios.map((portfolio) => `<button type="button" class="${portfolio.id === state.selectedPortfolioId ? "is-active" : ""}" data-portfolio-id="${portfolio.id}">${esc(portfolio.name)}</button>`).join("") : "";
-    $$(".brand-button[data-route], .nav-item[data-route], .mobile-nav [data-route]").forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
+    $$(".brand-button[data-route], .nav-item[data-route], .mobile-nav [data-route], .mobile-more-panel [data-route]").forEach((button) => button.classList.toggle("is-active", button.dataset.route === state.route));
+    mobileMorePanel.hidden = !state.mobileMoreOpen;
+    mobileMoreButton.classList.toggle("is-active", mobileMoreRoutes.has(state.route) || state.mobileMoreOpen);
+    mobileMoreButton.setAttribute("aria-expanded", String(state.mobileMoreOpen));
     refreshIcons();
   }
 
@@ -3367,12 +3373,17 @@
       state.notificationsOpen = false;
       renderNotificationCenter();
     }
+    if (state.mobileMoreOpen && !event.target.closest("#mobile-more-panel, #mobile-more-button")) {
+      state.mobileMoreOpen = false;
+      renderNav();
+    }
     const routeButton = event.target.closest("[data-route]");
     if (routeButton) {
       const nextRoute = routeButton.dataset.route;
       if (state.route === "watchlist" && nextRoute !== "watchlist") invalidateWatchlistBarsRequest();
       state.route = nextRoute;
       state.notificationsOpen = false;
+      state.mobileMoreOpen = false;
       if (!localPreviewEnabled) {
         const url = new URL(location.href);
         if (nextRoute === "overview") url.searchParams.delete("route");
@@ -3406,7 +3417,15 @@
     if (action === "close-dialog") closeDialog();
     else if (action === "notification-toggle") {
       state.notificationsOpen = !state.notificationsOpen;
+      state.mobileMoreOpen = false;
       renderNotificationCenter();
+      renderNav();
+    }
+    else if (action === "mobile-more-toggle") {
+      state.mobileMoreOpen = !state.mobileMoreOpen;
+      state.notificationsOpen = false;
+      renderNotificationCenter();
+      renderNav();
     }
     else if (action === "notification-read-all") {
       if (!localPreviewEnabled) await rpc("api_mark_notification_read", { p_notification_id: null });

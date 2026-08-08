@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260809-briefs-v1">
+  <link rel="stylesheet" href="styles.css?v=20260809-nav-v2">
 </head>
 <body>
   <a class="skip-link" href="#view-root">Skip to dashboard</a>
@@ -54,7 +54,7 @@
       </button>
       <div class="topbar__status">
         <span id="sync-status" class="sync-status"><i></i> Supabase connected</span>
-        <button id="refresh-button" class="icon-button" type="button" title="Refresh data" aria-label="Refresh data">↻</button>
+        <button id="refresh-button" class="icon-button" type="button" title="Refresh data" aria-label="Refresh data"><i data-lucide="rotate-cw" aria-hidden="true"></i></button>
         <button id="notification-button" class="icon-button notification-button" type="button" data-action="notification-toggle" title="Notifications" aria-label="Open notifications" aria-expanded="false" aria-controls="notification-panel">
           <i data-lucide="bell" aria-hidden="true"></i><span id="notification-badge" class="notification-badge" hidden>0</span>
         </button>
@@ -74,7 +74,6 @@
         <button class="nav-item" type="button" data-route="research"><span>06</span> News</button>
         <button class="nav-item" type="button" data-route="earnings"><span>07</span> Earnings</button>
         <button class="nav-item" type="button" data-route="macro"><span>08</span> Macro</button>
-        <button class="nav-item" type="button" data-route="briefs"><span>09</span> Briefs</button>
       </div>
       <div>
         <p class="nav-label">Portfolios</p>
@@ -91,16 +90,22 @@
       <div id="view-root" tabindex="-1"></div>
     </main>
 
+    <section id="mobile-more-panel" class="mobile-more-panel" aria-label="More market tools" hidden>
+      <header><span>MARKET DESK</span><strong>Research &amp; signals</strong></header>
+      <nav aria-label="Additional navigation">
+        <button type="button" data-route="smart-money"><i data-lucide="radar" aria-hidden="true"></i><span><strong>Smart Money</strong><small>Institutional flow</small></span></button>
+        <button type="button" data-route="research"><i data-lucide="newspaper" aria-hidden="true"></i><span><strong>News</strong><small>Source-first tape</small></span></button>
+        <button type="button" data-route="earnings"><i data-lucide="calendar-clock" aria-hidden="true"></i><span><strong>Earnings</strong><small>Reporting calendar</small></span></button>
+        <button type="button" data-route="macro"><i data-lucide="calendar-range" aria-hidden="true"></i><span><strong>Macro</strong><small>High-impact releases</small></span></button>
+      </nav>
+    </section>
+
     <nav class="mobile-nav" aria-label="Mobile navigation">
-      <button type="button" data-route="watchlist"><span>⌁</span>Watch</button>
-      <button type="button" data-route="overview"><span>⌂</span>Overview</button>
-      <button type="button" data-route="portfolio"><span>◫</span>Portfolio</button>
-      <button type="button" data-route="journal"><span>↗</span>P/L</button>
-      <button type="button" data-route="smart-money"><span>◎</span>Smart</button>
-      <button type="button" data-route="research"><span>◉</span>News</button>
-      <button type="button" data-route="earnings"><span>◷</span>Earn</button>
-      <button type="button" data-route="macro"><span>▦</span>Macro</button>
-      <button type="button" data-route="briefs"><span>▤</span>Brief</button>
+      <button type="button" data-route="overview"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span>Overview</span></button>
+      <button type="button" data-route="portfolio"><i data-lucide="wallet-cards" aria-hidden="true"></i><span>Portfolio</span></button>
+      <button type="button" data-route="journal"><i data-lucide="chart-no-axes-combined" aria-hidden="true"></i><span>P/L</span></button>
+      <button type="button" data-route="watchlist"><i data-lucide="scan-eye" aria-hidden="true"></i><span>Watch</span></button>
+      <button id="mobile-more-button" type="button" data-action="mobile-more-toggle" aria-expanded="false" aria-controls="mobile-more-panel"><i data-lucide="grid-2x2" aria-hidden="true"></i><span>More</span></button>
     </nav>
   </div>
 
@@ -124,6 +129,6 @@
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
   <script src="config.js"></script>
   <script src="portfolio-math.js?v=20260802-dynamic-portfolios-v1"></script>
-  <script src="app.js?v=20260809-briefs-v1"></script>
+  <script src="app.js?v=20260809-nav-v2"></script>
 </body>
 </html>

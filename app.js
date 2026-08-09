@@ -51,6 +51,9 @@
   const localPreviewEnabled = (["127.0.0.1", "localhost"].includes(location.hostname) || location.protocol === "file:")
     && localPreviewParams.get("preview") === "1";
   const localStressEnabled = localPreviewEnabled && localPreviewParams.get("stress") === "1";
+  const recoveryParams = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const passwordRecoveryRequested = recoveryParams.get("type") === "recovery"
+    || localPreviewParams.get("type") === "recovery";
 
   const state = {
     user: null, member: null,
@@ -78,6 +81,8 @@
   };
 
   const authShell = $("#auth-shell");
+  const loginForm = $("#login-form");
+  const passwordResetForm = $("#password-reset-form");
   const onboardingShell = $("#onboarding-shell");
   const appShell = $("#app-shell");
   const viewRoot = $("#view-root");
@@ -91,6 +96,7 @@
   let watchlistBarsRequestId = 0;
   let watchlistChartRenderId = 0;
   let authEntryPromise = null;
+  let passwordRecoveryActive = passwordRecoveryRequested;
 
   function destroyWatchlistChart() {
     if (!watchlistChart) return;
@@ -1053,13 +1059,30 @@
     }
   }
 
-  function showAuth() {
+  function showAuth({ preserveRecovery = false } = {}) {
     state.user = null;
     state.member = null;
+    if (!preserveRecovery) passwordRecoveryActive = false;
     authShell.hidden = false;
+    loginForm.hidden = false;
+    passwordResetForm.hidden = true;
     onboardingShell.hidden = true;
     appShell.hidden = true;
     $("#login-password").value = "";
+    $("#login-error").classList.remove("is-success");
+  }
+
+  function showPasswordReset(user) {
+    state.user = user;
+    passwordRecoveryActive = true;
+    authShell.hidden = false;
+    loginForm.hidden = true;
+    passwordResetForm.hidden = false;
+    onboardingShell.hidden = true;
+    appShell.hidden = true;
+    passwordResetForm.reset();
+    $("#password-reset-error").textContent = "";
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   function showOnboarding(user, member) {
@@ -3664,6 +3687,7 @@
     event.preventDefault();
     const button = $('button[type="submit"]', event.currentTarget);
     const errorNode = $("#login-error");
+    errorNode.classList.remove("is-success");
     button.disabled = true; button.textContent = "Signing in…"; errorNode.textContent = "";
     const form = new FormData(event.currentTarget);
     const { data, error } = await db.auth.signInWithPassword({ email: form.get("email"), password: form.get("password") });
@@ -3675,6 +3699,71 @@
       errorNode.textContent = friendlyError(entryError);
     } finally {
       button.disabled = false; button.textContent = "Enter dashboard";
+    }
+  });
+
+  $("#forgot-password").addEventListener("click", async () => {
+    const button = $("#forgot-password");
+    const errorNode = $("#login-error");
+    const email = String($("#login-email").value || "").trim().toLowerCase();
+    errorNode.classList.remove("is-success");
+    errorNode.textContent = "";
+    if (!email || !$("#login-email").checkValidity()) {
+      errorNode.textContent = "Enter the account email first.";
+      $("#login-email").focus();
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Sending reset link...";
+    try {
+      const redirectTo = `${location.origin}${location.pathname}`;
+      const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo });
+      if (error) throw error;
+      errorNode.textContent = "Password reset email sent. Open the latest link on this device.";
+      errorNode.classList.add("is-success");
+    } catch (error) {
+      console.error(error);
+      errorNode.classList.remove("is-success");
+      errorNode.textContent = friendlyError(error);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Forgot password";
+    }
+  });
+
+  $("#password-reset-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const button = $('button[type="submit"]', event.currentTarget);
+    const errorNode = $("#password-reset-error");
+    const password = String(form.get("password") || "");
+    const passwordConfirm = String(form.get("password_confirm") || "");
+    errorNode.textContent = "";
+    if (password.length < 8) {
+      errorNode.textContent = "Password must be at least 8 characters.";
+      return;
+    }
+    if (password !== passwordConfirm) {
+      errorNode.textContent = "Passwords do not match.";
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Saving...";
+    try {
+      const { data, error } = await db.auth.updateUser({ password });
+      if (error) throw error;
+      passwordRecoveryActive = false;
+      history.replaceState({}, document.title, location.pathname);
+      await enterAuthenticatedApp(data.user || state.user);
+      toast("Password updated");
+    } catch (error) {
+      console.error(error);
+      errorNode.textContent = friendlyError(error);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Save new password";
     }
   });
 
@@ -3794,11 +3883,15 @@
 
   db.auth.onAuthStateChange((event, session) => {
     if (localPreviewEnabled) return;
+    if (event === "PASSWORD_RECOVERY" && session?.user) {
+      showPasswordReset(session.user);
+      return;
+    }
     if (event === "SIGNED_OUT" || !session?.user) {
       showAuth();
       return;
     }
-    if (["SIGNED_IN", "PASSWORD_RECOVERY"].includes(event) && state.user?.id !== session.user.id) {
+    if (event === "SIGNED_IN" && !passwordRecoveryActive && state.user?.id !== session.user.id) {
       void enterAuthenticatedApp(session.user).catch((error) => {
         console.error(error);
         showAuth();
@@ -3980,6 +4073,10 @@
 
   (async () => {
     if (localPreviewEnabled) {
+      if (localPreviewParams.get("recovery") === "1") {
+        showPasswordReset({ id: "preview-member", email: "member@example.com" });
+        return;
+      }
       if (localPreviewParams.get("onboarding") === "1") {
         showOnboarding(
           { id: "preview-member", email: "new.member@example.com", user_metadata: { full_name: "New Member" } },
@@ -3991,7 +4088,8 @@
       return;
     }
     const { data, error } = await db.auth.getSession();
-    if (error || !data.session?.user) showAuth();
+    if (error || !data.session?.user) showAuth({ preserveRecovery: passwordRecoveryRequested });
+    else if (passwordRecoveryActive) showPasswordReset(data.session.user);
     else {
       try {
         await enterAuthenticatedApp(data.session.user);

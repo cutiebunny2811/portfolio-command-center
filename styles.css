@@ -124,6 +124,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .auth-panel h1 { max-width: 13ch; margin: 0; font-size: clamp(38px, 5vw, 66px); line-height: .94; letter-spacing: -.06em; }
 .auth-note { color: var(--paper-faint); font-family: var(--mono); font-size: 10px; }
+.auth-text-button {
+  justify-self: start;
+  border: 0;
+  border-bottom: 1px solid var(--gold);
+  background: transparent;
+  color: var(--gold-bright);
+  cursor: pointer;
+  padding: 0 0 3px;
+  font: 600 11px/1.2 var(--mono);
+  text-transform: uppercase;
+}
+.auth-text-button:hover { border-color: var(--red-bright); color: var(--paper); }
+.auth-text-button:disabled { cursor: wait; opacity: .55; }
 
 .onboarding-shell { min-height: 100vh; background: var(--ink); }
 .onboarding-topbar {
@@ -266,6 +279,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .field.is-disabled { opacity: .5; }
 .form-hint { margin: 6px 0 0; color: var(--paper-faint); font-size: 11px; }
 .form-error { min-height: 18px; margin: 0; color: var(--red-bright); font-size: 12px; }
+.form-error.is-success { color: var(--green); }
 
 .button, .icon-button, .account-button {
   min-height: 40px;

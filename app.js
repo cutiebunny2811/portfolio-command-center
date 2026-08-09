@@ -1951,11 +1951,13 @@
         .filter(([key]) => !ignoredKeys.has(key))
         .map(([, entry]) => briefItemText(entry))
         .filter(Boolean);
-      const title = briefItemText(item.title || item.label || item.name || item.date || item.event || item.category || item.type || item.point)
+      const datedEvent = item?.event ? [briefItemText(item.when || item.date), briefItemText(item.event)].filter(Boolean).join(" — ") : "";
+      const title = datedEvent || briefItemText(item.title || item.label || item.name || item.date || item.scope || item.event || item.category || item.type || item.point)
         || fallbackValues[0]
         || "Market update";
       const detail = briefItemText(item.detail || item.summary || item.note || item.value || item.text || item.description
-        || item.rationale || item.read_through || item.market_impact || item.portfolio_impact || item.why_it_matters || item.action)
+        || item.rationale || item.interpretation || item.read_through || item.market_impact || item.portfolio_impact
+        || item.why_it_matters || item.why || item.facts || item.action)
         || fallbackValues.find((entry) => entry !== title)
         || "";
       const tone = briefItemTone(item);

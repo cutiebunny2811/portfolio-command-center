@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260810-brief-theme-v1">
+  <link rel="stylesheet" href="styles.css?v=20260810-member-beta-v1">
 </head>
 <body>
   <a class="skip-link" href="#view-root">Skip to dashboard</a>
@@ -44,6 +44,90 @@
       <button class="button button--primary button--wide" type="submit">Enter dashboard</button>
       <small class="auth-note">Private access · Supabase Auth + Row Level Security</small>
     </form>
+  </section>
+
+  <section id="onboarding-shell" class="onboarding-shell" aria-labelledby="onboarding-title" hidden>
+    <header class="onboarding-topbar">
+      <div>
+        <span class="onboarding-mark" aria-hidden="true">PCC</span>
+        <span><strong>Portfolio Command Center</strong><small>PRIVATE BETA / MEMBER SETUP</small></span>
+      </div>
+      <div>
+        <span id="onboarding-email" class="mono"></span>
+        <button id="onboarding-signout" class="button button--ghost button--small" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <div class="onboarding-grid">
+      <section class="onboarding-intro">
+        <div>
+          <p class="eyebrow">Member 01 / First run</p>
+          <h1 id="onboarding-title">Build your own command center.</h1>
+          <p>One shared market desk. One private financial ledger. Nothing you change here affects another member.</p>
+        </div>
+        <ol class="onboarding-steps">
+          <li><span>01</span><div><strong>Private ledger</strong><small>Portfolios, trades and P/L are isolated by Supabase RLS.</small></div></li>
+          <li><span>02</span><div><strong>Starter universe</strong><small><b id="onboarding-symbol-count">200</b> curated symbols become your editable watchlist.</small></div></li>
+          <li><span>03</span><div><strong>Shared intelligence</strong><small>Every member reads the same canonical Daily Market Brief.</small></div></li>
+        </ol>
+      </section>
+
+      <form id="onboarding-form" class="onboarding-form">
+        <header>
+          <span class="section-index">01 / Identity</span>
+          <h2>Set the desk.</h2>
+          <p>Your invitation is active. Finish setup once, then use email and password to sign in.</p>
+        </header>
+
+        <div class="onboarding-fields">
+          <label class="field onboarding-field--wide">
+            <span>Your name</span>
+            <input id="onboarding-name" name="display_name" type="text" autocomplete="name" maxlength="80" required>
+          </label>
+          <label class="field">
+            <span>Create password</span>
+            <input id="onboarding-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+          </label>
+          <label class="field">
+            <span>Confirm password</span>
+            <input name="password_confirm" type="password" autocomplete="new-password" minlength="8" required>
+          </label>
+        </div>
+
+        <header class="onboarding-form__section">
+          <span class="section-index">02 / First portfolio</span>
+          <h2>Choose the accounting rail.</h2>
+        </header>
+
+        <div class="onboarding-fields">
+          <label class="field">
+            <span>Portfolio name</span>
+            <input name="portfolio_name" type="text" value="Long Term" maxlength="80" required>
+          </label>
+          <label class="field">
+            <span>Starting capital (USD)</span>
+            <input name="fixed_budget" type="number" min="0" step="0.01" value="0" required>
+          </label>
+          <fieldset class="broker-choice onboarding-field--wide">
+            <legend>Broker cost method</legend>
+            <label>
+              <input type="radio" name="broker_profile" value="webull" checked>
+              <span><b>01</b><strong>Webull</strong><small>Weighted average cost with buy commissions.</small></span>
+            </label>
+            <label>
+              <input type="radio" name="broker_profile" value="dime">
+              <span><b>02</b><strong>Dime</strong><small>FIFO lots with price-only displayed cost.</small></span>
+            </label>
+          </fieldset>
+        </div>
+
+        <footer class="onboarding-submit">
+          <div><span class="mono">SUPABASE / RLS ACTIVE</span><small>Stocks, ETFs and long options are enabled in every portfolio.</small></div>
+          <button class="button button--primary" type="submit">Enter command center</button>
+        </footer>
+        <p id="onboarding-error" class="form-error" role="alert"></p>
+      </form>
+    </div>
   </section>
 
   <div id="app-shell" class="app-shell" hidden>
@@ -129,6 +213,6 @@
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
   <script src="config.js"></script>
   <script src="portfolio-math.js?v=20260802-dynamic-portfolios-v1"></script>
-  <script src="app.js?v=20260810-shared-brief-v1"></script>
+  <script src="app.js?v=20260810-member-beta-v1"></script>
 </body>
 </html>

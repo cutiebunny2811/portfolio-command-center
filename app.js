@@ -53,7 +53,7 @@
   const localStressEnabled = localPreviewEnabled && localPreviewParams.get("stress") === "1";
 
   const state = {
-    user: null,
+    user: null, member: null,
     portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [], executions: [],
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
@@ -78,6 +78,7 @@
   };
 
   const authShell = $("#auth-shell");
+  const onboardingShell = $("#onboarding-shell");
   const appShell = $("#app-shell");
   const viewRoot = $("#view-root");
   const loading = $("#loading");
@@ -89,6 +90,7 @@
   let watchlistChart = null;
   let watchlistBarsRequestId = 0;
   let watchlistChartRenderId = 0;
+  let authEntryPromise = null;
 
   function destroyWatchlistChart() {
     if (!watchlistChart) return;
@@ -169,6 +171,9 @@
     }
     if (/api_get_market_brief_feed|market_briefs|market_brief_updates|pcc_notifications/i.test(message)) {
       return "Daily Market Brief is not installed yet. Run 036_daily_market_briefs.sql in Supabase first.";
+    }
+    if (/api_get_member_onboarding|api_complete_member_onboarding|pcc_members|starter_watchlist_symbols/i.test(message)) {
+      return "Member onboarding is not installed yet. Run 037_multi_user_beta.sql in Supabase first.";
     }
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
@@ -1050,17 +1055,59 @@
 
   function showAuth() {
     state.user = null;
+    state.member = null;
     authShell.hidden = false;
+    onboardingShell.hidden = true;
     appShell.hidden = true;
     $("#login-password").value = "";
+  }
+
+  function showOnboarding(user, member) {
+    state.user = user;
+    state.member = member;
+    authShell.hidden = true;
+    onboardingShell.hidden = false;
+    appShell.hidden = true;
+    $("#onboarding-email").textContent = user.email || "Invited member";
+    $("#onboarding-symbol-count").textContent = String(num(member?.starter_symbol_count) || 200);
+    $("#onboarding-name").value = member?.display_name
+      || user.user_metadata?.full_name
+      || String(user.email || "").split("@")[0];
+    $("#onboarding-password").value = "";
+    $("#onboarding-error").textContent = "";
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   async function showApp(user) {
     state.user = user;
     authShell.hidden = true;
+    onboardingShell.hidden = true;
     appShell.hidden = false;
     await loadData();
     await refreshStockPrices();
+  }
+
+  async function fetchMemberOnboarding() {
+    if (localPreviewEnabled) {
+      return { member_exists: false, onboarding_complete: false, starter_symbol_count: 200 };
+    }
+    const { data, error } = await db.rpc("api_get_member_onboarding");
+    if (error) throw new Error(error.message);
+    return data || { member_exists: false, onboarding_complete: false, starter_symbol_count: 0 };
+  }
+
+  function enterAuthenticatedApp(user) {
+    if (authEntryPromise) return authEntryPromise;
+    authEntryPromise = (async () => {
+      const member = await fetchMemberOnboarding();
+      state.member = member;
+      if (!member.onboarding_complete) {
+        showOnboarding(user, member);
+        return;
+      }
+      await showApp(user);
+    })().finally(() => { authEntryPromise = null; });
+    return authEntryPromise;
   }
 
   function renderNav() {
@@ -3621,8 +3668,63 @@
     const form = new FormData(event.currentTarget);
     const { data, error } = await db.auth.signInWithPassword({ email: form.get("email"), password: form.get("password") });
     if (error) { errorNode.textContent = error.message; button.disabled = false; button.textContent = "Enter dashboard"; return; }
-    await showApp(data.user);
-    button.disabled = false; button.textContent = "Enter dashboard";
+    try {
+      await enterAuthenticatedApp(data.user);
+    } catch (entryError) {
+      console.error(entryError);
+      errorNode.textContent = friendlyError(entryError);
+    } finally {
+      button.disabled = false; button.textContent = "Enter dashboard";
+    }
+  });
+
+  $("#onboarding-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const button = $('button[type="submit"]', event.currentTarget);
+    const errorNode = $("#onboarding-error");
+    const password = String(form.get("password") || "");
+    const passwordConfirm = String(form.get("password_confirm") || "");
+    errorNode.textContent = "";
+    if (password.length < 8) {
+      errorNode.textContent = "Password must be at least 8 characters.";
+      return;
+    }
+    if (password !== passwordConfirm) {
+      errorNode.textContent = "Passwords do not match.";
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Building workspace...";
+    try {
+      if (!localPreviewEnabled) {
+        const { error: passwordError } = await db.auth.updateUser({ password });
+        if (passwordError) throw passwordError;
+        const { data, error } = await db.rpc("api_complete_member_onboarding", {
+          p_display_name: String(form.get("display_name") || ""),
+          p_portfolio_name: String(form.get("portfolio_name") || "Long Term"),
+          p_fixed_budget: num(form.get("fixed_budget")),
+          p_broker_profile: String(form.get("broker_profile") || "webull")
+        });
+        if (error) throw error;
+        state.member = data;
+        history.replaceState({}, document.title, `${location.pathname}${location.search}`);
+      }
+      await showApp(state.user);
+      toast("Your private workspace is ready");
+    } catch (error) {
+      console.error(error);
+      errorNode.textContent = friendlyError(error);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Enter command center";
+    }
+  });
+
+  $("#onboarding-signout").addEventListener("click", async () => {
+    await db.auth.signOut();
+    showAuth();
   });
 
   document.addEventListener("click", handleClick);
@@ -3692,7 +3794,17 @@
 
   db.auth.onAuthStateChange((event, session) => {
     if (localPreviewEnabled) return;
-    if (event === "SIGNED_OUT" || !session?.user) showAuth();
+    if (event === "SIGNED_OUT" || !session?.user) {
+      showAuth();
+      return;
+    }
+    if (["SIGNED_IN", "PASSWORD_RECOVERY"].includes(event) && state.user?.id !== session.user.id) {
+      void enterAuthenticatedApp(session.user).catch((error) => {
+        console.error(error);
+        showAuth();
+        $("#login-error").textContent = friendlyError(error);
+      });
+    }
   });
 
   function loadLocalPreview() {
@@ -3868,11 +3980,26 @@
 
   (async () => {
     if (localPreviewEnabled) {
+      if (localPreviewParams.get("onboarding") === "1") {
+        showOnboarding(
+          { id: "preview-member", email: "new.member@example.com", user_metadata: { full_name: "New Member" } },
+          { member_exists: false, onboarding_complete: false, starter_symbol_count: 200 }
+        );
+        return;
+      }
       loadLocalPreview();
       return;
     }
     const { data, error } = await db.auth.getSession();
     if (error || !data.session?.user) showAuth();
-    else await showApp(data.session.user);
+    else {
+      try {
+        await enterAuthenticatedApp(data.session.user);
+      } catch (entryError) {
+        console.error(entryError);
+        showAuth();
+        $("#login-error").textContent = friendlyError(entryError);
+      }
+    }
   })();
 })();

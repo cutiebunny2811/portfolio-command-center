@@ -42,7 +42,7 @@ const briefSnapshotItemSchema = {
 const briefStorySchema = {
   type: "object",
   properties: {
-    title: { type: "string", description: "A synthesized market driver, not a copied article headline." },
+    title: { type: "string", description: "A synthesized market-wide driver, not a copied article headline or a user's tracked ticker." },
     facts: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } },
     interpretation: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } },
     source_ids: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string" } },
@@ -54,7 +54,7 @@ const briefNoteSchema = {
   type: "object",
   properties: {
     title: { type: "string", description: "Short decision label such as Positive, Risk, Watch, CPI trigger or Thesis invalidation." },
-    detail: { type: "string", description: "One concise, decision-useful sentence that does not repeat an earlier section." },
+    detail: { type: "string", description: "One concise, decision-useful sentence for a general market reader that does not repeat an earlier section." },
     tone: briefToneSchema,
   },
   required: ["title", "detail", "tone"],
@@ -205,11 +205,12 @@ const tools = [
   },
   {
     name: "get_briefing_context",
-    description: "Read one grounded fact pack for PCC's canonical Daily Market Brief: dashboard totals, market pulse, owned positions, watchlist, recent News, Earnings and high-impact Macro. Cached data only; this never publishes or triggers external syncs.",
+    description: "Read a grounded PCC fact pack for a market brief. shared_market is the canonical, privacy-safe mode: benchmarks, sectors and high-impact Macro only. personal adds the owner's dashboard, positions, watchlist, cached News and Earnings for a separate private analysis. This never publishes or triggers external syncs.",
     inputSchema: {
       type: "object",
       properties: {
         news_hours: { type: "integer", minimum: 6, maximum: 168, default: 30 },
+        audience: { type: "string", enum: ["shared_market", "personal"], default: "shared_market" },
       },
       additionalProperties: false,
     },

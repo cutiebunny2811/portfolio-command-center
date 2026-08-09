@@ -2002,7 +2002,7 @@
       <p class="brief-continuation__summary">${esc(update.summary || "")}</p>
       <div class="brief-continuation__grid">
         <section><span>01 / MATERIAL CHANGES</span><ul>${briefTextItems(content.changes)}</ul></section>
-        <section><span>02 / PORTFOLIO IMPACT</span><ul>${briefTextItems(content.portfolio_impact)}</ul></section>
+        <section><span>02 / MARKET IMPACT</span><ul>${briefTextItems(content.portfolio_impact)}</ul></section>
         <section><span>03 / WATCH NEXT</span><ul>${briefTextItems(content.watch_next)}</ul></section>
       </div>
       ${briefArray(content.sources).length ? `<div class="brief-update-sources">${briefArray(content.sources).map(briefSourceLink).join("")}</div>` : ""}
@@ -2057,7 +2057,7 @@
         <section class="brief-mood brief-mood--${briefTone(mood.tone)}"><span>01 / MARKET MOOD</span><h2>${esc(mood.label || "Market read")}</h2><p>${esc(mood.summary || brief.summary)}</p></section>
         <section class="brief-section brief-snapshot"><header><span>02 / MARKET SNAPSHOT</span><h2>Numbers before narrative.</h2></header><div>${briefArray(content.market_snapshot).map((item) => `<div><span>${esc(item.label || item.name || item.symbol || "MARKET")}</span><strong>${esc(item.value ?? "—")}</strong><small class="brief-change brief-change--${briefTone(String(item.tone || "neutral").toLowerCase())}">${esc(item.change || item.note || "")}</small></div>`).join("")}</div></section>
         <section class="brief-section brief-stories"><header><span>03 / MARKET DRIVERS</span><h2>The forces moving the tape.</h2></header><div>${briefArray(content.top_stories).map((story, index) => briefStoryMarkup(story, index, sourceMap)).join("")}</div></section>
-        <section class="brief-section brief-decision-grid"><div><header><span>04 / INVESTMENT IMPLICATIONS</span><h2>What changes for the portfolio.</h2></header><ul>${briefTextItems(content.investment_implications)}</ul></div><div><header><span>05 / WATCH NEXT</span><h2>Events that can change the thesis.</h2></header><ul>${briefTextItems(content.watch_next)}</ul></div></section>
+        <section class="brief-section brief-decision-grid"><div><header><span>04 / INVESTMENT IMPLICATIONS</span><h2>What changes for investors.</h2></header><ul>${briefTextItems(content.investment_implications)}</ul></div><div><header><span>05 / WATCH NEXT</span><h2>Events that can change the thesis.</h2></header><ul>${briefTextItems(content.watch_next)}</ul></div></section>
         <section class="brief-bottom-line"><span>06 / DECISION FRAME</span><h2>The setup, the trigger, the risk.</h2><ul>${briefTextItems(content.bottom_line)}</ul></section>
         ${updates.map(briefContinuationMarkup).join("")}
         <section class="brief-sources"><header><span>07 / SOURCES</span><h2>Open the evidence.</h2></header><div>${sources.map(briefSourceLink).join("")}</div></section>
@@ -3825,12 +3825,12 @@
         ],
         investment_implications: [
           { title: "AI and semiconductors", detail: "Lower yields remain supportive, but avoid chasing gap-ups into CPI.", tone: "positive" },
-          { title: "Long Term portfolio", detail: "No thesis change; keep position sizing tied to the existing allocation plan.", tone: "neutral" },
+          { title: "US equities", detail: "The broad trend remains constructive while yields stay contained.", tone: "neutral" },
           { title: "Risk", detail: "A renewed yield spike would pressure the highest-duration names first.", tone: "caution" }
         ],
         watch_next: [
           { title: "Core CPI (MoM)", detail: "The next major test for yields and growth multiples.", tone: "caution" },
-          { title: "Watchlist earnings", detail: "Read guidance before reacting to EPS beats.", tone: "neutral" }
+          { title: "Large-cap earnings", detail: "Read guidance before reacting to headline EPS beats.", tone: "neutral" }
         ],
         bottom_line: [
           { title: "Setup", detail: "The constructive trend remains intact while yields stay contained.", tone: "positive" },
@@ -3842,7 +3842,7 @@
       updates: [{
         id: "update-preview", thesis_status: "unchanged", summary: "Indexes softened after the open, but yields and volatility did not confirm a broader risk-off move.", published_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString(), content: {
           changes: [{ title: "Selective rotation", detail: "Semiconductors held up better than software and financials.", tone: "neutral" }],
-          portfolio_impact: [{ title: "No allocation change", detail: "The original Long Term thesis remains current.", tone: "neutral" }],
+          portfolio_impact: [{ title: "No regime change", detail: "The broad-market thesis remains current.", tone: "neutral" }],
           watch_next: [{ title: "Closing breadth", detail: "Watch whether weakness broadens into the final hour.", tone: "caution" }],
           sources: [previewSources[0]]
         }

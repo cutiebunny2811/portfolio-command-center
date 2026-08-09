@@ -12,9 +12,11 @@ Center without editing dashboard files or receiving Supabase SQL access.
   PCC. `get_macro_alerts` is the compact monitor input: upcoming releases,
   recent Actual values, the next FOMC decision, and source freshness. Neither
   tool triggers a data sync or sends a notification by itself.
-- `get_briefing_context` collects the grounded PCC fact pack. Hermes publishes
-  the canonical 20:00 edition with `publish_daily_market_brief`, then reads that
-  edition before using `publish_brief_continuation` for a material midnight
+- `get_briefing_context` defaults to a privacy-safe `shared_market` fact pack:
+  benchmarks, sectors, and high-impact Macro only. The canonical 20:00 brief
+  combines that pack with current external research and never uses an owner's
+  positions or Watchlist. `personal` is reserved for separate private analysis.
+  Hermes reads the canonical edition before publishing a material midnight
   delta. Both publish tools require the `briefings:write` scope.
 - Trade and cash tools create expiring drafts only.
 - Draft confirmation is intentionally absent from MCP. Confirm from

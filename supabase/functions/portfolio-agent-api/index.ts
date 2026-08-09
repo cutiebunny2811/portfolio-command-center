@@ -682,6 +682,37 @@ async function briefingContext(
   const lookbackHours = integer(body.news_hours, 30, 6, 168);
   const now = new Date();
   const today = newYorkDateKey(now);
+  const audience = body.audience === "personal" ? "personal" : "shared_market";
+
+  if (audience === "shared_market") {
+    const [market, macro, alerts] = await Promise.all([
+      must(service
+        .from("market_pulse_latest")
+        .select("*")
+        .eq("user_id", userId)
+        .or("is_benchmark.eq.true,is_sector.eq.true")
+        .order("symbol")),
+      macroCalendar(service, { from: addDays(today, -1), to: addDays(today, 14), limit: 200 }),
+      macroAlerts(service, { hours_ahead: 72, hours_back: 18 }),
+    ]);
+
+    return {
+      generated_at: now.toISOString(),
+      timezone: "Asia/Bangkok",
+      audience,
+      guidance: {
+        canonical_brief: "Write one neutral US-market brief for every PCC reader. Research current external sources; use PCC only for verified market and macro context.",
+        privacy: "Do not request, infer or mention any user's portfolios, positions, watchlist or private preferences.",
+        sources: "Prefer official releases for primary facts and reputable current reporting for market context. Verify both publication time and event date before citing.",
+        unavailable_data: "Use null or omit the item. Never invent prices, consensus estimates, quotes or URLs.",
+        continuation: "Compare against the published brief and write only material market-wide changes, not a second full brief.",
+      },
+      market_pulse: market,
+      macro,
+      macro_alerts: alerts,
+    };
+  }
+
   const portfolios = await ownedPortfolios(service, userId);
   const portfolioIds = portfolios.map((portfolio: Record<string, unknown>) => String(portfolio.id));
   const [dashboard, market, news, earnings, macro, alerts, positions, watchlist] = await Promise.all([
@@ -713,6 +744,7 @@ async function briefingContext(
   return {
     generated_at: now.toISOString(),
     timezone: "Asia/Bangkok",
+    audience,
     guidance: {
       canonical_brief: "Use verified cached facts only. Separate facts from interpretation and cite every story with source ids.",
       unavailable_data: "Use null or omit the item. Never invent prices, consensus estimates, quotes or URLs.",

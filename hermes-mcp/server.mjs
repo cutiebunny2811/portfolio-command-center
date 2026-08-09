@@ -27,6 +27,40 @@ const sourceItemSchema = {
   additionalProperties: false,
 };
 
+const briefToneSchema = { type: "string", enum: ["positive", "neutral", "caution", "negative"] };
+const briefSnapshotItemSchema = {
+  type: "object",
+  properties: {
+    label: { type: "string", description: "Market or indicator label." },
+    value: { type: ["string", "number"], description: "Latest verified value." },
+    change: { type: "string", description: "Verified change or concise context; never invent unavailable data." },
+    tone: briefToneSchema,
+  },
+  required: ["label", "value", "change", "tone"],
+  additionalProperties: false,
+};
+const briefStorySchema = {
+  type: "object",
+  properties: {
+    title: { type: "string", description: "A synthesized market driver, not a copied article headline." },
+    facts: { type: "array", minItems: 1, maxItems: 3, items: { type: "string" } },
+    interpretation: { type: "array", minItems: 1, maxItems: 2, items: { type: "string" } },
+    source_ids: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string" } },
+  },
+  required: ["title", "facts", "interpretation", "source_ids"],
+  additionalProperties: false,
+};
+const briefNoteSchema = {
+  type: "object",
+  properties: {
+    title: { type: "string", description: "Short decision label such as Positive, Risk, Watch, CPI trigger or Thesis invalidation." },
+    detail: { type: "string", description: "One concise, decision-useful sentence that does not repeat an earlier section." },
+    tone: briefToneSchema,
+  },
+  required: ["title", "detail", "tone"],
+  additionalProperties: false,
+};
+
 const dailyBriefContentSchema = {
   type: "object",
   properties: {
@@ -40,12 +74,12 @@ const dailyBriefContentSchema = {
       required: ["label", "tone", "summary"],
       additionalProperties: false,
     },
-    market_snapshot: { type: "array", maxItems: 20, items: { type: "object" } },
-    top_stories: { type: "array", maxItems: 8, items: { type: "object" } },
-    investment_implications: { type: "array", maxItems: 12, items: { type: "object" } },
-    watch_next: { type: "array", maxItems: 12, items: { type: "object" } },
-    bottom_line: { type: "array", maxItems: 8, items: { type: "string" } },
-    sources: { type: "array", maxItems: 30, items: sourceItemSchema },
+    market_snapshot: { type: "array", minItems: 3, maxItems: 10, items: briefSnapshotItemSchema },
+    top_stories: { type: "array", minItems: 3, maxItems: 5, items: briefStorySchema },
+    investment_implications: { type: "array", minItems: 3, maxItems: 5, items: briefNoteSchema },
+    watch_next: { type: "array", minItems: 2, maxItems: 6, items: briefNoteSchema },
+    bottom_line: { type: "array", minItems: 2, maxItems: 3, items: briefNoteSchema },
+    sources: { type: "array", minItems: 1, maxItems: 20, items: sourceItemSchema },
   },
   required: ["market_mood", "market_snapshot", "top_stories", "investment_implications", "watch_next", "bottom_line", "sources"],
   additionalProperties: false,
@@ -54,10 +88,10 @@ const dailyBriefContentSchema = {
 const continuationContentSchema = {
   type: "object",
   properties: {
-    changes: { type: "array", maxItems: 12, items: { type: "object" } },
-    portfolio_impact: { type: "array", maxItems: 12, items: { type: "object" } },
-    watch_next: { type: "array", maxItems: 12, items: { type: "object" } },
-    sources: { type: "array", maxItems: 20, items: sourceItemSchema },
+    changes: { type: "array", minItems: 1, maxItems: 6, items: briefNoteSchema },
+    portfolio_impact: { type: "array", minItems: 1, maxItems: 6, items: briefNoteSchema },
+    watch_next: { type: "array", minItems: 1, maxItems: 6, items: briefNoteSchema },
+    sources: { type: "array", minItems: 1, maxItems: 20, items: sourceItemSchema },
   },
   required: ["changes", "portfolio_impact", "watch_next", "sources"],
   additionalProperties: false,

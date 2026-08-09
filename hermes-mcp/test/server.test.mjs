@@ -142,7 +142,12 @@ test("exposes canonical Daily Market Brief read and publish tools", async () => 
 
   assert.equal(byName.get("get_briefing_context").inputSchema.properties.news_hours.maximum, 168);
   assert.equal(byName.get("get_daily_market_brief").inputSchema.properties.brief_date.type, "string");
-  assert.equal(byName.get("publish_daily_market_brief").inputSchema.properties.content.properties.top_stories.maxItems, 8);
+  const briefContent = byName.get("publish_daily_market_brief").inputSchema.properties.content;
+  assert.equal(briefContent.properties.top_stories.minItems, 3);
+  assert.equal(briefContent.properties.top_stories.maxItems, 5);
+  assert.deepEqual(briefContent.properties.top_stories.items.required, ["title", "facts", "interpretation", "source_ids"]);
+  assert.deepEqual(briefContent.properties.investment_implications.items.required, ["title", "detail", "tone"]);
+  assert.equal(briefContent.properties.bottom_line.items.additionalProperties, false);
   assert.deepEqual(byName.get("publish_brief_continuation").inputSchema.properties.thesis_status.enum, ["unchanged", "updated"]);
 });
 
@@ -154,7 +159,27 @@ test("routes Daily Market Brief calls to scoped API actions", async () => {
     summary: "Constructive tape with CPI risk ahead.",
     content: {
       market_mood: { label: "Constructive", tone: "caution", summary: "CPI remains the next decision point." },
-      market_snapshot: [], top_stories: [], investment_implications: [], watch_next: [], bottom_line: [], sources: [],
+      market_snapshot: [
+        { label: "S&P 500", value: "7,700", change: "+0.6%", tone: "positive" },
+        { label: "US 10Y", value: "4.64%", change: "Lower", tone: "positive" },
+        { label: "VIX", value: "15.4", change: "Contained", tone: "neutral" },
+      ],
+      top_stories: Array.from({ length: 3 }, (_, index) => ({
+        title: `Market driver ${index + 1}`,
+        facts: ["Verified market fact."],
+        interpretation: ["This changes the market through a defined transmission path."],
+        source_ids: ["src-1"],
+      })),
+      investment_implications: Array.from({ length: 3 }, (_, index) => ({ title: `Implication ${index + 1}`, detail: "Decision-useful portfolio read-through.", tone: "neutral" })),
+      watch_next: [
+        { title: "CPI", detail: "Tests the yield and growth thesis.", tone: "caution" },
+        { title: "PPI", detail: "Confirms or challenges the inflation path.", tone: "neutral" },
+      ],
+      bottom_line: [
+        { title: "Setup", detail: "The constructive setup remains intact.", tone: "positive" },
+        { title: "Invalidation", detail: "A hot CPI print is the clearest risk.", tone: "caution" },
+      ],
+      sources: [{ id: "src-1", title: "Source", url: "https://example.com/source", publisher: "Example" }],
     },
     idempotency_key: "daily-market-brief:2026-08-09",
   });

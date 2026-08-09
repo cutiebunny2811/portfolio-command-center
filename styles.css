@@ -1758,6 +1758,8 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
 .brief-story__body > p,
 .brief-story__facts p,
 .brief-story__read p { max-width: 76ch; margin: 7px 0 0; color: var(--paper-dim); }
+.brief-story__facts p::before,
+.brief-story__read p::before { content: "·"; display: inline-block; width: 13px; color: currentColor; font-family: var(--mono); }
 .brief-story__facts,
 .brief-story__read { border-left: 2px solid var(--green); margin-top: 13px; padding: 4px 0 4px 14px; }
 .brief-story__read { border-left-color: var(--gold); }
@@ -1786,6 +1788,9 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
 .brief-bottom-line > span { color: var(--red); }
 .brief-bottom-line h2 { margin: 12px 0 24px; font-size: 42px; letter-spacing: 0; }
 .brief-bottom-line li { max-width: 70ch; border-top: 1px solid rgb(11 11 11 / .18); padding: 14px 0; font-size: 16px; }
+.brief-bottom-line .brief-note { border-left: 0; }
+.brief-bottom-line .brief-note strong { font-size: 16px; }
+.brief-bottom-line .brief-note p { color: rgb(11 11 11 / .72); font-size: 14px; }
 .brief-continuation { border-bottom: 1px solid var(--rule-strong); background: #121212; }
 .brief-continuation > header { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 34px 38px 22px; }
 .brief-continuation > header h2 { margin: 8px 0 0; font-size: 30px; letter-spacing: 0; }

@@ -97,10 +97,51 @@ function jsonObject(value: unknown, label: string) {
   return value as Record<string, unknown>;
 }
 
-function requireArraySection(content: Record<string, unknown>, key: string, maxLength: number) {
+function requireArraySection(content: Record<string, unknown>, key: string, minLength: number, maxLength: number) {
   const section = content[key];
   if (!Array.isArray(section)) throw new Error(`content.${key} must be an array`);
+  if (section.length < minLength) throw new Error(`content.${key} must contain at least ${minLength} items`);
   if (section.length > maxLength) throw new Error(`content.${key} may contain at most ${maxLength} items`);
+  return section;
+}
+
+function validateBriefTone(value: unknown, label: string) {
+  if (!["positive", "neutral", "caution", "negative"].includes(String(value || ""))) {
+    throw new Error(`${label} must be positive, neutral, caution or negative`);
+  }
+}
+
+function validateStringItems(value: unknown, label: string, minLength: number, maxLength: number) {
+  if (!Array.isArray(value) || value.length < minLength || value.length > maxLength) {
+    throw new Error(`${label} must contain ${minLength}-${maxLength} text items`);
+  }
+  value.forEach((item, index) => requiredText(item, `${label}[${index}]`, 1200));
+  return value.map(String);
+}
+
+function validateBriefNotes(content: Record<string, unknown>, key: string, minLength: number, maxLength: number) {
+  const items = requireArraySection(content, key, minLength, maxLength);
+  items.forEach((value, index) => {
+    const item = jsonObject(value, `content.${key}[${index}]`);
+    requiredText(item.title, `content.${key}[${index}].title`, 120);
+    requiredText(item.detail, `content.${key}[${index}].detail`, 1000);
+    validateBriefTone(item.tone, `content.${key}[${index}].tone`);
+  });
+}
+
+function validateBriefSources(content: Record<string, unknown>, minLength: number, maxLength: number) {
+  const sources = requireArraySection(content, "sources", minLength, maxLength);
+  const ids = new Set<string>();
+  sources.forEach((value, index) => {
+    const source = jsonObject(value, `content.sources[${index}]`);
+    const id = requiredText(source.id, `content.sources[${index}].id`, 160);
+    requiredText(source.title, `content.sources[${index}].title`, 500);
+    requiredText(source.url, `content.sources[${index}].url`, 2000);
+    requiredText(source.publisher, `content.sources[${index}].publisher`, 160);
+    if (ids.has(id)) throw new Error(`content.sources contains duplicate id: ${id}`);
+    ids.add(id);
+  });
+  return ids;
 }
 
 function validateBriefContent(value: unknown) {
@@ -108,24 +149,39 @@ function validateBriefContent(value: unknown) {
   const mood = jsonObject(content.market_mood, "content.market_mood");
   requiredText(mood.label, "content.market_mood.label", 80);
   requiredText(mood.summary, "content.market_mood.summary", 800);
-  if (!["positive", "neutral", "caution", "negative"].includes(String(mood.tone || ""))) {
-    throw new Error("content.market_mood.tone must be positive, neutral, caution or negative");
-  }
-  requireArraySection(content, "market_snapshot", 20);
-  requireArraySection(content, "top_stories", 8);
-  requireArraySection(content, "investment_implications", 12);
-  requireArraySection(content, "watch_next", 12);
-  requireArraySection(content, "bottom_line", 8);
-  requireArraySection(content, "sources", 30);
+  validateBriefTone(mood.tone, "content.market_mood.tone");
+  const sourceIds = validateBriefSources(content, 1, 20);
+  requireArraySection(content, "market_snapshot", 3, 10).forEach((value, index) => {
+    const item = jsonObject(value, `content.market_snapshot[${index}]`);
+    requiredText(item.label, `content.market_snapshot[${index}].label`, 120);
+    if (!["string", "number"].includes(typeof item.value) || String(item.value).trim() === "") {
+      throw new Error(`content.market_snapshot[${index}].value is required`);
+    }
+    requiredText(item.change, `content.market_snapshot[${index}].change`, 500);
+    validateBriefTone(item.tone, `content.market_snapshot[${index}].tone`);
+  });
+  requireArraySection(content, "top_stories", 3, 5).forEach((value, index) => {
+    const story = jsonObject(value, `content.top_stories[${index}]`);
+    requiredText(story.title, `content.top_stories[${index}].title`, 240);
+    validateStringItems(story.facts, `content.top_stories[${index}].facts`, 1, 3);
+    validateStringItems(story.interpretation, `content.top_stories[${index}].interpretation`, 1, 2);
+    const storySources = validateStringItems(story.source_ids, `content.top_stories[${index}].source_ids`, 1, 8);
+    storySources.forEach((id) => {
+      if (!sourceIds.has(id)) throw new Error(`content.top_stories[${index}] references unknown source id: ${id}`);
+    });
+  });
+  validateBriefNotes(content, "investment_implications", 3, 5);
+  validateBriefNotes(content, "watch_next", 2, 6);
+  validateBriefNotes(content, "bottom_line", 2, 3);
   return content;
 }
 
 function validateContinuationContent(value: unknown) {
   const content = jsonObject(value, "content");
-  requireArraySection(content, "changes", 12);
-  requireArraySection(content, "portfolio_impact", 12);
-  requireArraySection(content, "watch_next", 12);
-  requireArraySection(content, "sources", 20);
+  validateBriefNotes(content, "changes", 1, 6);
+  validateBriefNotes(content, "portfolio_impact", 1, 6);
+  validateBriefNotes(content, "watch_next", 1, 6);
+  validateBriefSources(content, 1, 20);
   return content;
 }
 

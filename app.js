@@ -1928,14 +1928,39 @@
     return ["positive", "neutral", "caution", "negative"].includes(value) ? value : "neutral";
   }
 
+  function briefItemText(value) {
+    if (typeof value === "string" || typeof value === "number") return String(value).trim();
+    if (Array.isArray(value)) return value.map(briefItemText).filter(Boolean).join(" · ");
+    return "";
+  }
+
+  function briefItemTone(item) {
+    const value = String(item?.tone || item?.stance || item?.signal || "neutral").toLowerCase();
+    if (["positive", "bullish", "supportive"].includes(value)) return "positive";
+    if (["negative", "bearish"].includes(value)) return "negative";
+    if (["caution", "risk", "watch", "warning"].includes(value)) return "caution";
+    return "neutral";
+  }
+
   function briefTextItems(value) {
     return briefArray(value).map((item) => {
-      if (typeof item === "string") return `<li>${esc(item)}</li>`;
-      const title = item?.title || item?.label || item?.name || item?.date || "Update";
-      const detail = item?.detail || item?.summary || item?.note || item?.value || "";
-      const tone = briefTone(String(item?.tone || item?.impact || "neutral").toLowerCase());
+      if (typeof item === "string") return `<li class="brief-note">${esc(item)}</li>`;
+      if (!item || typeof item !== "object") return "";
+      const ignoredKeys = new Set(["tone", "stance", "signal", "impact", "source_ids", "sources"]);
+      const fallbackValues = Object.entries(item)
+        .filter(([key]) => !ignoredKeys.has(key))
+        .map(([, entry]) => briefItemText(entry))
+        .filter(Boolean);
+      const title = briefItemText(item.title || item.label || item.name || item.date || item.event || item.category || item.type || item.point)
+        || fallbackValues[0]
+        || "Market update";
+      const detail = briefItemText(item.detail || item.summary || item.note || item.value || item.text || item.description
+        || item.rationale || item.read_through || item.market_impact || item.portfolio_impact || item.why_it_matters || item.action)
+        || fallbackValues.find((entry) => entry !== title)
+        || "";
+      const tone = briefItemTone(item);
       return `<li class="brief-note brief-note--${tone}"><strong>${esc(title)}</strong>${detail ? `<p>${esc(detail)}</p>` : ""}</li>`;
-    }).join("");
+    }).filter(Boolean).join("");
   }
 
   function briefSourceLink(source) {
@@ -1949,16 +1974,16 @@
   }
 
   function briefStoryMarkup(story, index, sourceMap) {
-    const facts = briefArray(story?.facts || (story?.fact ? [story.fact] : []));
-    const interpretations = briefArray(story?.interpretation || story?.interpretations || []);
+    const facts = briefArray(story?.facts || story?.confirmed || story?.evidence || story?.key_facts || (story?.fact ? [story.fact] : []));
+    const interpretations = briefArray(story?.interpretation || story?.interpretations || story?.market_read || story?.read_through || story?.why_it_matters || story?.implications || []);
     const sourceIds = briefArray(story?.source_ids || story?.sources || []);
     const sources = sourceIds.map((id) => sourceMap.get(String(id))).filter(Boolean);
     return `<article class="brief-story">
       <div class="brief-story__index">${String(index + 1).padStart(2, "0")}</div>
       <div class="brief-story__body">
-        <h3>${esc(story?.title || `Market story ${index + 1}`)}</h3>
-        ${facts.length ? `<div class="brief-story__facts"><span>CONFIRMED</span>${facts.map((fact) => `<p>${esc(typeof fact === "string" ? fact : fact?.detail || fact?.text || "")}</p>`).join("")}</div>` : ""}
-        ${interpretations.length ? `<div class="brief-story__read"><span>MARKET READ</span>${interpretations.map((read) => `<p>${esc(typeof read === "string" ? read : read?.detail || read?.text || "")}</p>`).join("")}</div>` : ""}
+        <h3>${esc(story?.title || story?.headline || story?.theme || story?.topic || `Market driver ${index + 1}`)}</h3>
+        ${facts.length ? `<div class="brief-story__facts"><span>CONFIRMED</span>${facts.map((fact) => `<p>${esc(briefItemText(typeof fact === "object" ? fact?.detail || fact?.text || fact?.fact || Object.values(fact || {}) : fact))}</p>`).join("")}</div>` : ""}
+        ${interpretations.length ? `<div class="brief-story__read"><span>MARKET READ-THROUGH</span>${interpretations.map((read) => `<p>${esc(briefItemText(typeof read === "object" ? read?.detail || read?.text || read?.read || Object.values(read || {}) : read))}</p>`).join("")}</div>` : ""}
         ${story?.summary ? `<p>${esc(story.summary)}</p>` : ""}
         ${sources.length ? `<div class="brief-story__sources">${sources.map(briefSourceLink).join("")}</div>` : ""}
       </div>
@@ -2029,9 +2054,9 @@
         <header class="brief-masthead"><div><span>DAILY MARKET BRIEF / ${esc(briefDateLabel(brief.brief_date).toUpperCase())}</span><h1>The market,<br>without the reruns.</h1></div><div class="brief-masthead__meta"><span>PUBLISHED</span><strong>${esc(briefPublishedTime(brief.published_at))} BKK</strong><small>HERMES → SUPABASE</small></div></header>
         <section class="brief-mood brief-mood--${briefTone(mood.tone)}"><span>01 / MARKET MOOD</span><h2>${esc(mood.label || "Market read")}</h2><p>${esc(mood.summary || brief.summary)}</p></section>
         <section class="brief-section brief-snapshot"><header><span>02 / MARKET SNAPSHOT</span><h2>Numbers before narrative.</h2></header><div>${briefArray(content.market_snapshot).map((item) => `<div><span>${esc(item.label || item.name || item.symbol || "MARKET")}</span><strong>${esc(item.value ?? "—")}</strong><small class="brief-change brief-change--${briefTone(String(item.tone || "neutral").toLowerCase())}">${esc(item.change || item.note || "")}</small></div>`).join("")}</div></section>
-        <section class="brief-section brief-stories"><header><span>03 / TOP STORIES</span><h2>What moved the tape.</h2></header><div>${briefArray(content.top_stories).map((story, index) => briefStoryMarkup(story, index, sourceMap)).join("")}</div></section>
-        <section class="brief-section brief-decision-grid"><div><header><span>04 / INVESTMENT IMPLICATIONS</span><h2>Portfolio read-through.</h2></header><ul>${briefTextItems(content.investment_implications)}</ul></div><div><header><span>05 / WATCH NEXT</span><h2>The next decision points.</h2></header><ul>${briefTextItems(content.watch_next)}</ul></div></section>
-        <section class="brief-bottom-line"><span>06 / BOTTOM LINE</span><h2>Read this twice.</h2><ul>${briefTextItems(content.bottom_line)}</ul></section>
+        <section class="brief-section brief-stories"><header><span>03 / MARKET DRIVERS</span><h2>The forces moving the tape.</h2></header><div>${briefArray(content.top_stories).map((story, index) => briefStoryMarkup(story, index, sourceMap)).join("")}</div></section>
+        <section class="brief-section brief-decision-grid"><div><header><span>04 / INVESTMENT IMPLICATIONS</span><h2>What changes for the portfolio.</h2></header><ul>${briefTextItems(content.investment_implications)}</ul></div><div><header><span>05 / WATCH NEXT</span><h2>Events that can change the thesis.</h2></header><ul>${briefTextItems(content.watch_next)}</ul></div></section>
+        <section class="brief-bottom-line"><span>06 / DECISION FRAME</span><h2>The setup, the trigger, the risk.</h2><ul>${briefTextItems(content.bottom_line)}</ul></section>
         ${updates.map(briefContinuationMarkup).join("")}
         <section class="brief-sources"><header><span>07 / SOURCES</span><h2>Open the evidence.</h2></header><div>${sources.map(briefSourceLink).join("")}</div></section>
       </article>
@@ -3793,17 +3818,23 @@
         ],
         top_stories: [
           { title: "Soft labor data lowered immediate rate pressure", facts: ["Payroll growth missed expectations while Treasury yields moved lower."], interpretation: ["The market treated weaker labor as support for duration-sensitive growth rather than an immediate recession signal."], source_ids: ["src-1", "src-2"] },
-          { title: "Earnings breadth continues to support the tape", facts: ["Most large-cap reporters have delivered positive EPS surprises."], interpretation: ["Forward guidance remains more important than the headline beat."], source_ids: ["src-1"] }
+          { title: "Earnings breadth continues to support the tape", facts: ["Most large-cap reporters have delivered positive EPS surprises."], interpretation: ["Forward guidance remains more important than the headline beat."], source_ids: ["src-1"] },
+          { title: "CPI is the next test of the rate narrative", facts: ["The next CPI release arrives before the market can fully settle the soft-labor interpretation."], interpretation: ["A hot print would reconnect inflation, Treasury yields and growth-stock valuation risk."], source_ids: ["src-1", "src-2"] }
         ],
         investment_implications: [
           { title: "AI and semiconductors", detail: "Lower yields remain supportive, but avoid chasing gap-ups into CPI.", tone: "positive" },
-          { title: "Long Term portfolio", detail: "No thesis change; keep position sizing tied to the existing allocation plan.", tone: "neutral" }
+          { title: "Long Term portfolio", detail: "No thesis change; keep position sizing tied to the existing allocation plan.", tone: "neutral" },
+          { title: "Risk", detail: "A renewed yield spike would pressure the highest-duration names first.", tone: "caution" }
         ],
         watch_next: [
           { title: "Core CPI (MoM)", detail: "The next major test for yields and growth multiples.", tone: "caution" },
           { title: "Watchlist earnings", detail: "Read guidance before reacting to EPS beats.", tone: "neutral" }
         ],
-        bottom_line: ["The bullish setup remains intact while yields stay contained.", "A hotter inflation print is the clearest near-term risk to the current market narrative."],
+        bottom_line: [
+          { title: "Setup", detail: "The constructive trend remains intact while yields stay contained.", tone: "positive" },
+          { title: "Main trigger", detail: "CPI decides whether the rate-relief rally can broaden.", tone: "neutral" },
+          { title: "Invalidation", detail: "A hot print plus a renewed yield spike is the clearest near-term risk.", tone: "caution" }
+        ],
         sources: previewSources
       },
       updates: [{

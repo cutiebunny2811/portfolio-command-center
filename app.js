@@ -463,12 +463,12 @@
 
   async function optionalSmartMoneyQuery() {
     if (localPreviewEnabled) return state.smartMoneyEvents;
-    const { data, error } = await db.from("smart_money_events").select("*").order("filed_at", { ascending: false }).limit(500);
+    const { data, error } = await db.rpc("api_get_smart_money_feed", { p_limit: 500 });
     if (!error) {
       state.smartMoneyReady = true;
-      return data || [];
+      return Array.isArray(data) ? data : [];
     }
-    if (/smart_money_events|schema cache|does not exist/i.test(error.message)) {
+    if (/api_get_smart_money_feed|smart_money_events|schema cache|does not exist/i.test(error.message)) {
       state.smartMoneyReady = false;
       return [];
     }

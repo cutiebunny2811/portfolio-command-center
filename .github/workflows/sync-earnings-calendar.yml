@@ -1,8 +1,8 @@
 name: Sync earnings calendar
 
 on:
-  schedule:
-    - cron: "15 0,12 * * *"
+  # Supabase Cron owns the automatic earnings sync. Keep this workflow only
+  # as an explicit recovery/debug trigger so the collector is not scheduled twice.
   workflow_dispatch:
 
 permissions:

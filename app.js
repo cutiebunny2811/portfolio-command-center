@@ -392,6 +392,87 @@
     </div>${warning}`;
   }
 
+  function localSellExitPreview(portfolio, instrumentId, quantity, price, fee) {
+    const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentId);
+    const instrument = instrumentMap().get(instrumentId);
+    const available = num(position?.quantity);
+    const multiplier = num(instrument?.multiplier) || 1;
+    const average = num(position?.average_cost);
+    const cost = quantity * average * multiplier;
+    const gross = quantity * price * multiplier;
+    const pnl = gross - fee - cost;
+    return {
+      status: quantity > available ? "unavailable" : "ready",
+      broker_profile: "dime",
+      method: "fifo",
+      symbol: instrument?.symbol || "Asset",
+      multiplier,
+      quantity,
+      price,
+      available_quantity: available,
+      position_average_cost: average,
+      position_quantity_after: Math.max(available - quantity, 0),
+      position_average_after: average,
+      gross_proceeds: gross,
+      sell_fee: fee,
+      net_proceeds: gross - fee,
+      cost_consumed: cost,
+      buy_fees_consumed: 0,
+      estimated_realized_pnl: pnl,
+      estimated_return_percent: cost > 0 ? pnl / cost * 100 : 0,
+      lots_consumed: quantity > available ? [] : [{
+        opened_at: new Date().toISOString(), quantity, quote_price: average,
+        cost_consumed: cost, buy_fee_consumed: 0
+      }],
+      preview_source: "local_sample"
+    };
+  }
+
+  function sellExitPreviewMarkup(preview) {
+    if (!preview) {
+      return `<div class="fifo-preview fifo-preview--empty"><span>DIME / FIFO EXIT PREVIEW</span><p>Enter quantity and price to see the estimated result before selling.</p></div>`;
+    }
+    if (preview.status === "loading") {
+      return `<div class="fifo-preview fifo-preview--empty"><span>DIME / FIFO EXIT PREVIEW</span><p>Reading open lots from Supabase...</p></div>`;
+    }
+    if (preview.status === "backdated") {
+      return `<div class="fifo-preview fifo-preview--notice is-warn"><span>DIME / FIFO EXIT PREVIEW</span><strong>Chronological rebuild required</strong><p>${esc(preview.message || "This sell is older than the latest ledger entry, so a reliable preview is unavailable.")}</p></div>`;
+    }
+    if (preview.status !== "ready") {
+      return `<div class="fifo-preview fifo-preview--notice is-risk"><span>DIME / FIFO EXIT PREVIEW</span><strong>Preview unavailable</strong><p>${esc(preview.message || "Check the quantity and rebuild this position before continuing.")}</p></div>`;
+    }
+    const pnl = num(preview.estimated_realized_pnl);
+    const lots = Array.isArray(preview.lots_consumed) ? preview.lots_consumed : [];
+    const lotRows = lots.map((lot, index) => {
+      const opened = lot.opened_at ? new Date(lot.opened_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "-";
+      return `<div class="fifo-preview__lot">
+        <span>${String(index + 1).padStart(2, "0")}</span>
+        <strong>${formatTradeQuantity(lot.quantity)} @ ${money(lot.quote_price, 4)}</strong>
+        <small>${esc(opened)}</small>
+        <b>${money(num(lot.cost_consumed) + num(lot.buy_fee_consumed))}</b>
+      </div>`;
+    }).join("");
+    const sourceLabel = preview.preview_source === "local_sample" ? "LOCAL SAMPLE" : "SERVER CALCULATED";
+    return `<section class="fifo-preview ${pnl >= 0 ? "is-positive" : "is-negative"}">
+      <header class="fifo-preview__head"><span>DIME / FIFO EXIT PREVIEW</span><strong>${sourceLabel}</strong></header>
+      <div class="fifo-preview__decision">
+        <div><small>Estimated realized P/L</small><strong class="${pnl >= 0 ? "positive" : "negative"}">${money(pnl)}</strong></div>
+        <p>${percent(preview.estimated_return_percent, 2)} on the FIFO cost consumed. This is an estimate, not the current position return.</p>
+      </div>
+      <div class="fifo-preview__metrics">
+        <div><small>Net proceeds</small><strong>${money(preview.net_proceeds)}</strong></div>
+        <div><small>FIFO cost consumed</small><strong>${money(num(preview.cost_consumed) + num(preview.buy_fees_consumed))}</strong></div>
+        <div><small>Shares after</small><strong>${formatTradeQuantity(preview.position_quantity_after)}</strong></div>
+        <div><small>Average after</small><strong>${money(preview.position_average_after, 4)}</strong></div>
+      </div>
+      <div class="fifo-preview__tape">
+        <div class="fifo-preview__tape-head"><span>Lots consumed / oldest first</span><small>Sell fee ${money(preview.sell_fee)}${num(preview.buy_fees_consumed) ? ` + buy fees ${money(preview.buy_fees_consumed)}` : ""}</small></div>
+        ${lotRows || '<p class="fifo-preview__no-lots">No lots consumed.</p>'}
+      </div>
+      <footer>Dime display average and FIFO exit cost answer different questions. Supabase recalculates the final result when you confirm.</footer>
+    </section>`;
+  }
+
   function portfolioRows(portfolio) {
     const instruments = instrumentMap();
     const prices = latestPriceMap();
@@ -3043,7 +3124,7 @@
         : warningCode ? warningCode.replaceAll("_", " ") : "");
     openDialog({
       kicker: "Draft ready · Expires in 15 minutes", title: `Confirm ${kind}`, submitLabel: "Confirm and post",
-      body: `<div class="preview-grid">${previewCells(draft.preview || {})}</div>${warningText ? `<div class="warning-box warning-box--allocation">${esc(warningText)}</div>` : ""}<p class="form-hint">The server will recalculate these values and apply the change atomically after confirmation.</p>`,
+      body: `<div class="preview-grid">${previewCells(draft.preview || {})}</div>${draft.sellExitPreview ? sellExitPreviewMarkup(draft.sellExitPreview) : ""}${warningText ? `<div class="warning-box warning-box--allocation">${esc(warningText)}</div>` : ""}<p class="form-hint">The server will recalculate these values and apply the change atomically after confirmation.</p>`,
       onSubmit: async () => {
         await confirmFn(draft.draft_id, draft.confirmation_token);
         closeDialog(); toast(`${kind} confirmed`); await loadData({ quiet: true });
@@ -3250,6 +3331,10 @@
 
   function openTradeDialog(sidePreset = "buy", prefills = null) {
     const portfolio = currentPortfolio();
+    const usesDimeExitPreview = sidePreset === "sell" && brokerProfile(portfolio) === "dime";
+    let latestSellPreview = null;
+    let sellPreviewTimer = null;
+    let sellPreviewRequestId = 0;
     const options = portfolioInstrumentOptions(portfolio, sidePreset === "sell");
     if (!options) {
       toast(sidePreset === "sell" ? "There is no open position to sell" : "Add a ticker to the plan first", true);
@@ -3261,6 +3346,18 @@
       body: `<p class="form-hint">Enter the completed broker transaction. This app records it but never places an order.</p><label class="field"><span>Asset</span><select name="instrument">${options}</select></label><input name="side" type="hidden" value="${sidePreset}"><div class="field-row"><label class="field"><span>Quantity</span><div class="trade-quantity-control"><input name="quantity" type="number" min="0.00000001" step="0.00000001" required>${sidePreset === "sell" ? '<button class="button button--primary button--sell-all" type="button" data-trade-sell-all>Sell all</button>' : ""}</div></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" required></label></div><div class="field-row field-row--3"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="any" inputmode="decimal" value="0"></label><label class="field"><span>Buy tranche #</span><input name="tranche" type="number" min="1" max="20" step="1" ${sidePreset === "sell" ? "disabled" : ""}></label><label class="field" data-underlying-field hidden><span>Underlying price</span><input name="underlying_price" type="number" min="0" step="0.01" disabled></label></div><div class="trade-projection" data-trade-projection></div><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime()}" required></label>`,
       onSubmit: async (form) => {
         const instrumentId = form.get("instrument");
+        if (usesDimeExitPreview) {
+          latestSellPreview = localPreviewEnabled
+            ? localSellExitPreview(portfolio, instrumentId, num(form.get("quantity")), num(form.get("price")), num(form.get("fee")))
+            : await rpc("api_preview_sell", {
+              p_portfolio_id: portfolio.id,
+              p_instrument_id: instrumentId,
+              p_quantity: num(form.get("quantity")),
+              p_price: num(form.get("price")),
+              p_fee: num(form.get("fee")),
+              p_executed_at: new Date(form.get("executed")).toISOString()
+            });
+        }
         const draft = await rpc("api_create_trade_draft", {
           p_portfolio_id: portfolio.id, p_instrument_id: instrumentId, p_side: form.get("side"),
           p_quantity: num(form.get("quantity")), p_price: num(form.get("price")), p_idempotency_key: uid("web-trade"),
@@ -3268,6 +3365,7 @@
           p_tranche_number: form.get("tranche") ? num(form.get("tranche")) : null,
           p_underlying_price: isOptionInstrument(instrumentId) && form.get("underlying_price") !== "" ? num(form.get("underlying_price")) : null, p_campaign_id: null
         });
+        if (usesDimeExitPreview) draft.sellExitPreview = latestSellPreview;
         if (form.get("side") === "buy") {
           const row = portfolioRows(portfolio).find((item) => item.id === instrumentId);
           const deployedAfter = num(draft.preview?.deployed_after);
@@ -3291,6 +3389,7 @@
     const projectionRegion = $("[data-trade-projection]", tradeBody);
     const underlyingField = $("[data-underlying-field]", tradeBody);
     const underlyingInput = $('[name="underlying_price"]', tradeBody);
+    const executedInput = $('[name="executed"]', tradeBody);
     const renderTradeProjection = () => {
       const row = portfolioRows(portfolio).find((item) => item.id === instrumentSelect.value);
       const isOption = isOptionInstrument(instrumentSelect.value);
@@ -3313,6 +3412,41 @@
     if (sidePreset === "sell") {
       const body = tradeBody;
       const sellAllButton = $("[data-trade-sell-all]", body);
+      const requestSellExitPreview = async () => {
+        if (!usesDimeExitPreview) return;
+        const quantity = num(quantityInput.value);
+        const price = num(priceInput.value);
+        if (quantity <= 0 || price < 0 || priceInput.value === "") {
+          latestSellPreview = null;
+          projectionRegion.innerHTML = sellExitPreviewMarkup(null);
+          return;
+        }
+        const requestId = ++sellPreviewRequestId;
+        projectionRegion.innerHTML = sellExitPreviewMarkup({ status: "loading" });
+        try {
+          const preview = localPreviewEnabled
+            ? localSellExitPreview(portfolio, instrumentSelect.value, quantity, price, num(feeInput.value))
+            : await rpc("api_preview_sell", {
+              p_portfolio_id: portfolio.id,
+              p_instrument_id: instrumentSelect.value,
+              p_quantity: quantity,
+              p_price: price,
+              p_fee: num(feeInput.value),
+              p_executed_at: new Date(executedInput.value).toISOString()
+            });
+          if (requestId !== sellPreviewRequestId) return;
+          latestSellPreview = preview;
+          projectionRegion.innerHTML = sellExitPreviewMarkup(preview);
+        } catch (error) {
+          if (requestId !== sellPreviewRequestId) return;
+          latestSellPreview = null;
+          projectionRegion.innerHTML = sellExitPreviewMarkup({ status: "error", message: friendlyError(error) });
+        }
+      };
+      const scheduleSellExitPreview = () => {
+        clearTimeout(sellPreviewTimer);
+        sellPreviewTimer = setTimeout(requestSellExitPreview, 280);
+      };
       const syncSellAll = () => {
         const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentSelect.value);
         const available = num(position?.quantity);
@@ -3320,6 +3454,14 @@
         sellAllButton.textContent = "Sell all";
       };
       instrumentSelect.addEventListener("change", syncSellAll);
+      if (usesDimeExitPreview) {
+        instrumentSelect.addEventListener("change", scheduleSellExitPreview);
+        quantityInput.addEventListener("input", scheduleSellExitPreview);
+        priceInput.addEventListener("input", scheduleSellExitPreview);
+        feeInput.addEventListener("input", scheduleSellExitPreview);
+        executedInput.addEventListener("change", scheduleSellExitPreview);
+        projectionRegion.innerHTML = sellExitPreviewMarkup(null);
+      }
       sellAllButton.addEventListener("click", () => {
         const position = state.positions.find((item) => item.portfolio_id === portfolio.id && item.instrument_id === instrumentSelect.value);
         quantityInput.value = num(position?.quantity) || "";
@@ -3448,11 +3590,20 @@
     const draft = state.agentDrafts.find((item) => item.id === draftId);
     if (!draft) { toast("Agent draft was not found or has expired", true); return; }
     const portfolio = state.portfolios.find((item) => item.id === draft.portfolio_id);
+    let sellExitPreview = null;
+    if (draft.operation_type === "trade" && brokerProfile(portfolio) === "dime") {
+      try {
+        const preview = await rpc("api_preview_agent_draft_sell", { p_draft_id: draft.id });
+        if (preview?.status !== "not_applicable") sellExitPreview = preview;
+      } catch (error) {
+        sellExitPreview = { status: "error", message: friendlyError(error) };
+      }
+    }
     openDialog({
       kicker: `Hermes draft · ${esc(portfolio?.name || "Portfolio")}`,
       title: `Confirm ${String(draft.operation_type || "operation").replaceAll("_", " ")}`,
       submitLabel: "Confirm and post",
-      body: `<div class="preview-grid">${previewCells(draft.server_preview || {})}</div>
+      body: `<div class="preview-grid">${previewCells(draft.server_preview || {})}</div>${sellExitPreview ? sellExitPreviewMarkup(sellExitPreview) : ""}
         <div class="warning-box">Hermes prepared this draft but cannot post it. Supabase will recalculate every value atomically when you confirm.</div>`,
       onSubmit: async () => {
         const claim = await rpc("api_prepare_agent_draft_confirmation", { p_draft_id: draft.id });

@@ -16,6 +16,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-sync-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+const LONG_SENTIMENT_HISTORY = new Set(["SP500", "VIXCLS", "BAMLH0A0HYM2"]);
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const FRED_BASE = "https://api.stlouisfed.org/fred";
 const FOMC_CALENDAR =
@@ -134,7 +136,9 @@ Deno.serve(async (request) => {
           series_id: seriesId,
           units: config?.units || "lin",
           sort_order: "desc",
-          limit: RISK_SERIES.some((series) => series.seriesId === seriesId) ? "500" : "80",
+          limit: LONG_SENTIMENT_HISTORY.has(seriesId)
+            ? "1800"
+            : RISK_SERIES.some((series) => series.seriesId === seriesId) ? "500" : "80",
         }, fredApiKey);
         return [
           seriesId,

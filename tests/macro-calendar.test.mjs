@@ -19,6 +19,15 @@ function dailySeries(start, count, valueAt) {
   }));
 }
 
+function seriesEnding(end, count, valueAt, stepDays = 1) {
+  const endDate = new Date(`${end}T00:00:00Z`);
+  const startDate = new Date(endDate.getTime() - (count - 1) * stepDays * 86_400_000);
+  return Array.from({ length: count }, (_, index) => ({
+    date: new Date(startDate.getTime() + index * stepDays * 86_400_000).toISOString().slice(0, 10),
+    value: String(valueAt(index)),
+  }));
+}
+
 test("converts official Eastern release times across daylight saving", () => {
   assert.equal(zonedIso("2026-08-12", "08:30"), "2026-08-12T12:30:00.000Z");
   assert.equal(zonedIso("2026-12-10", "08:30"), "2026-12-10T13:30:00.000Z");
@@ -94,41 +103,45 @@ test("generates the two high-impact ISM releases only", () => {
   ]);
 });
 
-test("builds transparent low-risk and greed composites from FRED observations", () => {
+test("centers persistent market conditions near neutral instead of permanent greed", () => {
   const targetDate = "2026-08-08";
   const observationsBySeries = {
     SAHMREALTIME: [{ date: "2026-08-01", value: "0.10" }],
-    ICSA: dailySeries("2025-08-10", 52, () => 200000),
+    ICSA: seriesEnding(targetDate, 52, () => 200000, 7),
     T10Y3M: [{ date: targetDate, value: "0.50" }],
-    BAMLH0A0HYM2: [{ date: targetDate, value: "3.00" }],
-    STLFSI4: [{ date: targetDate, value: "-0.50" }],
-    VIXCLS: [{ date: targetDate, value: "15" }],
+    BAMLH0A0HYM2: seriesEnding(targetDate, 1751, (index) => 3 + Math.sin(index * 2 * Math.PI / 100) * .3),
+    STLFSI4: seriesEnding(targetDate, 301, (index) => -.5 + Math.sin(index * 2 * Math.PI / 20) * .2, 7),
+    VIXCLS: seriesEnding(targetDate, 1751, (index) => 15 + Math.sin(index * 2 * Math.PI / 50) * 2),
     INDPRO: [{ date: "2025-08-01", value: "100" }, { date: "2026-08-01", value: "105" }],
-    SP500: dailySeries("2025-11-30", 252, (index) => 5000 + index * 4),
+    SP500: seriesEnding(targetDate, 1751, (index) => 5000 + Math.sin(index * 2 * Math.PI / 125) * 200),
   };
   const snapshot = buildMacroRiskSnapshot({ observationsBySeries, targetDate, fetchedAt: `${targetDate}T22:00:00Z` });
   assert.equal(snapshot.risk_label, "LOW");
   assert.ok(snapshot.risk_score >= 0 && snapshot.risk_score < 25);
-  assert.ok(snapshot.fear_greed_score > 75);
-  assert.equal(snapshot.fear_greed_label, "EXTREME GREED");
+  assert.ok(snapshot.fear_greed_score >= 45 && snapshot.fear_greed_score <= 55);
+  assert.equal(snapshot.fear_greed_label, "NEUTRAL");
   assert.equal(snapshot.risk_components.length, 7);
   assert.equal(snapshot.fear_greed_components.length, 5);
   assert.equal(snapshot.risk_components.find((item) => item.key === "claims").display, "200K");
+  assert.ok(snapshot.fear_greed_components.every((item) => item.weight === 1));
+  assert.ok(snapshot.fear_greed_components.every((item) => /five[- ]year/.test(item.detail)));
+  assert.equal(new Set(snapshot.fear_greed_components.map((item) => item.dimension)).size, 4);
 });
 
 test("moves the composites toward severe risk and extreme fear when inputs deteriorate", () => {
   const targetDate = "2026-08-08";
-  const claims = dailySeries("2025-08-10", 52, () => 200000);
-  claims.push({ date: targetDate, value: "320000" });
+  const claims = seriesEnding(targetDate, 52, (index) => index === 51 ? 320000 : 200000, 7);
   const observationsBySeries = {
     SAHMREALTIME: [{ date: "2026-08-01", value: "0.70" }],
     ICSA: claims,
     T10Y3M: [{ date: targetDate, value: "-1.00" }],
-    BAMLH0A0HYM2: [{ date: targetDate, value: "8.00" }],
-    STLFSI4: [{ date: targetDate, value: "2.00" }],
-    VIXCLS: [{ date: targetDate, value: "40" }],
+    BAMLH0A0HYM2: seriesEnding(targetDate, 1751, (index) => index === 1750 ? 8 : 3 + Math.sin(index * 2 * Math.PI / 100) * .3),
+    STLFSI4: seriesEnding(targetDate, 301, (index) => index === 300 ? 2 : -.5 + Math.sin(index * 2 * Math.PI / 20) * .2, 7),
+    VIXCLS: seriesEnding(targetDate, 1751, (index) => index === 1750 ? 40 : 15 + Math.sin(index * 2 * Math.PI / 50) * 2),
     INDPRO: [{ date: "2025-08-01", value: "100" }, { date: "2026-08-01", value: "94" }],
-    SP500: dailySeries("2025-11-30", 252, (index) => 7000 - index * 8),
+    SP500: seriesEnding(targetDate, 1751, (index) => index < 1650
+      ? 5000 + Math.sin(index * 2 * Math.PI / 125) * 200
+      : 5000 - (index - 1650) * 10),
   };
   const snapshot = buildMacroRiskSnapshot({ observationsBySeries, targetDate, fetchedAt: `${targetDate}T22:00:00Z` });
   assert.equal(snapshot.risk_label, "SEVERE");

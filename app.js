@@ -2076,7 +2076,7 @@
                     <i class="sentiment-gauge__needle"></i>
                     <div class="sentiment-gauge__hub"><strong>${fearGreedScore}</strong><span>${esc(latest.fear_greed_label)}</span></div>
                   </div>
-                  <p>PCC calculation from five transparent FRED components. It is not the CNN index and does not copy CNN's proprietary normalization.</p>
+                  <p>Five FRED signals across four independent dimensions, ranked against five years. Missing breadth, options and safe-haven dimensions stay neutral.</p>
                 </div>
                 <div class="sentiment-history" aria-label="Fear and Greed history">
                   ${macroHistoryCell("NOW", history.now || latest)}
@@ -2086,7 +2086,7 @@
                 </div>
               </div>
               <div class="fear-greed__components">
-                <header><span>WHY THIS SCORE</span><p>Each row runs from fear at the left to greed at the right.</p></header>
+                <header><span>WHY THIS SCORE</span><p>50 is typical for that signal's five-year history; each row runs from fear to greed.</p></header>
                 ${(latest.fear_greed_components || []).map((item) => macroComponentMarkup(item, "sentiment")).join("")}
               </div>
               <p class="macro-disclaimer">Risk Monitor estimates economic and financial stress; Fear &amp; Greed estimates investor risk appetite. A greedy market can coexist with rising economic risk. These readings are context, not trading signals.</p>
@@ -4341,21 +4341,21 @@
         { key: "growth", label: "Industrial production", display: "+1.34% YoY", score: 11, detail: "Year-over-year change in real industrial output.", source_url: "https://fred.stlouisfed.org/series/INDPRO" }
       ],
       fear_greed_components: days ? [] : [
-        { key: "momentum", label: "Market momentum", display: "+8.42% vs 125D", score: 92, detail: "S&P 500 distance from its 125-session average.", source_url: "https://fred.stlouisfed.org/series/SP500" },
-        { key: "strength", label: "Price strength", display: "97% of 52W range", score: 97, detail: "Where the S&P 500 sits inside its trailing 52-week range.", source_url: "https://fred.stlouisfed.org/series/SP500" },
-        { key: "volatility", label: "Volatility demand", display: "14.90", score: 87, detail: "Lower option-implied volatility raises the greed score.", source_url: "https://fred.stlouisfed.org/series/VIXCLS" },
-        { key: "credit", label: "Junk-bond demand", display: "2.70%", score: 96, detail: "Tighter high-yield spreads imply stronger risk appetite.", source_url: "https://fred.stlouisfed.org/series/BAMLH0A0HYM2" },
-        { key: "conditions", label: "Financial conditions", display: "-0.72", score: 89, detail: "Below-normal financial stress raises the greed score.", source_url: "https://fred.stlouisfed.org/series/STLFSI4" }
+        { key: "momentum", label: "Market momentum", display: "+8.42% vs 125D", score: 75, detail: "S&P 500 distance from its 125-session average, ranked against five years.", source_url: "https://fred.stlouisfed.org/series/SP500" },
+        { key: "strength", label: "Index strength proxy", display: "97% of 52W range", score: 70, detail: "S&P 500 position in each trailing 52-week range, ranked against five years.", source_url: "https://fred.stlouisfed.org/series/SP500" },
+        { key: "volatility", label: "Volatility demand", display: "14.90 · 0.88x 50D", score: 62, detail: "VIX versus its 50-session average, ranked inversely against five years.", source_url: "https://fred.stlouisfed.org/series/VIXCLS" },
+        { key: "credit", label: "Junk-bond demand", display: "2.70%", score: 80, detail: "High-yield spread ranked inversely against its five-year history.", source_url: "https://fred.stlouisfed.org/series/BAMLH0A0HYM2" },
+        { key: "conditions", label: "Financial conditions", display: "-0.72", score: 61, detail: "Financial stress ranked inversely against its five-year history.", source_url: "https://fred.stlouisfed.org/series/STLFSI4" }
       ]
     });
-    const macroRiskLatest = previewRiskSnapshot(0, 16, 92, "LOW", "EXTREME GREED");
+    const macroRiskLatest = previewRiskSnapshot(0, 16, 64, "LOW", "GREED");
     const macroRiskFeed = {
       latest: macroRiskLatest,
       history: {
         now: macroRiskLatest,
-        week: previewRiskSnapshot(7, 19, 77, "LOW", "EXTREME GREED"),
-        month: previewRiskSnapshot(30, 24, 63, "LOW", "GREED"),
-        year: previewRiskSnapshot(365, 38, 49, "WATCH", "NEUTRAL")
+        week: previewRiskSnapshot(7, 19, 50, "LOW", "NEUTRAL"),
+        month: previewRiskSnapshot(30, 24, 46, "LOW", "NEUTRAL"),
+        year: previewRiskSnapshot(365, 38, 58, "WATCH", "GREED")
       },
       last_synced_at: new Date().toISOString()
     };

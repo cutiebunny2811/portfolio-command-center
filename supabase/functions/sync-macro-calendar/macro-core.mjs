@@ -341,6 +341,41 @@ function average(values) {
   return finite.length ? finite.reduce((total, value) => total + value, 0) / finite.length : null;
 }
 
+function rollingSignals(observations, targetDate, windowSize, calculate) {
+  const rows = sortedObservations(observations)
+    .filter((item) => item.date <= targetDate)
+    .reverse();
+  const values = rows.map((item) => parseFredNumber(item.value));
+  const signals = [];
+  for (let index = windowSize - 1; index < rows.length; index += 1) {
+    const window = values.slice(index - windowSize + 1, index + 1);
+    const signal = calculate(values[index], window);
+    if (Number.isFinite(signal)) signals.push({ date: rows[index].date, value: signal });
+  }
+  return signals;
+}
+
+function percentileScore(value, history, { inverse = false, minimum = 40 } = {}) {
+  const sample = history.map(Number).filter(Number.isFinite);
+  if (!Number.isFinite(value) || sample.length < minimum) return null;
+  const lower = sample.filter((item) => item < value).length;
+  const equal = sample.filter((item) => item === value).length;
+  const rank = (lower + equal / 2) / sample.length * 100;
+  return clamp(inverse ? 100 - rank : rank);
+}
+
+function balancedSentimentScore(components, totalDimensions = 7) {
+  const dimensions = new Map();
+  components.filter((item) => Number.isFinite(item.score)).forEach((item) => {
+    const key = item.dimension || item.key;
+    dimensions.set(key, [...(dimensions.get(key) || []), item.score]);
+  });
+  const scores = [...dimensions.values()].map((items) => average(items));
+  if (!scores.length) return null;
+  const neutralDimensions = Math.max(0, totalDimensions - scores.length);
+  return Math.round((scores.reduce((total, score) => total + score, 0) + neutralDimensions * 50) / (scores.length + neutralDimensions));
+}
+
 function weightedScore(components) {
   const available = components.filter((component) => Number.isFinite(component.score));
   const weight = available.reduce((total, component) => total + component.weight, 0);
@@ -424,25 +459,36 @@ export function buildMacroRiskSnapshot({ observationsBySeries, targetDate, fetch
   ];
   const riskScore = weightedScore(riskComponents);
 
-  const spRows = recentObservations(observationsBySeries.SP500, target, 252);
-  const spCurrent = parseFredNumber(spRows[0]?.value);
-  const spAverage125 = average(spRows.slice(0, 125).map((item) => item.value));
-  const momentum = spCurrent !== null && spAverage125 ? (spCurrent / spAverage125 - 1) * 100 : null;
-  const spValues = spRows.map((item) => parseFredNumber(item.value)).filter(Number.isFinite);
-  const rangeLow = spValues.length ? Math.min(...spValues) : null;
-  const rangeHigh = spValues.length ? Math.max(...spValues) : null;
-  const rangePosition = spCurrent !== null && rangeLow !== null && rangeHigh !== null && rangeHigh > rangeLow
-    ? (spCurrent - rangeLow) / (rangeHigh - rangeLow) * 100
-    : null;
+  const momentumSignals = rollingSignals(observationsBySeries.SP500, target, 125, (current, window) => {
+    const baseline = average(window);
+    return baseline ? (current / baseline - 1) * 100 : null;
+  }).slice(-1260);
+  const strengthSignals = rollingSignals(observationsBySeries.SP500, target, 252, (current, window) => {
+    const low = Math.min(...window);
+    const high = Math.max(...window);
+    return high > low ? (current - low) / (high - low) * 100 : 50;
+  }).slice(-1260);
+  const volatilitySignals = rollingSignals(observationsBySeries.VIXCLS, target, 50, (current, window) => {
+    const baseline = average(window);
+    return baseline ? current / baseline : null;
+  }).slice(-1260);
+  const creditHistory = recentObservations(observationsBySeries.BAMLH0A0HYM2, target, 1260)
+    .map((item) => parseFredNumber(item.value));
+  const conditionsHistory = recentObservations(observationsBySeries.STLFSI4, target, 260)
+    .map((item) => parseFredNumber(item.value));
+
+  const momentum = momentumSignals.at(-1)?.value ?? null;
+  const rangePosition = strengthSignals.at(-1)?.value ?? null;
+  const vixRelative = volatilitySignals.at(-1)?.value ?? null;
 
   const fearGreedComponents = [
-    { key: "momentum", label: "Market momentum", series_id: "SP500", value: momentum, display: momentum === null ? "--" : `${momentum > 0 ? "+" : ""}${tidy(momentum, 2)}% vs 125D`, score: momentum === null ? null : scoreBetween(momentum, -10, 10), weight: 25, detail: "S&P 500 distance from its 125-session average.", source_url: RISK_SERIES.find((item) => item.seriesId === "SP500")?.sourceUrl },
-    { key: "strength", label: "Price strength", series_id: "SP500", value: rangePosition, display: rangePosition === null ? "--" : `${Math.round(rangePosition)}% of 52W range`, score: rangePosition, weight: 20, detail: "Where the S&P 500 sits inside its trailing 52-week range.", source_url: RISK_SERIES.find((item) => item.seriesId === "SP500")?.sourceUrl },
-    { key: "volatility", label: "Volatility demand", series_id: "VIXCLS", value: vix, display: compactValue(vix), score: vix === null ? null : 100 - scoreBetween(vix, 12, 35), weight: 20, detail: "Lower option-implied volatility raises the greed score.", source_url: RISK_SERIES.find((item) => item.seriesId === "VIXCLS")?.sourceUrl },
-    { key: "credit", label: "Junk-bond demand", series_id: "BAMLH0A0HYM2", value: highYield, display: highYield === null ? "--" : `${tidy(highYield, 2)}%`, score: highYield === null ? null : 100 - scoreBetween(highYield, 2.5, 7), weight: 20, detail: "Tighter high-yield spreads imply stronger risk appetite.", source_url: RISK_SERIES.find((item) => item.seriesId === "BAMLH0A0HYM2")?.sourceUrl },
-    { key: "conditions", label: "Financial conditions", series_id: "STLFSI4", value: financialStress, display: compactValue(financialStress), score: financialStress === null ? null : 100 - scoreBetween(financialStress, -1, 1.5), weight: 15, detail: "Below-normal financial stress raises the greed score.", source_url: RISK_SERIES.find((item) => item.seriesId === "STLFSI4")?.sourceUrl },
+    { key: "momentum", dimension: "price_action", label: "Market momentum", series_id: "SP500", value: momentum, display: momentum === null ? "--" : `${momentum > 0 ? "+" : ""}${tidy(momentum, 2)}% vs 125D`, score: percentileScore(momentum, momentumSignals.map((item) => item.value)), weight: 1, detail: "S&P 500 distance from its 125-session average, ranked against five years.", source_url: RISK_SERIES.find((item) => item.seriesId === "SP500")?.sourceUrl },
+    { key: "strength", dimension: "price_action", label: "Index strength proxy", series_id: "SP500", value: rangePosition, display: rangePosition === null ? "--" : `${Math.round(rangePosition)}% of 52W range`, score: percentileScore(rangePosition, strengthSignals.map((item) => item.value)), weight: 1, detail: "S&P 500 position in each trailing 52-week range, ranked against five years.", source_url: RISK_SERIES.find((item) => item.seriesId === "SP500")?.sourceUrl },
+    { key: "volatility", dimension: "volatility", label: "Volatility demand", series_id: "VIXCLS", value: vixRelative, display: vix === null ? "--" : `${compactValue(vix)}${vixRelative === null ? "" : ` · ${tidy(vixRelative, 2)}x 50D`}`, score: percentileScore(vixRelative, volatilitySignals.map((item) => item.value), { inverse: true }), weight: 1, detail: "VIX versus its 50-session average, ranked inversely against five years.", source_url: RISK_SERIES.find((item) => item.seriesId === "VIXCLS")?.sourceUrl },
+    { key: "credit", dimension: "credit", label: "Junk-bond demand", series_id: "BAMLH0A0HYM2", value: highYield, display: highYield === null ? "--" : `${tidy(highYield, 2)}%`, score: percentileScore(highYield, creditHistory, { inverse: true }), weight: 1, detail: "High-yield spread ranked inversely against its five-year history.", source_url: RISK_SERIES.find((item) => item.seriesId === "BAMLH0A0HYM2")?.sourceUrl },
+    { key: "conditions", dimension: "conditions", label: "Financial conditions", series_id: "STLFSI4", value: financialStress, display: compactValue(financialStress), score: percentileScore(financialStress, conditionsHistory, { inverse: true }), weight: 1, detail: "Financial stress ranked inversely against its five-year history.", source_url: RISK_SERIES.find((item) => item.seriesId === "STLFSI4")?.sourceUrl },
   ].map((item) => ({ ...item, score: Number.isFinite(item.score) ? Math.round(item.score) : null, read: sentimentRead(item.score) }));
-  const fearGreedScore = weightedScore(fearGreedComponents);
+  const fearGreedScore = balancedSentimentScore(fearGreedComponents);
 
   return {
     snapshot_date: target,

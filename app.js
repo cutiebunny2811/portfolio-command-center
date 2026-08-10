@@ -302,6 +302,10 @@
     return num(value).toLocaleString("en-US", { maximumFractionDigits: 4 });
   }
 
+  function formatPreciseTradeQuantity(value) {
+    return num(value).toLocaleString("en-US", { maximumFractionDigits: 8 });
+  }
+
   function trimRecommendation(row, market) {
     const quantity = num(row.position?.quantity);
     const excess = Math.max(row.deployed - row.quota, 0);
@@ -398,20 +402,24 @@
     const available = num(position?.quantity);
     const multiplier = num(instrument?.multiplier) || 1;
     const average = num(position?.average_cost);
-    const cost = quantity * average * multiplier;
-    const gross = quantity * price * multiplier;
+    const requestedQuantity = quantity;
+    const effectiveQuantity = available > 0 && available - quantity >= 0 && available - quantity <= .000001 ? available : quantity;
+    const cost = effectiveQuantity * average * multiplier;
+    const gross = effectiveQuantity * price * multiplier;
     const pnl = gross - fee - cost;
     return {
-      status: quantity > available ? "unavailable" : "ready",
+      status: effectiveQuantity > available ? "unavailable" : "ready",
       broker_profile: "dime",
       method: "fifo",
       symbol: instrument?.symbol || "Asset",
       multiplier,
-      quantity,
+      requested_quantity: requestedQuantity,
+      quantity: effectiveQuantity,
+      dust_adjusted: effectiveQuantity !== requestedQuantity,
       price,
       available_quantity: available,
       position_average_cost: average,
-      position_quantity_after: Math.max(available - quantity, 0),
+      position_quantity_after: Math.max(available - effectiveQuantity, 0),
       position_average_after: average,
       gross_proceeds: gross,
       sell_fee: fee,
@@ -420,8 +428,8 @@
       buy_fees_consumed: 0,
       estimated_realized_pnl: pnl,
       estimated_return_percent: cost > 0 ? pnl / cost * 100 : 0,
-      lots_consumed: quantity > available ? [] : [{
-        opened_at: new Date().toISOString(), quantity, quote_price: average,
+      lots_consumed: effectiveQuantity > available ? [] : [{
+        opened_at: new Date().toISOString(), quantity: effectiveQuantity, quote_price: average,
         cost_consumed: cost, buy_fee_consumed: 0
       }],
       preview_source: "local_sample"
@@ -453,6 +461,9 @@
       </div>`;
     }).join("");
     const sourceLabel = preview.preview_source === "local_sample" ? "LOCAL SAMPLE" : "SERVER CALCULATED";
+    const snapNote = preview.dust_adjusted
+      ? `<div class="fifo-preview__snap"><strong>SELL ALL SNAP</strong><span>${formatPreciseTradeQuantity(preview.requested_quantity)} entered · ${formatPreciseTradeQuantity(preview.quantity)} recorded to close a sub-micro-share remainder.</span></div>`
+      : "";
     return `<section class="fifo-preview ${pnl >= 0 ? "is-positive" : "is-negative"}">
       <header class="fifo-preview__head"><span>DIME / FIFO EXIT PREVIEW</span><strong>${sourceLabel}</strong></header>
       <div class="fifo-preview__decision">
@@ -469,6 +480,7 @@
         <div class="fifo-preview__tape-head"><span>Lots consumed / oldest first</span><small>Sell fee ${money(preview.sell_fee)}${num(preview.buy_fees_consumed) ? ` + buy fees ${money(preview.buy_fees_consumed)}` : ""}</small></div>
         ${lotRows || '<p class="fifo-preview__no-lots">No lots consumed.</p>'}
       </div>
+      ${snapNote}
       <footer>Dime display average and FIFO exit cost answer different questions. Supabase recalculates the final result when you confirm.</footer>
     </section>`;
   }

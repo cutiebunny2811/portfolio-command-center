@@ -4,11 +4,20 @@ import {
   buildFomcRows,
   buildFredRows,
   buildIsmRows,
+  buildMacroRiskSnapshot,
   expectedPeriodDate,
   formatFredValue,
   parseFomcMeetings,
   zonedIso,
 } from "../supabase/functions/sync-macro-calendar/macro-core.mjs";
+
+function dailySeries(start, count, valueAt) {
+  const startDate = new Date(`${start}T00:00:00Z`);
+  return Array.from({ length: count }, (_, index) => ({
+    date: new Date(startDate.getTime() + index * 86_400_000).toISOString().slice(0, 10),
+    value: String(valueAt(index)),
+  }));
+}
 
 test("converts official Eastern release times across daylight saving", () => {
   assert.equal(zonedIso("2026-08-12", "08:30"), "2026-08-12T12:30:00.000Z");
@@ -83,4 +92,47 @@ test("generates the two high-impact ISM releases only", () => {
     ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z"],
     ["ISM Services PMI", "2026-08-05T14:00:00.000Z"],
   ]);
+});
+
+test("builds transparent low-risk and greed composites from FRED observations", () => {
+  const targetDate = "2026-08-08";
+  const observationsBySeries = {
+    SAHMREALTIME: [{ date: "2026-08-01", value: "0.10" }],
+    ICSA: dailySeries("2025-08-10", 52, () => 200000),
+    T10Y3M: [{ date: targetDate, value: "0.50" }],
+    BAMLH0A0HYM2: [{ date: targetDate, value: "3.00" }],
+    STLFSI4: [{ date: targetDate, value: "-0.50" }],
+    VIXCLS: [{ date: targetDate, value: "15" }],
+    INDPRO: [{ date: "2025-08-01", value: "100" }, { date: "2026-08-01", value: "105" }],
+    SP500: dailySeries("2025-11-30", 252, (index) => 5000 + index * 4),
+  };
+  const snapshot = buildMacroRiskSnapshot({ observationsBySeries, targetDate, fetchedAt: `${targetDate}T22:00:00Z` });
+  assert.equal(snapshot.risk_label, "LOW");
+  assert.ok(snapshot.risk_score >= 0 && snapshot.risk_score < 25);
+  assert.ok(snapshot.fear_greed_score > 75);
+  assert.equal(snapshot.fear_greed_label, "EXTREME GREED");
+  assert.equal(snapshot.risk_components.length, 7);
+  assert.equal(snapshot.fear_greed_components.length, 5);
+  assert.equal(snapshot.risk_components.find((item) => item.key === "claims").display, "200K");
+});
+
+test("moves the composites toward severe risk and extreme fear when inputs deteriorate", () => {
+  const targetDate = "2026-08-08";
+  const claims = dailySeries("2025-08-10", 52, () => 200000);
+  claims.push({ date: targetDate, value: "320000" });
+  const observationsBySeries = {
+    SAHMREALTIME: [{ date: "2026-08-01", value: "0.70" }],
+    ICSA: claims,
+    T10Y3M: [{ date: targetDate, value: "-1.00" }],
+    BAMLH0A0HYM2: [{ date: targetDate, value: "8.00" }],
+    STLFSI4: [{ date: targetDate, value: "2.00" }],
+    VIXCLS: [{ date: targetDate, value: "40" }],
+    INDPRO: [{ date: "2025-08-01", value: "100" }, { date: "2026-08-01", value: "94" }],
+    SP500: dailySeries("2025-11-30", 252, (index) => 7000 - index * 8),
+  };
+  const snapshot = buildMacroRiskSnapshot({ observationsBySeries, targetDate, fetchedAt: `${targetDate}T22:00:00Z` });
+  assert.equal(snapshot.risk_label, "SEVERE");
+  assert.ok(snapshot.risk_score >= 80);
+  assert.equal(snapshot.fear_greed_label, "EXTREME FEAR");
+  assert.ok(snapshot.fear_greed_score < 25);
 });

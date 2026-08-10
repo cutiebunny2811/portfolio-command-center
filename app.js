@@ -71,6 +71,7 @@
     earningsEntries: [], earningsReady: true, earningsBusy: false, earningsSyncBusy: false,
     earningsWeekIndex: 0, earningsTrackedCount: 0, earningsLastSynced: null,
     macroEntries: [], macroNextEvent: null, macroNextFomc: null, macroReady: true,
+    macroView: "calendar", macroRiskFeed: null, macroRiskReady: true,
     macroBusy: false, macroSyncBusy: false, macroLastSynced: null,
     briefs: [], notifications: [], briefReady: true, briefBusy: false,
     selectedBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
@@ -813,6 +814,10 @@
     return { entries: [], next_event: null, next_fomc: null, last_synced_at: null };
   }
 
+  function emptyMacroRiskFeed() {
+    return { latest: null, history: { now: null, week: null, month: null, year: null }, last_synced_at: null };
+  }
+
   async function fetchMacroFeed() {
     if (localPreviewEnabled) {
       const sorted = [...state.macroEntries].sort((a, b) => String(a.scheduled_at).localeCompare(String(b.scheduled_at)));
@@ -850,11 +855,31 @@
     state.macroLastSynced = feed?.last_synced_at || null;
   }
 
+  async function fetchMacroRiskFeed() {
+    if (localPreviewEnabled) return state.macroRiskFeed || emptyMacroRiskFeed();
+    const { data, error } = await db.rpc("api_get_macro_risk_monitor");
+    if (error) {
+      if (/api_get_macro_risk_monitor|macro_risk_snapshots|schema cache|does not exist/i.test(error.message)) {
+        state.macroRiskReady = false;
+        return emptyMacroRiskFeed();
+      }
+      throw error;
+    }
+    state.macroRiskReady = true;
+    return { ...emptyMacroRiskFeed(), ...(data || {}), history: { ...emptyMacroRiskFeed().history, ...(data?.history || {}) } };
+  }
+
+  function applyMacroRiskFeed(feed) {
+    state.macroRiskFeed = { ...emptyMacroRiskFeed(), ...(feed || {}), history: { ...emptyMacroRiskFeed().history, ...(feed?.history || {}) } };
+  }
+
   async function loadMacroPage({ renderAfter = true } = {}) {
     state.macroBusy = true;
     if (renderAfter && state.route === "macro") renderMacro();
     try {
-      applyMacroFeed(await fetchMacroFeed());
+      const [macroFeed, riskFeed] = await Promise.all([fetchMacroFeed(), fetchMacroRiskFeed()]);
+      applyMacroFeed(macroFeed);
+      applyMacroRiskFeed(riskFeed);
     } catch (error) {
       console.error(error);
       toast(friendlyError(error), true);
@@ -1099,7 +1124,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, briefFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -1115,6 +1140,7 @@
         fetchResearchFeed(),
         fetchEarningsFeed(),
         fetchMacroFeed(),
+        fetchMacroRiskFeed(),
         fetchBriefFeed()
       ]);
       Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
@@ -1122,6 +1148,7 @@
       state.researchTotal = num(researchFeed.total_count);
       applyEarningsFeed(earningsFeed);
       applyMacroFeed(macroFeed);
+      applyMacroRiskFeed(macroRiskFeed);
       applyBriefFeed(briefFeed);
       state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
       if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
@@ -1950,7 +1977,127 @@
     </article>`;
   }
 
+  function macroTabs() {
+    return `<nav class="research-tabs macro-tabs" aria-label="Macro views">
+      <button type="button" class="${state.macroView === "calendar" ? "is-active" : ""}" data-action="macro-view" data-view="calendar"><span>01</span>Calendar</button>
+      <button type="button" class="${state.macroView === "risk" ? "is-active" : ""}" data-action="macro-view" data-view="risk"><span>02</span>Risk Monitor</button>
+    </nav>`;
+  }
+
+  function macroScore(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(Math.max(Math.round(parsed), 0), 100) : null;
+  }
+
+  function macroRiskTone(value) {
+    const score = macroScore(value);
+    if (score == null) return "unknown";
+    if (score < 25) return "low";
+    if (score < 45) return "watch";
+    if (score < 65) return "elevated";
+    return "high";
+  }
+
+  function macroSentimentRead(value) {
+    const score = macroScore(value);
+    if (score == null) return "NO DATA";
+    if (score < 25) return "EXTREME FEAR";
+    if (score < 45) return "FEAR";
+    if (score < 56) return "NEUTRAL";
+    if (score < 76) return "GREED";
+    return "EXTREME GREED";
+  }
+
+  function macroRiskCopy(score) {
+    if (score == null) return "The first complete source read has not landed yet.";
+    if (score < 25) return "Economic and financial stress signals are contained. Keep watching direction, not one quiet reading.";
+    if (score < 45) return "The backdrop is stable, but at least one early-warning signal deserves attention.";
+    if (score < 65) return "Stress is building across multiple inputs. New risk should require a clearer margin of safety.";
+    if (score < 80) return "The backdrop is fragile. Credit, labor or market stress is no longer isolated.";
+    return "Several recession and financial-stress signals are flashing together. Capital preservation comes first.";
+  }
+
+  function macroComponentMarkup(item, mode = "risk") {
+    const score = macroScore(item?.score);
+    const source = /^https:\/\//i.test(item?.source_url || "") ? item.source_url : "";
+    const tone = mode === "risk" ? macroRiskTone(score) : score == null ? "unknown" : score < 45 ? "fear" : score < 56 ? "neutral" : "greed";
+    return `<article class="macro-signal macro-signal--${tone}">
+      <div class="macro-signal__index">${esc(String(item?.key || "--").slice(0, 2).toUpperCase())}</div>
+      <div class="macro-signal__body"><span>${esc(item?.label || "Signal")}</span><strong>${esc(item?.display || "--")}</strong><p>${esc(item?.detail || "")}</p></div>
+      <div class="macro-signal__score"><small>${mode === "risk" ? "RISK" : macroSentimentRead(score)}</small><strong>${score == null ? "--" : score}</strong><div><i style="--signal-fill:${score || 0}%"></i></div></div>
+      <div class="macro-signal__source">${source ? `<a href="${esc(source)}" target="_blank" rel="noopener noreferrer">FRED &nearr;</a>` : "FRED"}</div>
+    </article>`;
+  }
+
+  function macroHistoryCell(label, snapshot) {
+    const score = macroScore(snapshot?.fear_greed_score);
+    const date = snapshot?.snapshot_date ? new Date(`${snapshot.snapshot_date}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: label === "1Y" ? "numeric" : undefined, timeZone: "UTC" }) : "No baseline";
+    return `<div><small>${esc(label)}</small><strong>${score == null ? "--" : score}</strong><span>${esc(snapshot?.fear_greed_label || "WAITING")}</span><em>${esc(date)}</em></div>`;
+  }
+
+  function renderMacroRisk() {
+    const feed = state.macroRiskFeed || emptyMacroRiskFeed();
+    const latest = feed.latest;
+    const riskScore = macroScore(latest?.risk_score);
+    const fearGreedScore = macroScore(latest?.fear_greed_score);
+    const gaugeAngle = fearGreedScore == null ? 0 : fearGreedScore * 1.8 - 90;
+    const synced = feed.last_synced_at
+      ? new Date(feed.last_synced_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : "Not synced yet";
+    const history = feed.history || {};
+
+    viewRoot.innerHTML = `
+      ${pageHead("US macro · Economic + market risk", "Know when the backdrop changes.", "Risk Monitor reads recession and financial-stress inputs. Fear & Greed reads market behavior. They can disagree, and that disagreement matters.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources..." : "Update sources"}</button>`)}
+      ${macroTabs()}
+      ${!state.macroRiskReady ? `<div class="warning-box macro-setup"><strong>Risk Monitor is not installed yet.</strong> Apply <code>040_macro_risk_monitor.sql</code>, then update sources.</div>` : ""}
+      ${state.macroBusy && !latest
+        ? `<div class="macro-empty"><span></span><p>Building the economic risk tape...</p></div>`
+        : !latest
+          ? `<div class="macro-empty"><strong>No Risk Monitor snapshot yet.</strong><p>Update sources once to calculate the first shared reading.</p></div>`
+          : `<section class="risk-monitor" aria-label="United States economic risk monitor">
+              <header class="section-head risk-monitor__head"><div><span class="section-index">01 / RISK MONITOR</span><h2>The economy under load.</h2></div><p>Shared snapshot · ${esc(synced)}</p></header>
+              <div class="risk-summary risk-summary--${macroRiskTone(riskScore)}">
+                <div class="risk-summary__score"><span>COMPOSITE RISK</span><strong>${riskScore}</strong><small>/ 100</small></div>
+                <div class="risk-summary__read"><span>${esc(latest.risk_label)}</span><h3>${esc(macroRiskCopy(riskScore))}</h3><p>Seven inputs across labor, rates, credit, financial stress, volatility and real activity.</p></div>
+                <div class="risk-summary__date"><small>SNAPSHOT DATE</small><strong>${esc(latest.snapshot_date)}</strong><span>FRED · deterministic model</span></div>
+              </div>
+              <div class="macro-signal-tape">${(latest.risk_components || []).map((item) => macroComponentMarkup(item)).join("")}</div>
+            </section>
+
+            <section class="fear-greed" aria-label="Fear and Greed market sentiment">
+              <header class="section-head fear-greed__head"><div><span class="section-index">02 / FEAR &amp; GREED</span><h2>How much risk the market wants.</h2></div><p>0 = extreme fear · 100 = extreme greed</p></header>
+              <div class="fear-greed__board">
+                <div class="sentiment-gauge" style="--gauge-angle:${gaugeAngle}deg">
+                  <div class="sentiment-gauge__stage" aria-label="Fear and Greed score ${fearGreedScore}">
+                    <div class="sentiment-gauge__arc"></div>
+                    <span class="sentiment-gauge__label sentiment-gauge__label--fear">FEAR</span>
+                    <span class="sentiment-gauge__label sentiment-gauge__label--neutral">NEUTRAL</span>
+                    <span class="sentiment-gauge__label sentiment-gauge__label--greed">GREED</span>
+                    <i class="sentiment-gauge__needle"></i>
+                    <div class="sentiment-gauge__hub"><strong>${fearGreedScore}</strong><span>${esc(latest.fear_greed_label)}</span></div>
+                  </div>
+                  <p>PCC calculation from five transparent FRED components. It is not the CNN index and does not copy CNN's proprietary normalization.</p>
+                </div>
+                <div class="sentiment-history" aria-label="Fear and Greed history">
+                  ${macroHistoryCell("NOW", history.now || latest)}
+                  ${macroHistoryCell("1W", history.week)}
+                  ${macroHistoryCell("1M", history.month)}
+                  ${macroHistoryCell("1Y", history.year)}
+                </div>
+              </div>
+              <div class="fear-greed__components">
+                <header><span>WHY THIS SCORE</span><p>Each row runs from fear at the left to greed at the right.</p></header>
+                ${(latest.fear_greed_components || []).map((item) => macroComponentMarkup(item, "sentiment")).join("")}
+              </div>
+              <p class="macro-disclaimer">Risk Monitor estimates economic and financial stress; Fear &amp; Greed estimates investor risk appetite. A greedy market can coexist with rising economic risk. These readings are context, not trading signals.</p>
+            </section>`}`;
+  }
+
   function renderMacro() {
+    if (state.macroView === "risk") {
+      renderMacroRisk();
+      return;
+    }
     const now = Date.now();
     const tapeEnd = now + 35 * 86_400_000;
     const entries = [...state.macroEntries]
@@ -1978,6 +2125,7 @@
 
     viewRoot.innerHTML = `
       ${pageHead("US macro · High impact only", "The releases that move the tape.", "FOMC, inflation, labor, growth and activity — a deliberately narrow calendar built from official schedules and FRED observations.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources…" : "Update sources"}</button>`)}
+      ${macroTabs()}
       ${!state.macroReady ? `<div class="warning-box macro-setup"><strong>Macro Calendar is not installed yet.</strong> Run <code>035_us_macro_calendar.sql</code>, add <code>FRED_API_KEY</code>, then deploy <code>sync-macro-calendar</code>.</div>` : ""}
       <section class="macro-hero" aria-label="Macro command summary">
         <article class="macro-fomc">
@@ -3780,6 +3928,11 @@
       renderEarnings();
     }
     else if (action === "earnings-detail") openEarningsDetail(target.dataset.earningsId);
+    else if (action === "macro-view") {
+      state.macroView = target.dataset.view === "risk" ? "risk" : "calendar";
+      window.scrollTo(0, 0);
+      renderMacro();
+    }
     else if (action === "macro-sync") await syncMacroCalendar({ notify: true });
     else if (action === "account") await openAccountDialog();
     else if (action === "portfolio-create") openCreatePortfolioDialog();
@@ -4170,6 +4323,42 @@
       { id: "macro-7", external_id: "preview-fomc", event_group: "policy", signal_family: "policy", event_name: "FOMC Rate Decision + SEP", category: "FOMC", scheduled_at: previewMacroAt(25, 1, 0), actual: null, previous: "4.75–5.00%", source_name: "Federal Reserve", source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" },
       { id: "macro-8", external_id: "preview-powell", event_group: "policy", signal_family: "policy", event_name: "Fed Chair Press Conference", category: "Fed Chair", scheduled_at: previewMacroAt(25, 1, 30), actual: null, previous: null, source_name: "Federal Reserve", source_url: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" }
     ];
+    const previewRiskDate = (days) => {
+      const date = new Date();
+      date.setDate(date.getDate() - days);
+      return localDayKey(date);
+    };
+    const previewRiskSnapshot = (days, risk, fearGreed, riskLabel, fearGreedLabel) => ({
+      snapshot_date: previewRiskDate(days), risk_score: risk, risk_label: riskLabel,
+      fear_greed_score: fearGreed, fear_greed_label: fearGreedLabel,
+      risk_components: days ? [] : [
+        { key: "sahm", label: "Labor recession trigger", display: "0.13 pp", score: 26, detail: "Sahm Rule; 0.50 pp is the recession trigger.", source_url: "https://fred.stlouisfed.org/series/SAHMREALTIME" },
+        { key: "claims", label: "Initial claims pressure", display: "199K", score: 18, detail: "0.94x its trailing 52-week average.", source_url: "https://fred.stlouisfed.org/series/ICSA" },
+        { key: "curve", label: "10Y-3M yield curve", display: "0.78 pp", score: 0, detail: "Negative readings mean the curve is inverted.", source_url: "https://fred.stlouisfed.org/series/T10Y3M" },
+        { key: "credit", label: "High-yield credit spread", display: "2.70%", score: 4, detail: "Wider spreads mean lenders demand more compensation for risk.", source_url: "https://fred.stlouisfed.org/series/BAMLH0A0HYM2" },
+        { key: "stress", label: "Financial stress", display: "-0.72", score: 11, detail: "Zero is normal; positive readings are above-average stress.", source_url: "https://fred.stlouisfed.org/series/STLFSI4" },
+        { key: "volatility", label: "Equity volatility", display: "14.90", score: 13, detail: "Option-implied volatility for the next 30 days.", source_url: "https://fred.stlouisfed.org/series/VIXCLS" },
+        { key: "growth", label: "Industrial production", display: "+1.34% YoY", score: 11, detail: "Year-over-year change in real industrial output.", source_url: "https://fred.stlouisfed.org/series/INDPRO" }
+      ],
+      fear_greed_components: days ? [] : [
+        { key: "momentum", label: "Market momentum", display: "+8.42% vs 125D", score: 92, detail: "S&P 500 distance from its 125-session average.", source_url: "https://fred.stlouisfed.org/series/SP500" },
+        { key: "strength", label: "Price strength", display: "97% of 52W range", score: 97, detail: "Where the S&P 500 sits inside its trailing 52-week range.", source_url: "https://fred.stlouisfed.org/series/SP500" },
+        { key: "volatility", label: "Volatility demand", display: "14.90", score: 87, detail: "Lower option-implied volatility raises the greed score.", source_url: "https://fred.stlouisfed.org/series/VIXCLS" },
+        { key: "credit", label: "Junk-bond demand", display: "2.70%", score: 96, detail: "Tighter high-yield spreads imply stronger risk appetite.", source_url: "https://fred.stlouisfed.org/series/BAMLH0A0HYM2" },
+        { key: "conditions", label: "Financial conditions", display: "-0.72", score: 89, detail: "Below-normal financial stress raises the greed score.", source_url: "https://fred.stlouisfed.org/series/STLFSI4" }
+      ]
+    });
+    const macroRiskLatest = previewRiskSnapshot(0, 16, 92, "LOW", "EXTREME GREED");
+    const macroRiskFeed = {
+      latest: macroRiskLatest,
+      history: {
+        now: macroRiskLatest,
+        week: previewRiskSnapshot(7, 19, 77, "LOW", "EXTREME GREED"),
+        month: previewRiskSnapshot(30, 24, 63, "LOW", "GREED"),
+        year: previewRiskSnapshot(365, 38, 49, "WATCH", "NEUTRAL")
+      },
+      last_synced_at: new Date().toISOString()
+    };
     const previewBriefDate = localDayKey(new Date());
     const previewSources = [
       { id: "src-1", title: "US stocks close higher as yields ease", publisher: "Reuters", url: "https://www.reuters.com/markets/us/", published_at: new Date().toISOString() },
@@ -4220,7 +4409,7 @@
       { id: "notice-update", notification_type: "brief_continuation", title: "Daily Market Brief · Continuation", preview: "Indexes softened, but the original thesis remains current.", entity_id: "update-preview", created_at: new Date().toISOString(), read_at: null },
       { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroLastSynced: new Date().toISOString(), briefs, notifications, selectedBriefId: "brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, notifications, selectedBriefId: "brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;

@@ -3,9 +3,11 @@ import {
   buildFomcRows,
   buildFredRows,
   buildIsmRows,
+  buildMacroRiskSnapshot,
   dedupeMacroRows,
   FRED_EVENTS,
   parseFomcMeetings,
+  RISK_SERIES,
 } from "./macro-core.mjs";
 
 const corsHeaders = {
@@ -107,7 +109,10 @@ Deno.serve(async (request) => {
     const releaseIds = [
       ...new Set(FRED_EVENTS.map((event) => event.releaseId)),
     ];
-    const seriesIds = [...new Set(FRED_EVENTS.map((event) => event.seriesId))];
+    const seriesIds = [...new Set([
+      ...FRED_EVENTS.map((event) => event.seriesId),
+      ...RISK_SERIES.map((series) => series.seriesId),
+    ])];
     const releaseResponses = await Promise.all(
       releaseIds.map(async (releaseId) => {
         const payload = await fredJson("release/dates", {
@@ -129,7 +134,7 @@ Deno.serve(async (request) => {
           series_id: seriesId,
           units: config?.units || "lin",
           sort_order: "desc",
-          limit: "80",
+          limit: RISK_SERIES.some((series) => series.seriesId === seriesId) ? "500" : "80",
         }, fredApiKey);
         return [
           seriesId,
@@ -173,6 +178,17 @@ Deno.serve(async (request) => {
       );
     }
 
+    const riskSnapshots = [0, -7, -30, -365].map((days) =>
+      buildMacroRiskSnapshot({
+        observationsBySeries,
+        targetDate: dateOnly(shiftDays(now, days)),
+        fetchedAt,
+      })
+    );
+    if (riskSnapshots.some((snapshot) => snapshot.risk_score === null || snapshot.fear_greed_score === null)) {
+      throw new Error("Risk Monitor did not receive enough FRED observations; existing data was preserved");
+    }
+
     for (let offset = 0; offset < rows.length; offset += 500) {
       const { error } = await service
         .from("macro_events")
@@ -181,6 +197,11 @@ Deno.serve(async (request) => {
         });
       if (error) throw error;
     }
+
+    const { error: riskError } = await service
+      .from("macro_risk_snapshots")
+      .upsert(riskSnapshots, { onConflict: "snapshot_date" });
+    if (riskError) throw riskError;
 
     const { data: existing, error: existingError } = await service
       .from("macro_events")
@@ -230,6 +251,7 @@ Deno.serve(async (request) => {
     if (stateError) throw stateError;
     return result({
       updated: rows.length,
+      risk_snapshots: riskSnapshots.length,
       sources: ["FRED", "Federal Reserve", "ISM"],
       window_from: windowFrom,
       window_to: windowTo,

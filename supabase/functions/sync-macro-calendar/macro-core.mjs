@@ -189,6 +189,17 @@ export const FRED_EVENTS = [
   },
 ];
 
+export const RISK_SERIES = [
+  { seriesId: "SAHMREALTIME", sourceUrl: "https://fred.stlouisfed.org/series/SAHMREALTIME" },
+  { seriesId: "ICSA", sourceUrl: "https://fred.stlouisfed.org/series/ICSA" },
+  { seriesId: "T10Y3M", sourceUrl: "https://fred.stlouisfed.org/series/T10Y3M" },
+  { seriesId: "BAMLH0A0HYM2", sourceUrl: "https://fred.stlouisfed.org/series/BAMLH0A0HYM2" },
+  { seriesId: "STLFSI4", sourceUrl: "https://fred.stlouisfed.org/series/STLFSI4" },
+  { seriesId: "VIXCLS", sourceUrl: "https://fred.stlouisfed.org/series/VIXCLS" },
+  { seriesId: "INDPRO", sourceUrl: "https://fred.stlouisfed.org/series/INDPRO" },
+  { seriesId: "SP500", sourceUrl: "https://fred.stlouisfed.org/series/SP500" },
+];
+
 const pad = (value) => String(value).padStart(2, "0");
 const dateOnly = (date) => date.toISOString().slice(0, 10);
 const shiftDays = (date, days) => new Date(date.getTime() + days * 86_400_000);
@@ -305,6 +316,146 @@ function sortedObservations(observations) {
   return [...(observations || [])]
     .filter((item) => item?.date && parseFredNumber(item.value) !== null)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+const clamp = (value, minimum = 0, maximum = 100) =>
+  Math.min(Math.max(Number(value), minimum), maximum);
+
+function scoreBetween(value, low, high) {
+  if (!Number.isFinite(value) || high === low) return null;
+  return clamp((value - low) / (high - low) * 100);
+}
+
+function latestObservation(observations, targetDate) {
+  return sortedObservations(observations).find((item) => item.date <= targetDate) || null;
+}
+
+function recentObservations(observations, targetDate, count) {
+  return sortedObservations(observations)
+    .filter((item) => item.date <= targetDate)
+    .slice(0, count);
+}
+
+function average(values) {
+  const finite = values.map(Number).filter(Number.isFinite);
+  return finite.length ? finite.reduce((total, value) => total + value, 0) / finite.length : null;
+}
+
+function weightedScore(components) {
+  const available = components.filter((component) => Number.isFinite(component.score));
+  const weight = available.reduce((total, component) => total + component.weight, 0);
+  if (!weight) return null;
+  return Math.round(available.reduce((total, component) => total + component.score * component.weight, 0) / weight);
+}
+
+function riskRead(score) {
+  if (!Number.isFinite(score)) return "NO DATA";
+  if (score < 25) return "LOW";
+  if (score < 45) return "WATCH";
+  if (score < 65) return "ELEVATED";
+  if (score < 80) return "HIGH";
+  return "SEVERE";
+}
+
+function sentimentRead(score) {
+  if (!Number.isFinite(score)) return "NO DATA";
+  if (score < 25) return "EXTREME FEAR";
+  if (score < 45) return "FEAR";
+  if (score < 56) return "NEUTRAL";
+  if (score < 76) return "GREED";
+  return "EXTREME GREED";
+}
+
+function compactValue(value) {
+  if (!Number.isFinite(value)) return "--";
+  if (Math.abs(value) >= 1_000_000) return `${tidy(value / 1_000_000, 2)}M`;
+  if (Math.abs(value) >= 1_000) return `${tidy(value / 1_000, 1)}K`;
+  return tidy(value, 2);
+}
+
+function component({ key, label, seriesId, value, display, score, weight, detail }) {
+  const config = RISK_SERIES.find((item) => item.seriesId === seriesId);
+  return {
+    key,
+    label,
+    series_id: seriesId,
+    value: Number.isFinite(value) ? Number(value) : null,
+    display,
+    score: Number.isFinite(score) ? Math.round(score) : null,
+    read: riskRead(score),
+    detail,
+    weight,
+    source_url: config?.sourceUrl || null,
+  };
+}
+
+export function buildMacroRiskSnapshot({ observationsBySeries, targetDate, fetchedAt }) {
+  const target = String(targetDate).slice(0, 10);
+  const latest = (seriesId) => latestObservation(observationsBySeries[seriesId], target);
+  const value = (seriesId) => parseFredNumber(latest(seriesId)?.value);
+
+  const sahm = value("SAHMREALTIME");
+  const claimsRows = recentObservations(observationsBySeries.ICSA, target, 52);
+  const claims = parseFredNumber(claimsRows[0]?.value);
+  const claimsAverage = average(claimsRows.map((item) => item.value));
+  const claimsRatio = claims !== null && claimsAverage ? claims / claimsAverage : null;
+  const curve = value("T10Y3M");
+  const highYield = value("BAMLH0A0HYM2");
+  const financialStress = value("STLFSI4");
+  const vix = value("VIXCLS");
+  const industrial = latest("INDPRO");
+  const industrialValue = parseFredNumber(industrial?.value);
+  const industrialPriorTarget = industrial?.date
+    ? dateOnly(shiftDays(new Date(`${industrial.date}T00:00:00Z`), -365))
+    : target;
+  const industrialPrior = parseFredNumber(latestObservation(observationsBySeries.INDPRO, industrialPriorTarget)?.value);
+  const industrialGrowth = industrialValue !== null && industrialPrior
+    ? (industrialValue / industrialPrior - 1) * 100
+    : null;
+
+  const riskComponents = [
+    component({ key: "sahm", label: "Labor recession trigger", seriesId: "SAHMREALTIME", value: sahm, display: sahm === null ? "--" : `${tidy(sahm, 2)} pp`, score: sahm === null ? null : scoreBetween(sahm, 0, .5), weight: 20, detail: "Sahm Rule; 0.50 pp is the recession trigger." }),
+    component({ key: "claims", label: "Initial claims pressure", seriesId: "ICSA", value: claims, display: compactValue(claims), score: claimsRatio === null ? null : scoreBetween(claimsRatio, .9, 1.25), weight: 15, detail: claimsRatio === null ? "Waiting for a 52-week claims history." : `${tidy(claimsRatio, 2)}x its trailing 52-week average.` }),
+    component({ key: "curve", label: "10Y-3M yield curve", seriesId: "T10Y3M", value: curve, display: curve === null ? "--" : `${tidy(curve, 2)} pp`, score: curve === null ? null : 100 - scoreBetween(curve, -.75, .75), weight: 15, detail: "Negative readings mean the curve is inverted." }),
+    component({ key: "credit", label: "High-yield credit spread", seriesId: "BAMLH0A0HYM2", value: highYield, display: highYield === null ? "--" : `${tidy(highYield, 2)}%`, score: highYield === null ? null : scoreBetween(highYield, 2.5, 7), weight: 15, detail: "Wider spreads mean lenders demand more compensation for risk." }),
+    component({ key: "stress", label: "Financial stress", seriesId: "STLFSI4", value: financialStress, display: compactValue(financialStress), score: financialStress === null ? null : scoreBetween(financialStress, -1, 1.5), weight: 15, detail: "Zero is normal; positive readings are above-average stress." }),
+    component({ key: "volatility", label: "Equity volatility", seriesId: "VIXCLS", value: vix, display: compactValue(vix), score: vix === null ? null : scoreBetween(vix, 12, 35), weight: 10, detail: "Option-implied volatility for the next 30 days." }),
+    component({ key: "growth", label: "Industrial production", seriesId: "INDPRO", value: industrialGrowth, display: industrialGrowth === null ? "--" : `${industrialGrowth > 0 ? "+" : ""}${tidy(industrialGrowth, 2)}% YoY`, score: industrialGrowth === null ? null : 100 - scoreBetween(industrialGrowth, -4, 2), weight: 10, detail: "Year-over-year change in real industrial output." }),
+  ];
+  const riskScore = weightedScore(riskComponents);
+
+  const spRows = recentObservations(observationsBySeries.SP500, target, 252);
+  const spCurrent = parseFredNumber(spRows[0]?.value);
+  const spAverage125 = average(spRows.slice(0, 125).map((item) => item.value));
+  const momentum = spCurrent !== null && spAverage125 ? (spCurrent / spAverage125 - 1) * 100 : null;
+  const spValues = spRows.map((item) => parseFredNumber(item.value)).filter(Number.isFinite);
+  const rangeLow = spValues.length ? Math.min(...spValues) : null;
+  const rangeHigh = spValues.length ? Math.max(...spValues) : null;
+  const rangePosition = spCurrent !== null && rangeLow !== null && rangeHigh !== null && rangeHigh > rangeLow
+    ? (spCurrent - rangeLow) / (rangeHigh - rangeLow) * 100
+    : null;
+
+  const fearGreedComponents = [
+    { key: "momentum", label: "Market momentum", series_id: "SP500", value: momentum, display: momentum === null ? "--" : `${momentum > 0 ? "+" : ""}${tidy(momentum, 2)}% vs 125D`, score: momentum === null ? null : scoreBetween(momentum, -10, 10), weight: 25, detail: "S&P 500 distance from its 125-session average.", source_url: RISK_SERIES.find((item) => item.seriesId === "SP500")?.sourceUrl },
+    { key: "strength", label: "Price strength", series_id: "SP500", value: rangePosition, display: rangePosition === null ? "--" : `${Math.round(rangePosition)}% of 52W range`, score: rangePosition, weight: 20, detail: "Where the S&P 500 sits inside its trailing 52-week range.", source_url: RISK_SERIES.find((item) => item.seriesId === "SP500")?.sourceUrl },
+    { key: "volatility", label: "Volatility demand", series_id: "VIXCLS", value: vix, display: compactValue(vix), score: vix === null ? null : 100 - scoreBetween(vix, 12, 35), weight: 20, detail: "Lower option-implied volatility raises the greed score.", source_url: RISK_SERIES.find((item) => item.seriesId === "VIXCLS")?.sourceUrl },
+    { key: "credit", label: "Junk-bond demand", series_id: "BAMLH0A0HYM2", value: highYield, display: highYield === null ? "--" : `${tidy(highYield, 2)}%`, score: highYield === null ? null : 100 - scoreBetween(highYield, 2.5, 7), weight: 20, detail: "Tighter high-yield spreads imply stronger risk appetite.", source_url: RISK_SERIES.find((item) => item.seriesId === "BAMLH0A0HYM2")?.sourceUrl },
+    { key: "conditions", label: "Financial conditions", series_id: "STLFSI4", value: financialStress, display: compactValue(financialStress), score: financialStress === null ? null : 100 - scoreBetween(financialStress, -1, 1.5), weight: 15, detail: "Below-normal financial stress raises the greed score.", source_url: RISK_SERIES.find((item) => item.seriesId === "STLFSI4")?.sourceUrl },
+  ].map((item) => ({ ...item, score: Number.isFinite(item.score) ? Math.round(item.score) : null, read: sentimentRead(item.score) }));
+  const fearGreedScore = weightedScore(fearGreedComponents);
+
+  return {
+    snapshot_date: target,
+    risk_score: riskScore,
+    risk_label: riskRead(riskScore),
+    fear_greed_score: fearGreedScore,
+    fear_greed_label: sentimentRead(fearGreedScore),
+    risk_components: riskComponents,
+    fear_greed_components: fearGreedComponents,
+    source_dates: Object.fromEntries(RISK_SERIES.map(({ seriesId }) => [seriesId, latest(seriesId)?.date || null])),
+    fetched_at: fetchedAt,
+    updated_at: fetchedAt,
+  };
 }
 
 export function buildFredRows(

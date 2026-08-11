@@ -65,7 +65,8 @@
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false, marketPulseWindow: "1D",
-    smartMoneyEvents: [], smartMoneyReady: true, smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
+    smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
+    smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     researchEntries: [], researchPreviewSource: [], researchReady: true, researchBusy: false, researchSyncBusy: false,
     researchTotal: 0, researchPage: 1, researchPageSize: 25, researchFilter: "all", researchSearch: "",
     earningsEntries: [], earningsReady: true, earningsBusy: false, earningsSyncBusy: false,
@@ -566,6 +567,7 @@
     const { data, error } = await db.rpc("api_get_smart_money_feed", { p_limit: 500 });
     if (!error) {
       state.smartMoneyReady = true;
+      state.smartMoneyError = "";
       return Array.isArray(data) ? data : [];
     }
     if (/api_get_smart_money_feed|smart_money_events|schema cache|does not exist/i.test(error.message)) {
@@ -573,6 +575,36 @@
       return [];
     }
     throw new Error(`Smart Money: ${error.message}`);
+  }
+
+  async function loadSmartMoneyPage({ renderAfter = true } = {}) {
+    if (localPreviewEnabled || state.smartMoneyBusy) return;
+    state.smartMoneyBusy = true;
+    state.smartMoneyError = "";
+    if (renderAfter && state.route === "smart-money") renderSmartMoney();
+    try {
+      state.smartMoneyEvents = await optionalSmartMoneyQuery();
+    } catch (error) {
+      console.warn(error);
+      state.smartMoneyError = friendlyError(error);
+    } finally {
+      state.smartMoneyLoaded = true;
+      state.smartMoneyBusy = false;
+      if (renderAfter && state.route === "smart-money") renderSmartMoney();
+    }
+  }
+
+  async function initialSmartMoneyQuery() {
+    if (state.route !== "smart-money") return state.smartMoneyEvents;
+    try {
+      return await optionalSmartMoneyQuery();
+    } catch (error) {
+      console.warn(error);
+      state.smartMoneyError = friendlyError(error);
+      return state.smartMoneyEvents;
+    } finally {
+      state.smartMoneyLoaded = true;
+    }
   }
 
   function emptyBriefFeed() {
@@ -1136,7 +1168,7 @@
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
         optionalMarketPulseQuery(),
-        optionalSmartMoneyQuery(),
+        initialSmartMoneyQuery(),
         fetchResearchFeed(),
         fetchEarningsFeed(),
         fetchMacroFeed(),
@@ -2388,10 +2420,15 @@
     const symbolCounts = [...unfiltered.reduce((map, event) => map.set(event.instrument_id, (map.get(event.instrument_id) || 0) + 1), new Map()).entries()]
       .sort((a, b) => b[1] - a[1]).slice(0, 5);
     const instruments = instrumentMap();
+    const smartStatus = localPreviewEnabled ? "SAMPLE DATA"
+      : state.smartMoneyBusy ? "LOADING"
+      : state.smartMoneyError ? "RETRY NEEDED"
+      : state.smartMoneyReady ? "COLLECTOR READY" : "SETUP REQUIRED";
 
     viewRoot.innerHTML = `
-      ${pageHead("Watchlist intelligence · SEC Form 4", "Follow the people closest to the company.", "A filing-first tape of insider ownership changes across every name you watch. Transaction codes stay visible so grants, exercises and open-market trades never look the same.", `<span class="smart-status"><i></i>${localPreviewEnabled ? "SAMPLE DATA" : state.smartMoneyReady ? "COLLECTOR READY" : "SETUP REQUIRED"}</span>`) }
+      ${pageHead("Watchlist intelligence · SEC Form 4", "Follow the people closest to the company.", "A filing-first tape of insider ownership changes across every name you watch. Transaction codes stay visible so grants, exercises and open-market trades never look the same.", `<span class="smart-status"><i></i>${smartStatus}</span>`) }
       ${!state.smartMoneyReady ? `<div class="warning-box smart-money-setup"><strong>Smart Money schema is not installed yet.</strong> Run <code>014_smart_money.sql</code> in Supabase. The page is ready; live filings begin after the Massive collector is deployed.</div>` : ""}
+      ${state.smartMoneyError ? `<div class="warning-box smart-money-setup"><strong>Smart Money could not refresh.</strong> ${esc(state.smartMoneyError)} <button class="button button--small" type="button" data-action="smart-money-retry">Try again</button></div>` : ""}
       <section class="smart-ledger" aria-label="Smart Money summary">
         <div class="smart-ledger__lead"><small>NEW FILINGS / 24H</small><strong>${newToday}</strong><span>Across ${state.watchlist.length} watched symbols</span></div>
         <div><small>OPEN-MARKET BUYS</small><strong class="positive">${openBuys}</strong><span>Transaction code P</span></div>
@@ -2406,7 +2443,7 @@
       <section class="smart-money-layout">
         <div class="smart-feed">
           <div class="section-head smart-feed__head"><div><span class="section-index">01 / OWNERSHIP TAPE</span><h2>Who moved what.</h2></div><p>${events.length > 50 ? `Showing newest 50 of ${events.length}` : `${events.length} matching transactions`} · newest filing first</p></div>
-          ${visibleEvents.length ? visibleEvents.map(smartMoneyEventMarkup).join("") : `<div class="smart-empty"><span>FORM 4 / 00</span><h2>No matching filings.</h2><p>${state.smartMoneyReady ? "Try a longer window or clear the filters. New public filings will appear here after the collector runs." : "Install the schema and connect the collector to begin scanning your Watchlist."}</p></div>`}
+          ${visibleEvents.length ? visibleEvents.map(smartMoneyEventMarkup).join("") : `<div class="smart-empty"><span>FORM 4 / 00</span><h2>${state.smartMoneyBusy ? "Loading filings." : "No matching filings."}</h2><p>${state.smartMoneyBusy ? "Reading the public ownership tape now." : state.smartMoneyReady ? "Try a longer window or clear the filters. New public filings will appear here after the collector runs." : "Install the schema and connect the collector to begin scanning your Watchlist."}</p></div>`}
         </div>
         <aside class="smart-context" aria-label="Smart Money context">
           <div><span class="section-index">02 / SIGNAL HYGIENE</span><h2>Read the code, not just the color.</h2><p>A Form 4 reports ownership changes. It is evidence of an action, not automatically a trading signal.</p></div>
@@ -3800,7 +3837,11 @@
       }
       window.scrollTo(0, 0);
       renderNav();
-      if (state.route === "journal") await loadJournalPage();
+      if (state.route === "smart-money") {
+        renderSmartMoney();
+        if (!state.smartMoneyLoaded) await loadSmartMoneyPage();
+      }
+      else if (state.route === "journal") await loadJournalPage();
       else if (state.route === "research") await loadResearchPage();
       else if (state.route === "earnings") await loadEarningsPage();
       else if (state.route === "macro") await loadMacroPage();
@@ -3898,6 +3939,7 @@
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "smart-money-side") { state.smartMoneySide = target.dataset.side || "all"; renderSmartMoney(); }
     else if (action === "smart-money-window") { state.smartMoneyWindow = num(target.dataset.days) || 30; renderSmartMoney(); }
+    else if (action === "smart-money-retry") await loadSmartMoneyPage();
     else if (action === "research-sync") await syncResearchNews({ notify: true });
     else if (action === "research-filter") {
       state.researchFilter = ["all", "unread", "portfolio", "macro", "saved"].includes(target.dataset.filter) ? target.dataset.filter : "all";

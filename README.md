@@ -120,3 +120,7 @@ and deploy `portfolio-agent-api`. Hermes receives a narrow
 `briefings:write` scope for the canonical 20:00 Asia/Bangkok Brief and material
 00:00 Continuations. Supabase stores the full publication and notification
 state; Telegram carries a concise preview and a link to `?route=briefs`.
+Live web research enriches the edition but is not a publication dependency:
+fresh Market Pulse, FRED risk/sentiment and official Macro facts support a
+clearly labeled limited-sources edition. A silent 20:20 recovery job publishes
+that fallback only when the 20:00 canonical edition is still missing.

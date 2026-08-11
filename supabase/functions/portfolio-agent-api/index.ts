@@ -685,7 +685,7 @@ async function briefingContext(
   const audience = body.audience === "personal" ? "personal" : "shared_market";
 
   if (audience === "shared_market") {
-    const [market, macro, alerts] = await Promise.all([
+    const [market, macro, alerts, riskSnapshots] = await Promise.all([
       must(service
         .from("market_pulse_latest")
         .select("*")
@@ -694,6 +694,11 @@ async function briefingContext(
         .order("symbol")),
       macroCalendar(service, { from: addDays(today, -1), to: addDays(today, 14), limit: 200 }),
       macroAlerts(service, { hours_ahead: 72, hours_back: 18 }),
+      must(service
+        .from("macro_risk_snapshots")
+        .select("snapshot_date,risk_score,risk_label,fear_greed_score,fear_greed_label,risk_components,fear_greed_components,source_dates,fetched_at")
+        .order("snapshot_date", { ascending: false })
+        .limit(8)),
     ]);
 
     return {
@@ -704,10 +709,15 @@ async function briefingContext(
         canonical_brief: "Write one neutral US-market brief for every PCC reader. Research current external sources; use PCC only for verified market and macro context.",
         privacy: "Do not request, infer or mention any user's portfolios, positions, watchlist or private preferences.",
         sources: "Prefer official releases for primary facts and reputable current reporting for market context. Verify both publication time and event date before citing.",
+        source_resilience: "Live web research is enrichment, not a single point of failure. If sites block access, publish a clearly limited edition from fresh PCC market pulse, FRED macro risk and official calendar facts; omit unsupported claims instead of omitting the whole brief.",
         unavailable_data: "Use null or omit the item. Never invent prices, consensus estimates, quotes or URLs.",
         continuation: "Compare against the published brief and write only material market-wide changes, not a second full brief.",
       },
       market_pulse: market,
+      macro_risk: {
+        latest: (riskSnapshots as Record<string, unknown>[])[0] || null,
+        recent: riskSnapshots,
+      },
       macro,
       macro_alerts: alerts,
     };

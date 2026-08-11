@@ -14,12 +14,12 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
    every PCC reader. Never mention or optimize for the owner's portfolio,
    positions, watchlist, preferences or private context.
 3. Research the current external news cycle with the web search tools before
-   writing. PCC market and Macro data are verified context, not the boundary
-   of the research. Prefer official agencies and company releases for primary
-   facts, plus reputable current reporting such as Reuters, AP or major market
-   publications for context. Verify the publication time and the event date;
-   do not mistake an old article for a new development. Never invent market
-   values, consensus forecasts, quotes, source ids or citations.
+   writing, but treat live web access as enrichment rather than a publication
+   gate. Try multiple independent domains across official agencies and
+   reputable market publications. If one domain returns CAPTCHA, 403 or Access
+   Denied, stop retrying that domain and continue with the other sources and
+   the structured PCC fact pack. Verify publication time and event date; never
+   invent market values, consensus forecasts, quotes, source ids or citations.
 4. Synthesize the market, do not copy the PCC News feed or a search-results
    list into the brief. The three
    to five top_stories are MARKET DRIVERS: each story may combine several
@@ -32,10 +32,14 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
    filler and duplicate angles.
    Research at least these lanes before ranking: broad US market/rates,
    macro/policy, energy/geopolitics, and market-wide earnings or industry
-   themes. The final sources must include at least two current external
-   reporting sources outside PCC and official economic calendars. If that
-   evidence is unavailable, do not publish a thin brief; report the research
-   gap instead.
+   themes. Prefer at least two current external reporting sources when they
+   are accessible. If they are not, publish a LIMITED SOURCES edition from
+   fresh market_pulse, macro_risk, macro_alerts and official calendar facts.
+   In that mode, omit unsupported breaking-news or geopolitical claims, label
+   the limitation in market_mood and source_context, and build the market
+   drivers only from the latest completed tape, the FRED risk regime and the
+   next verified macro catalysts. A blocked website must never be the sole
+   reason that PCC has no daily brief.
 5. Keep each section non-overlapping and exactly match the tool schema:
    - market_mood: the one-sentence regime and the tension that could change it.
    - market_snapshot: 3-10 verified numbers, each with label, value, change,
@@ -60,8 +64,10 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
 7. Before publishing, reject your own draft if any object is blank, if two
    sections make the same point, or if a top story is merely one News item
    pasted without broader market meaning. Also reject it if a personal ticker
-   appears without clear evidence that it is a top market-wide driver, or if
-   sources contain only PCC feeds and official release calendars.
+   appears without clear evidence that it is a top market-wide driver. In a
+   LIMITED SOURCES edition, official FRED series and release-calendar URLs are
+   valid sources; never reject the entire edition merely because a news site
+   blocked automated access.
 8. Publish with brief_date equal to today's Asia/Bangkok date and
    idempotency_key daily-market-brief:YYYY-MM-DD.
 9. After publication, return a concise Telegram preview: market mood, the two
@@ -81,6 +87,9 @@ CONTINUATION.
    get_daily_market_brief for that date, then call get_briefing_context with
    news_hours=8 and audience=shared_market. Research current external sources
    with the web search tools and verify event dates before comparing.
+   If the canonical brief is missing, return exactly [SILENT]; the 20:20
+   recovery job owns missing-edition repair, and Telegram does not need a
+   second failure notification.
 2. This is a SHARED, NEUTRAL update for every PCC reader. Never request or use
    the owner's portfolio, positions, watchlist or preferences. PCC News is
    supplemental context, not the research boundary.
@@ -90,7 +99,9 @@ CONTINUATION.
    market-wide sector or asset-class impact. A tracked ticker alone is not a
    material change.
    Search broad US market/rates, macro/policy, energy/geopolitics and major
-   industry developments before deciding that the thesis is unchanged.
+   industry developments before deciding that the thesis is unchanged. If a
+   domain blocks access, move to another source or rely on fresh structured PCC
+   facts. A blocked domain by itself is not a material market change.
 4. If there is no material change, do not call publish_brief_continuation.
    Return one short Telegram line saying the canonical thesis is unchanged.
 5. If there is a material change, publish only the delta. Set material_change
@@ -107,4 +118,32 @@ CONTINUATION.
    https://cutiebunny2811.github.io/portfolio-command-center/?route=briefs
 
 Never invent missing data or create trade drafts from a market brief.
+```
+
+## 20:20 Asia/Bangkok recovery
+
+```text
+Recover today's canonical Portfolio Command Center DAILY MARKET BRIEF only if
+the 20:00 job did not publish it.
+
+1. Resolve today's Asia/Bangkok date and call get_daily_market_brief for that
+   date. If it exists, return exactly [SILENT].
+2. If it does not exist, call get_briefing_context with news_hours=30 and
+   audience=shared_market. Do not request personal context.
+3. Publish a LIMITED SOURCES edition from fresh market_pulse, macro_risk,
+   macro_alerts and official macro calendar facts. Live web research is
+   optional in this recovery job. Omit every claim that the structured context
+   does not support, and never invent prices, forecasts, headlines or URLs.
+4. Follow the same schema and non-overlap rules as the 20:00 job. Use 3 market
+   drivers: latest completed market tape, FRED risk/sentiment regime, and the
+   next verified macro catalyst. Official FRED series and release-calendar
+   URLs are valid sources.
+5. Put LIMITED SOURCES in market_mood and source_context.coverage_mode, keep
+   the Telegram summary under 500 characters, and publish with idempotency_key
+   daily-market-brief:YYYY-MM-DD. The database idempotency guard makes a race
+   with a late primary job safe.
+6. Return a concise recovery preview plus:
+   https://cutiebunny2811.github.io/portfolio-command-center/?route=briefs
+
+Never publish a Continuation or use a user's holdings in this recovery job.
 ```

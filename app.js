@@ -64,7 +64,8 @@
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
-    watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false, marketPulseWindow: "1D",
+    watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
+    marketPulseMode: "rotation", marketPulseWindow: "1D", expandedRotationSymbol: null,
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
     smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
     researchEntries: [], researchPreviewSource: [], researchReady: true, researchBusy: false, researchSyncBusy: false,
@@ -2573,7 +2574,7 @@
   }
 
   function marketPulseValue(row, window = state.marketPulseWindow) {
-    const key = { "1D": "change_percent", "1W": "return_1w", "1M": "return_1m", "3M": "return_3m", "YTD": "return_ytd" }[window] || "change_percent";
+    const key = { "1D": "change_percent", "1W": "return_1w", "1M": "return_1m", "3M": "return_3m", "6M": "return_6m", "YTD": "return_ytd" }[window] || "change_percent";
     const value = Number(row?.[key]);
     return Number.isFinite(value) ? value : null;
   }
@@ -2604,21 +2605,94 @@
     </div>`;
   }
 
+  function rotationMetric(value) {
+    return Number.isFinite(Number(value)) ? signedPercent(value) : "—";
+  }
+
+  function renderSectorRotation(rows) {
+    const api = window.marketPulseRotation;
+    if (!api) return `<div class="empty-state"><div><strong>Rotation model unavailable</strong>Reload the latest dashboard assets.</div></div>`;
+    const model = api.buildSectorRotation(rows);
+    if (!model.rows.length) return `<div class="empty-state"><div><strong>SPY baseline is waiting</strong>Refresh Market Pulse to calculate relative sector strength.</div></div>`;
+    const summary = api.summarizeSectorRotation(model);
+    const scoreLabel = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : "—";
+    const groupMetric = (label, value) => `<div><small>${label}</small><strong>${scoreLabel(value)}</strong></div>`;
+    const boardRows = model.rows.map((row) => {
+      const expanded = state.expandedRotationSymbol === row.symbol;
+      const detailId = `rotation-detail-${row.symbol.toLowerCase()}`;
+      const momentumClass = row.momentum > 5 ? "positive" : row.momentum < -5 ? "negative" : "gold";
+      const momentumIcon = row.momentum > 5 ? "trending-up" : row.momentum < -5 ? "trending-down" : "minus";
+      const sourceName = row.source?.sector_name || row.source?.display_name || row.name;
+      const detailRows = [
+        [sourceName, row.absolute],
+        ["SPY", row.baseline],
+        ["Relative", row.relative]
+      ].map(([label, values], index) => `<div class="rotation-detail__row ${index === 2 ? "is-relative" : ""}"><strong>${esc(label)}</strong>${model.windows.map((window) => {
+        const value = values[window.key];
+        const tone = Number.isFinite(Number(value)) ? (Number(value) >= 0 ? "positive" : "negative") : "";
+        return `<span class="mono ${tone}">${rotationMetric(value)}</span>`;
+      }).join("")}</div>`).join("");
+      return `<article class="rotation-row rotation-row--${row.zone.toLowerCase()}${expanded ? " is-expanded" : ""}">
+        <button class="rotation-row__toggle" type="button" data-action="rotation-toggle" data-symbol="${row.symbol}" aria-expanded="${expanded}" aria-controls="${detailId}">
+          <span class="rotation-row__rank mono">${String(row.rank).padStart(2, "0")}</span>
+          <span class="rotation-row__identity"><strong>${esc(row.name)}</strong><small>${row.symbol}</small></span>
+          <span class="rotation-row__score"><small>Score</small><strong class="mono">${scoreLabel(row.score)}</strong><i style="--rotation-score:${clamp(num(row.score), 0, 100)}%"></i></span>
+          <span class="rotation-zone">${row.zone}</span>
+          <span class="rotation-row__relative"><small>vs SPY · 1M</small><strong class="mono ${Number(row.relative.return_1m) >= 0 ? "positive" : "negative"}">${rotationMetric(row.relative.return_1m)}</strong></span>
+          <span class="rotation-row__trend ${momentumClass}"><i data-lucide="${momentumIcon}" aria-hidden="true"></i><span>${row.trend}</span></span>
+          <span class="rotation-row__chevron" aria-hidden="true"><i data-lucide="chevron-down"></i></span>
+        </button>
+        <div class="rotation-detail" id="${detailId}" ${expanded ? "" : "hidden"}>
+          <div class="rotation-detail__matrix">
+            <div class="rotation-detail__row rotation-detail__head"><strong>Return</strong>${model.windows.map((window) => `<span>${window.label}</span>`).join("")}</div>
+            ${detailRows}
+          </div>
+          <div class="rotation-detail__scorecard">${model.windows.map((window) => `<div><small>${window.label} rank · ${Math.round(window.weight * 100)}% weight</small><strong class="mono">${scoreLabel(row.percentiles[window.key])}</strong></div>`).join("")}</div>
+          <p>Score is a weighted percentile across the 11 sectors after subtracting SPY. Momentum compares 1W/1M rank with 3M/6M rank.</p>
+        </div>
+      </article>`;
+    }).join("");
+
+    return `<div class="rotation-regime">
+      <div class="rotation-regime__lead"><small>DETERMINISTIC / SPY BASELINE</small><h3>${esc(summary.label)}</h3><p>${esc(summary.leadText)} ${esc(summary.momentumText)}</p></div>
+      <div class="rotation-regime__groups">${groupMetric("Growth", summary.groupScores.growth)}${groupMetric("Cyclical", summary.groupScores.cyclical)}${groupMetric("Defensive", summary.groupScores.defensive)}</div>
+    </div>
+    <div class="rotation-board">
+      <div class="rotation-board__head"><span>#</span><span>Sector</span><span>Score</span><span>Zone</span><span>vs SPY · 1M</span><span>Momentum</span><span></span></div>
+      ${boardRows}
+    </div>
+    <p class="pulse-method">11 Select Sector SPDR ETFs · score weights: 1W 20%, 1M 35%, 3M 30%, 6M 15% · relative return means sector ETF return minus SPY.</p>`;
+  }
+
+  function renderThemeTape(rows) {
+    const sectorSymbols = new Set((window.marketPulseRotation?.sectors || []).map((sector) => sector.symbol));
+    const themes = rows.filter((row) => row.is_sector && !sectorSymbols.has(row.symbol) && row.symbol !== "SPY")
+      .map((row) => ({ ...row, windowValue: marketPulseValue(row) }))
+      .sort((a, b) => (b.windowValue ?? -Infinity) - (a.windowValue ?? -Infinity));
+    const scale = Math.max(...themes.map((row) => Math.abs(row.windowValue || 0)), 1);
+    return `<div class="sector-rank">${themes.map((row, index) => {
+      const value = row.windowValue;
+      const width = value == null ? 0 : Math.max(Math.abs(value) / scale * 100, 2);
+      return `<div class="sector-row ${value == null ? "is-missing" : value >= 0 ? "is-positive" : "is-negative"}">
+        <span class="mono">${String(index + 1).padStart(2, "0")}</span>
+        <div><strong>${esc(row.sector_name || row.display_name)}</strong><small>${esc(row.symbol)}</small></div>
+        <div class="sector-track"><i style="--sector-width:${width}%"></i><b></b></div>
+        <strong class="mono">${signedPercent(value)}</strong>
+      </div>`;
+    }).join("")}</div>
+    <p class="pulse-method">${themes.length} theme and asset-proxy ETFs ranked by absolute return from Webull daily bars. Sector ETFs and government-bond ETFs are excluded.</p>`;
+  }
+
   function renderMarketPulse() {
     const rows = state.marketPulse;
     const watchRows = rows.filter((row) => row.is_watchlist);
     const benchmarks = rows.filter((row) => row.is_benchmark);
-    const sectors = rows.filter((row) => row.is_sector)
-      .map((row) => ({ ...row, windowValue: marketPulseValue(row) }))
-      .sort((a, b) => (b.windowValue ?? -Infinity) - (a.windowValue ?? -Infinity));
     const gainers = [...watchRows].filter((row) => Number(row.change_percent) > 0).sort((a, b) => Number(b.change_percent) - Number(a.change_percent)).slice(0, 5);
     const losers = [...watchRows].filter((row) => Number(row.change_percent) < 0).sort((a, b) => Number(a.change_percent) - Number(b.change_percent)).slice(0, 5);
     const active = [...watchRows].filter((row) => Number(row.volume) > 0).sort((a, b) => Number(b.volume) - Number(a.volume)).slice(0, 5);
     const advancers = watchRows.filter((row) => Number(row.change_percent) > 0).length;
     const decliners = watchRows.filter((row) => Number(row.change_percent) < 0).length;
     const breadth = watchRows.length ? (advancers - decliners) / watchRows.length * 100 : 0;
-    const values = sectors.map((row) => Math.abs(row.windowValue || 0));
-    const sectorScale = Math.max(...values, 1);
 
     if (!rows.length) {
       return `<section class="pulse-empty"><span>WEBULL / 00</span><h2>Your market tape is ready to be measured.</h2><p>Refresh once to rank the names in your Watchlist and calculate sector context.</p><button class="button button--primary" type="button" data-action="market-pulse-refresh">Refresh Market Pulse</button></section>`;
@@ -2651,20 +2725,16 @@
       </section>
 
       <section class="pulse-section pulse-sector-section">
-        <div class="section-head pulse-section__head"><div><span class="section-index">03 / SECTORS + THEMES</span><h2>Where the tape is leaning.</h2></div>
-          <div class="pulse-window" aria-label="Sector performance window">${["1D", "1W", "1M", "3M", "YTD"].map((window) => `<button type="button" class="${state.marketPulseWindow === window ? "is-active" : ""}" data-action="market-pulse-window" data-window="${window}">${window}</button>`).join("")}</div>
+        <div class="section-head pulse-section__head"><div><span class="section-index">03 / ROTATION BOARD</span><h2>Where the tape is rotating.</h2></div>
+          <div class="rotation-command">
+            <nav class="rotation-switch" aria-label="Market Pulse rotation views">
+              <button type="button" class="${state.marketPulseMode === "rotation" ? "is-active" : ""}" data-action="market-pulse-mode" data-mode="rotation">Sector Rotation</button>
+              <button type="button" class="${state.marketPulseMode === "themes" ? "is-active" : ""}" data-action="market-pulse-mode" data-mode="themes">Themes + Assets</button>
+            </nav>
+            ${state.marketPulseMode === "themes" ? `<div class="pulse-window" aria-label="Theme performance window">${["1D", "1W", "1M", "3M", "YTD"].map((window) => `<button type="button" class="${state.marketPulseWindow === window ? "is-active" : ""}" data-action="market-pulse-window" data-window="${window}">${window}</button>`).join("")}</div>` : ""}
+          </div>
         </div>
-        <div class="sector-rank">${sectors.map((row, index) => {
-          const value = row.windowValue;
-          const width = value == null ? 0 : Math.max(Math.abs(value) / sectorScale * 100, 2);
-          return `<div class="sector-row ${value == null ? "is-missing" : value >= 0 ? "is-positive" : "is-negative"}">
-            <span class="mono">${String(index + 1).padStart(2, "0")}</span>
-            <div><strong>${esc(row.sector_name || row.display_name)}</strong><small>${esc(row.symbol)}</small></div>
-            <div class="sector-track"><i style="--sector-width:${width}%"></i><b></b></div>
-            <strong class="mono">${signedPercent(value)}</strong>
-          </div>`;
-        }).join("")}</div>
-        <p class="pulse-method">${sectors.length} sector, theme and asset-proxy ETFs ranked from Webull daily bars. Government-bond ETFs are excluded.</p>
+        ${state.marketPulseMode === "themes" ? renderThemeTape(rows) : renderSectorRotation(rows)}
       </section>`;
   }
 
@@ -2698,7 +2768,7 @@
       symbol, display_name, price, change_percent, volume, is_benchmark, is_sector, sector_name,
       asset_type: "etf", is_watchlist: false, return_1w: num(change_percent) * (1.4 + index % 3),
       return_1m: num(change_percent) * (2.1 + index % 4), return_3m: num(change_percent) * (3.2 + index % 5),
-      return_ytd: num(change_percent) * (5.4 + index % 6), fetched_at: now
+      return_6m: num(change_percent) * (4.3 + index % 6), return_ytd: num(change_percent) * (5.4 + index % 6), fetched_at: now
     }));
     const instruments = instrumentMap();
     const watched = state.watchlist.map((item, index) => {
@@ -3973,6 +4043,18 @@
       }
     }
     else if (action === "market-pulse-refresh") await refreshMarketPulse({ force: true, notify: true });
+    else if (action === "market-pulse-mode") {
+      state.marketPulseMode = target.dataset.mode === "themes" ? "themes" : "rotation";
+      state.expandedRotationSymbol = null;
+      renderWatchlist();
+      refreshIcons();
+    }
+    else if (action === "rotation-toggle") {
+      state.expandedRotationSymbol = state.expandedRotationSymbol === target.dataset.symbol ? null : target.dataset.symbol;
+      renderWatchlist();
+      refreshIcons();
+      $(`[data-action="rotation-toggle"][data-symbol="${CSS.escape(target.dataset.symbol)}"]`)?.focus({ preventScroll: true });
+    }
     else if (action === "market-pulse-window") {
       state.marketPulseWindow = ["1D", "1W", "1M", "3M", "YTD"].includes(target.dataset.window) ? target.dataset.window : "1D";
       renderWatchlist();

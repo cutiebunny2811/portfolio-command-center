@@ -347,6 +347,7 @@ function sectorReturnSet(bars: ChartBar[], currentPrice: number) {
     return_1w: returnFromClose(currentPrice, closeAt(5)),
     return_1m: returnFromClose(currentPrice, closeAt(21)),
     return_3m: returnFromClose(currentPrice, closeAt(63)),
+    return_6m: returnFromClose(currentPrice, closeAt(126)),
     return_ytd: returnFromClose(currentPrice, priorYearBar?.close ?? sorted[0]?.close),
   };
 }
@@ -670,6 +671,7 @@ Deno.serve(async (request) => {
           return_1w: returns?.return_1w ?? cached?.return_1w ?? null,
           return_1m: returns?.return_1m ?? cached?.return_1m ?? null,
           return_3m: returns?.return_3m ?? cached?.return_3m ?? null,
+          return_6m: returns?.return_6m ?? cached?.return_6m ?? null,
           return_ytd: returns?.return_ytd ?? cached?.return_ytd ?? null,
           sector_bars_at: returns ? now : cached?.sector_bars_at ?? null,
           market_time: snapshot?.marketTime ?? cached?.market_time ?? now,

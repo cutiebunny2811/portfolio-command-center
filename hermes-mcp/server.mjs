@@ -205,7 +205,7 @@ const tools = [
   },
   {
     name: "get_briefing_context",
-    description: "Read a grounded PCC fact pack for a market brief. shared_market is the canonical, privacy-safe mode: benchmarks, sectors, FRED risk/sentiment and high-impact Macro only. It is sufficient for a limited-sources edition when live news sites are unavailable. personal adds the owner's dashboard, positions, watchlist, cached News and Earnings for a separate private analysis. This never publishes or triggers external syncs.",
+    description: "Read a grounded PCC fact pack for a market brief. shared_market is the canonical, privacy-safe mode: benchmarks, sectors, cached external market reporting, FRED risk/sentiment and high-impact Macro. Cached reporting is a fallback evidence pool when live pages block access; synthesize broad market drivers rather than copying headlines. personal adds the owner's dashboard, positions, watchlist, News and Earnings for a separate private analysis. This never publishes or triggers external syncs.",
     inputSchema: {
       type: "object",
       properties: {

@@ -477,6 +477,52 @@ async function researchNews(
   };
 }
 
+async function sharedMarketNews(service: any, lookbackHours: number) {
+  const cutoff = new Date(Date.now() - lookbackHours * 60 * 60_000).toISOString();
+  const articleFields = "id,source,source_article_id,canonical_url,title,description,publisher_name,published_at,tickers,keywords";
+  const rows = await must(service
+    .from("research_articles")
+    .select(articleFields)
+    .gte("published_at", cutoff)
+    .neq("source", "x")
+    .order("published_at", { ascending: false })
+    .limit(120));
+
+  const seen = new Set<string>();
+  const entries = (rows as Record<string, unknown>[]).flatMap((article) => {
+    const title = String(article.title || "").replace(/\s+/g, " ").trim();
+    const publisher = String(article.publisher_name || "").replace(/\s+/g, " ").trim();
+    const url = String(article.canonical_url || "").trim();
+    if (!title || !publisher || !url) return [];
+    const key = `${publisher.toLowerCase()}|${title.toLowerCase()}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{
+      ...article,
+      title,
+      description: String(article.description || "").replace(/\s+/g, " ").trim().slice(0, 700) || null,
+      publisher_name: publisher,
+      canonical_url: url,
+    }];
+  }).slice(0, 24);
+
+  const publisherCounts = entries.reduce<Record<string, number>>((counts, article) => {
+    const publisher = String(article.publisher_name);
+    counts[publisher] = (counts[publisher] || 0) + 1;
+    return counts;
+  }, {});
+
+  return {
+    article_count: entries.length,
+    publisher_count: Object.keys(publisherCounts).length,
+    publisher_counts: publisherCounts,
+    entries,
+    lookback_hours: lookbackHours,
+    cutoff,
+    guidance: "Privacy-safe external reporting cached before briefing time. Use it as source evidence and synthesize market-wide drivers; it is not a personalized News feed.",
+  };
+}
+
 async function earningsCalendar(
   service: any,
   userId: string,
@@ -700,13 +746,14 @@ async function briefingContext(
   const audience = body.audience === "personal" ? "personal" : "shared_market";
 
   if (audience === "shared_market") {
-    const [market, macro, alerts, riskSnapshots] = await Promise.all([
+    const [market, marketNews, macro, alerts, riskSnapshots] = await Promise.all([
       must(service
         .from("market_pulse_latest")
         .select("*")
         .eq("user_id", userId)
         .or("is_benchmark.eq.true,is_sector.eq.true")
         .order("symbol")),
+      sharedMarketNews(service, lookbackHours),
       macroCalendar(service, { from: addDays(today, -1), to: addDays(today, 14), limit: 200 }),
       macroAlerts(service, { hours_ahead: 72, hours_back: 18 }),
       must(service
@@ -724,11 +771,12 @@ async function briefingContext(
         canonical_brief: "Write one neutral US-market brief for every PCC reader. Research current external sources; use PCC only for verified market and macro context.",
         privacy: "Do not request, infer or mention any user's portfolios, positions, watchlist or private preferences.",
         sources: "Prefer official releases for primary facts and reputable current reporting for market context. Verify both publication time and event date before citing.",
-        source_resilience: "Live web research is enrichment, not a single point of failure. If sites block access, publish a clearly limited edition from fresh PCC market pulse, FRED macro risk and official calendar facts; omit unsupported claims instead of omitting the whole brief.",
+        source_resilience: "Use cached_market_news when a live page blocks access, then cross-check with another cached publisher, an official source or web search. FRED supports macro facts but must never be used as filler for a market-news story.",
         unavailable_data: "Use null or omit the item. Never invent prices, consensus estimates, quotes or URLs.",
         continuation: "Compare against the published brief and write only material market-wide changes, not a second full brief.",
       },
       market_pulse: market,
+      cached_market_news: marketNews,
       macro_risk: {
         latest: (riskSnapshots as Record<string, unknown>[])[0] || null,
         recent: riskSnapshots,

@@ -15,11 +15,14 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
    every PCC reader. Never mention or optimize for the owner's portfolio,
    positions, watchlist, preferences or private context.
 3. Research the current external news cycle with the web search tools before
-   writing, but treat live web access as enrichment rather than a publication
-   gate. Try multiple independent domains across official agencies and
-   reputable market publications. If one domain returns CAPTCHA, 403 or Access
-   Denied, stop retrying that domain and continue with the other sources and
-   the structured PCC fact pack. Verify publication time and event date; never
+   writing. The cached_market_news entries in the shared fact pack are
+   privacy-safe external reporting collected before briefing time, not the
+   owner's News feed. Use them as a fallback evidence pool when a live article
+   page blocks access. Try multiple independent domains across official
+   agencies and reputable market publications. If one domain returns CAPTCHA,
+   403 or Access Denied, stop retrying that domain, inspect current cached
+   reporting, and cross-check the claim with another publisher, an official
+   release or search results. Verify publication time and event date; never
    invent market values, consensus forecasts, quotes, source ids or citations.
 4. Synthesize the market, do not copy the PCC News feed or a search-results
    list into the brief. The three
@@ -33,14 +36,16 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
    filler and duplicate angles.
    Research at least these lanes before ranking: broad US market/rates,
    macro/policy, energy/geopolitics, and market-wide earnings or industry
-   themes. Prefer at least two current external reporting sources when they
-   are accessible. If they are not, publish a LIMITED SOURCES edition from
-   fresh market_pulse, macro_risk, macro_alerts and official calendar facts.
-   In that mode, omit unsupported breaking-news or geopolitical claims, label
-   the limitation in market_mood and source_context, and build the market
-   drivers only from the latest completed tape, the FRED risk regime and the
-   next verified macro catalysts. A blocked website must never be the sole
-   reason that PCC has no daily brief.
+   themes. A full edition needs at least three current driver-grade evidence
+   items across at least two publishers or official primary sources. Cached
+   articles qualify when their title, description, publisher, URL and
+   published_at are present and the claim is cross-checked. FRED, the PCC risk
+   score, source availability, and the fact that a release is scheduled may
+   support a story but must never become a Top Story merely to fill a slot.
+   Never publish stories such as 'FRED coverage is incomplete', 'PCC risk is
+   mixed' or 'the next release is CPI' without a current market reaction,
+   changed expectation or decision-relevant transmission path. A blocked
+   website must never be the sole reason that PCC has no daily brief.
 5. Keep each section non-overlapping and exactly match the tool schema:
    - market_mood: the one-sentence regime and the tension that could change it.
    - market_snapshot: 3-10 verified numbers, each with label, value, change,
@@ -65,10 +70,10 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
 7. Before publishing, reject your own draft if any object is blank, if two
    sections make the same point, or if a top story is merely one News item
    pasted without broader market meaning. Also reject it if a personal ticker
-   appears without clear evidence that it is a top market-wide driver. In a
-   LIMITED SOURCES edition, official FRED series and release-calendar URLs are
-   valid sources; never reject the entire edition merely because a news site
-   blocked automated access.
+   appears without clear evidence that it is a top market-wide driver. Reject
+   any edition whose Top Stories are mostly data availability, static FRED
+   conditions or calendar reminders. Official series and calendars may verify
+   facts, but current reporting must explain what is moving expectations now.
 8. Publish with brief_date equal to today's Asia/Bangkok date and
    idempotency_key daily-market-brief:YYYY-MM-DD.
 9. After publication, return a concise Telegram preview: market mood, the two
@@ -133,15 +138,17 @@ the 20:00 job did not publish it.
 2. If it does not exist, call get_briefing_context with news_hours=30 and
    audience=shared_market, then call get_macro_risk_monitor. Do not request
    personal context.
-3. Publish a LIMITED SOURCES edition from fresh market_pulse, macro_risk,
-   macro_alerts and official macro calendar facts. Live web research is
-   optional in this recovery job. Omit every claim that the structured context
-   does not support, and never invent prices, forecasts, headlines or URLs.
-4. Follow the same schema and non-overlap rules as the 20:00 job. Use 3 market
-   drivers: latest completed market tape, FRED risk/sentiment regime, and the
-   next verified macro catalyst. Official FRED series and release-calendar
-   URLs are valid sources.
-5. Put LIMITED SOURCES in market_mood and source_context.coverage_mode, keep
+3. Retry external research across different domains, then use
+   cached_market_news as the fallback evidence pool. A blocked article URL does
+   not invalidate a cached item whose publisher, title, description, URL and
+   timestamp are complete, but material claims still require an independent
+   publisher, official source or consistent market-price reaction.
+4. Follow the same schema, evidence floor and non-overlap rules as the 20:00
+   job. Synthesize three to five current market drivers. Do not use FRED risk,
+   source failures or the macro calendar as substitute headlines. If current
+   evidence is thinner than the primary edition, omit unsupported detail and
+   state the narrower coverage without turning the limitation into a story.
+5. Put RECOVERY EDITION in source_context.coverage_mode, keep
    the Telegram summary under 500 characters, and publish with idempotency_key
    daily-market-brief:YYYY-MM-DD. The database idempotency guard makes a race
    with a late primary job safe.

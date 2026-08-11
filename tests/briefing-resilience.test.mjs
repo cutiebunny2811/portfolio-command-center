@@ -21,6 +21,7 @@ test("shared briefing context includes deterministic FRED risk facts", async () 
   const api = await readFile(apiUrl, "utf8");
 
   assert.match(api, /\.from\("macro_risk_snapshots"\)/);
+  assert.match(api, /action === "macro_risk_monitor"/);
   assert.match(api, /source_resilience:/);
   assert.match(api, /macro_risk: \{/);
 });

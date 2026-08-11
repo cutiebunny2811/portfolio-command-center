@@ -123,6 +123,7 @@ test("exposes and routes read-only Macro calendar tools", async () => {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const calendar = await callTool("get_macro_calendar", { from: "2026-08-07", to: "2026-08-14", category: "inflation" });
   const alerts = await callTool("get_macro_alerts", { hours_ahead: 24, hours_back: 6 });
+  const risk = await callTool("get_macro_risk_monitor", {});
 
   assert.equal(byName.get("get_macro_calendar").inputSchema.properties.limit.maximum, 500);
   assert.deepEqual(byName.get("get_macro_alerts").inputSchema.properties.category.enum, [
@@ -134,6 +135,9 @@ test("exposes and routes read-only Macro calendar tools", async () => {
   });
   assert.equal(alerts.response.result.isError, false);
   assert.deepEqual(alerts.request, { action: "macro_alerts", hours_ahead: 24, hours_back: 6 });
+  assert.equal(byName.get("get_macro_risk_monitor").inputSchema.additionalProperties, false);
+  assert.equal(risk.response.result.isError, false);
+  assert.deepEqual(risk.request, { action: "macro_risk_monitor" });
 });
 
 test("exposes canonical Daily Market Brief read and publish tools", async () => {

@@ -674,6 +674,21 @@ async function macroAlerts(service: any, body: Record<string, unknown>) {
   };
 }
 
+async function macroRiskMonitor(service: any) {
+  const snapshots = await must(service
+    .from("macro_risk_snapshots")
+    .select("snapshot_date,risk_score,risk_label,fear_greed_score,fear_greed_label,risk_components,fear_greed_components,source_dates,fetched_at")
+    .order("snapshot_date", { ascending: false })
+    .limit(8));
+
+  return {
+    generated_at: new Date().toISOString(),
+    latest: snapshots[0] || null,
+    recent: snapshots,
+    guidance: "FRED-derived shared market context. Cite component source_url values and state the snapshot date; do not present the PCC composite as CNN's index.",
+  };
+}
+
 async function briefingContext(
   service: any,
   userId: string,
@@ -1008,6 +1023,10 @@ Deno.serve(async (request) => {
 
     if (action === "macro_alerts") {
       return response({ action, data: await macroAlerts(service, body) });
+    }
+
+    if (action === "macro_risk_monitor") {
+      return response({ action, data: await macroRiskMonitor(service) });
     }
 
     if (action === "briefing_context") {

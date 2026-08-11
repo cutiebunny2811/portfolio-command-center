@@ -216,6 +216,15 @@ const tools = [
     },
   },
   {
+    name: "get_macro_risk_monitor",
+    description: "Read the compact shared FRED risk monitor and PCC Fear & Greed snapshot, including component values, source URLs and recent daily history. Use this alongside get_briefing_context so risk facts cannot be lost in a large briefing payload.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     name: "get_daily_market_brief",
     description: "Read the latest canonical Daily Market Brief and its Continuations. Pass brief_date when comparing a midnight update with the preceding 20:00 Bangkok edition.",
     inputSchema: {
@@ -431,6 +440,7 @@ const actionByTool = {
   get_macro_calendar: "macro_calendar",
   get_macro_alerts: "macro_alerts",
   get_briefing_context: "briefing_context",
+  get_macro_risk_monitor: "macro_risk_monitor",
   get_daily_market_brief: "daily_market_brief",
   publish_daily_market_brief: "publish_market_brief",
   publish_brief_continuation: "publish_brief_continuation",

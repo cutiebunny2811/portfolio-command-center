@@ -8,7 +8,8 @@ not a second independent analysis.
 ```text
 Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
 
-1. Call get_briefing_context with news_hours=30 and audience=shared_market.
+1. Call get_briefing_context with news_hours=30 and audience=shared_market,
+   then call get_macro_risk_monitor for the compact FRED risk/sentiment facts.
 2. Write the brief in concise Thai, keeping tickers, release names and standard
    market terms in English when clearer. This is a SHARED, NEUTRAL brief for
    every PCC reader. Never mention or optimize for the owner's portfolio,
@@ -85,8 +86,9 @@ CONTINUATION.
 
 1. The canonical brief_date is yesterday's Asia/Bangkok date. Call
    get_daily_market_brief for that date, then call get_briefing_context with
-   news_hours=8 and audience=shared_market. Research current external sources
-   with the web search tools and verify event dates before comparing.
+   news_hours=8 and audience=shared_market, then call get_macro_risk_monitor.
+   Research current external sources with the web search tools and verify event
+   dates before comparing.
    If the canonical brief is missing, return exactly [SILENT]; the 20:20
    recovery job owns missing-edition repair, and Telegram does not need a
    second failure notification.
@@ -129,7 +131,8 @@ the 20:00 job did not publish it.
 1. Resolve today's Asia/Bangkok date and call get_daily_market_brief for that
    date. If it exists, return exactly [SILENT].
 2. If it does not exist, call get_briefing_context with news_hours=30 and
-   audience=shared_market. Do not request personal context.
+   audience=shared_market, then call get_macro_risk_monitor. Do not request
+   personal context.
 3. Publish a LIMITED SOURCES edition from fresh market_pulse, macro_risk,
    macro_alerts and official macro calendar facts. Live web research is
    optional in this recovery job. Omit every claim that the structured context

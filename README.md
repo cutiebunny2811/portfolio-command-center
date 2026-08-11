@@ -77,7 +77,7 @@ The `Market Pulse` subview is intentionally watchlist-first:
 - Gainers, decliners, most-active rankings, and breadth use only the signed-in user's Watchlist.
 - Five benchmark ETFs provide broad context without being counted as watched names.
 - Eleven Select Sector SPDR ETFs form a deterministic Sector Rotation board. Each ETF is measured against SPY across 1-week, 1-month, 3-month, and 6-month windows, then ranked into Leading, Improving, Weakening, or Lagging zones.
-- Theme and asset ETFs keep their separate absolute-return tape with 1-day, 1-week, 1-month, 3-month, and YTD windows.
+- The full 20-name sector, theme, and asset-proxy tape keeps its absolute-return view with 1-day, 1-week, 1-month, 3-month, and YTD windows.
 - Snapshot data refreshes every 15 minutes; sector return bars refresh hourly.
 - `market_pulse_latest` retains one latest row per user and symbol, so the database does not accumulate a new row every refresh.
 

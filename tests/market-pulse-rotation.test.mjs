@@ -53,6 +53,8 @@ test("dashboard exposes rotation and theme views without a new primary route", (
   assert.match(app, /data-action="market-pulse-mode" data-mode="rotation"/);
   assert.match(app, /data-action="market-pulse-mode" data-mode="themes"/);
   assert.match(app, /data-action="rotation-toggle"/);
+  assert.match(app, /const themes = rows\.filter\(\(row\) => row\.is_sector\)/);
+  assert.doesNotMatch(app, /!sectorSymbols\.has\(row\.symbol\)/);
   assert.match(css, /\.rotation-row__toggle/);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.rotation-detail__scorecard/);
 });

@@ -2665,8 +2665,7 @@
   }
 
   function renderThemeTape(rows) {
-    const sectorSymbols = new Set((window.marketPulseRotation?.sectors || []).map((sector) => sector.symbol));
-    const themes = rows.filter((row) => row.is_sector && !sectorSymbols.has(row.symbol) && row.symbol !== "SPY")
+    const themes = rows.filter((row) => row.is_sector)
       .map((row) => ({ ...row, windowValue: marketPulseValue(row) }))
       .sort((a, b) => (b.windowValue ?? -Infinity) - (a.windowValue ?? -Infinity));
     const scale = Math.max(...themes.map((row) => Math.abs(row.windowValue || 0)), 1);
@@ -2680,7 +2679,7 @@
         <strong class="mono">${signedPercent(value)}</strong>
       </div>`;
     }).join("")}</div>
-    <p class="pulse-method">${themes.length} theme and asset-proxy ETFs ranked by absolute return from Webull daily bars. Sector ETFs and government-bond ETFs are excluded.</p>`;
+    <p class="pulse-method">${themes.length} sector, theme and asset-proxy ETFs ranked by absolute return from Webull daily bars. The Sector Rotation view scores the 11 core sectors separately against SPY.</p>`;
   }
 
   function renderMarketPulse() {

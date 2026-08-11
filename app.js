@@ -78,7 +78,8 @@
     selectedBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
     agentTokens: [], agentDrafts: [],
     route: initialRoute, selectedPortfolioId: null,
-    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
+    holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, expandedHoldingId: null,
+    tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
     loading: false, lastSync: null
   };
 
@@ -1400,24 +1401,71 @@
     const start = (state.holdingsPage - 1) * state.holdingsPageSize;
     const slice = rows.slice(start, start + state.holdingsPageSize);
     if (!slice.length) return `<div class="empty-state"><div><strong>${queryText ? "No matching assets" : "No assets yet"}</strong>${queryText ? "Try another symbol or company name." : "Use Add to plan, then record buys and sells as they happen."}</div></div>`;
-    return `<div class="table-shell"><table class="holdings-table">
+    const holdingMetrics = (row) => {
+      const market = prices.get(row.id);
+      const quantity = num(row.position?.quantity);
+      const multiplier = num(row.instrument?.multiplier || 1);
+      const costBasis = row.costBasis;
+      const hasMarket = quantity > 0 && num(market?.price) > 0;
+      const marketValue = hasMarket ? num(market.price) * quantity * multiplier : 0;
+      const unrealized = hasMarket ? marketValue - costBasis : 0;
+      const unrealizedPercent = hasMarket && costBasis > 0 ? unrealized / costBasis * 100 : 0;
+      const pnlClass = unrealized >= 0 ? "positive" : "negative";
+      const pnlSign = unrealized > 0 ? "+" : "";
+      const allocationProgress = row.targetPercent > 0 ? row.currentPercent / row.targetPercent * 100 : 0;
+      return {
+        market, quantity, costBasis, hasMarket, marketValue, unrealized, unrealizedPercent,
+        pnlClass, pnlSign, allocationProgress, allocationState: allocationTone(allocationProgress),
+        trim: trimRecommendation(row, market), tranches: num(row.target?.planned_tranches),
+        canPlanBuy: ["stock", "etf"].includes(row.instrument.asset_type)
+      };
+    };
+    const mobileRows = slice.map((row) => {
+      const metrics = holdingMetrics(row);
+      const expanded = state.expandedHoldingId === row.id;
+      const detailId = `holding-detail-${row.id}`;
+      const quantityLabel = metrics.quantity.toLocaleString("en-US", { maximumFractionDigits: 8 });
+      const marketLabel = metrics.market ? money(metrics.market.price, 4) : "—";
+      const averageLabel = metrics.quantity > 0 ? money(row.position?.average_cost, 4) : "—";
+      return `<article class="mobile-holding${expanded ? " is-expanded" : ""}">
+        <button class="mobile-holding__toggle" type="button" data-action="holding-toggle" data-instrument-id="${row.id}" aria-expanded="${expanded}" aria-controls="${detailId}">
+          <span class="mobile-holding__asset">${assetIdentity(row.instrument)}<small>${percent(row.currentPercent)} current</small></span>
+          <span class="mobile-holding__value"><small>Market value</small><strong>${metrics.hasMarket ? money(metrics.marketValue) : "—"}</strong></span>
+          <span class="mobile-holding__pnl ${metrics.hasMarket ? metrics.pnlClass : ""}"><small>Unrealized</small><strong>${metrics.hasMarket ? `${metrics.pnlSign}${money(metrics.unrealized)}` : "—"}</strong><em>${metrics.hasMarket ? `${metrics.pnlSign}${percent(metrics.unrealizedPercent, 2)}` : metrics.quantity > 0 ? "No price" : "No position"}</em></span>
+          <span class="mobile-holding__chevron" aria-hidden="true"><i data-lucide="chevron-down"></i></span>
+        </button>
+        <div class="mobile-holding__details" id="${detailId}" ${expanded ? "" : "hidden"}>
+          <div class="mobile-holding__facts">
+            <div><small>Quantity</small><strong>${quantityLabel}</strong></div>
+            <div><small>Market price</small><strong>${marketLabel}</strong><span class="${metrics.market?.source === "webull" ? "price-live" : ""}">${metrics.market ? esc(metrics.market.source || "manual") : "Waiting for price"}</span></div>
+            <div><small>Average cost</small><strong>${averageLabel}</strong></div>
+            <div><small>Cost basis</small><strong>${money(metrics.costBasis)}</strong></div>
+            ${row.instrument.asset_type === "option" ? `<div><small>Maximum loss</small><strong>${money(row.position?.maximum_loss)}</strong></div><div><small>Notional</small><strong>${money(row.position?.notional_value)}</strong></div>` : ""}
+          </div>
+          <div class="mobile-holding__allocation ${metrics.trim ? "is-over" : ""}">
+            <div class="mobile-holding__allocation-head"><span><small>Allocation</small><strong>${percent(row.currentPercent)} current</strong></span><span><small>Plan</small><strong>${percent(row.targetPercent)} target</strong></span></div>
+            <div class="allocation-track is-${metrics.allocationState} ${metrics.allocationProgress > 100 ? "is-over" : ""}" style="--current:${clamp(metrics.allocationProgress, 0, 100)}%"><i></i></div>
+            <div class="mobile-holding__allocation-meta"><strong class="${metrics.trim ? "negative" : "gold"}">${metrics.trim ? `${money(metrics.trim.excess)} over` : `${money(row.remaining)} left`}</strong><span>${metrics.tranches ? `${metrics.tranches} tranches at ~${money(row.quota / metrics.tranches)} each` : esc(row.status)}</span></div>
+            ${metrics.trim ? `<p><strong>Suggested trim</strong> Sell about ${formatTradeQuantity(metrics.trim.quantity)} ${metrics.trim.unit}${metrics.trim.estimatedProceeds != null ? ` for ${money(metrics.trim.estimatedProceeds)} at market` : ""}.</p>` : ""}
+          </div>
+          <div class="mobile-holding__actions">
+            <button class="button button--primary" type="button" data-action="holding-buy" data-instrument-id="${row.id}">Record buy</button>
+            ${metrics.quantity > 0 ? `<button class="button button--ghost" type="button" data-action="holding-sell" data-instrument-id="${row.id}">Record sell</button>` : ""}
+            ${metrics.canPlanBuy ? `<button class="button button--plan-buy" type="button" data-action="buy-simulate" data-instrument-id="${row.id}">Plan buy</button>` : ""}
+            <button class="button" type="button" data-action="target-edit" data-instrument-id="${row.id}">Edit plan</button>
+            <button class="button" type="button" data-action="price-record" data-instrument-id="${row.id}">Update price</button>
+            ${row.target ? `<button class="button button--remove" type="button" data-action="asset-remove" data-instrument-id="${row.id}" ${metrics.quantity > 0 ? 'disabled title="Sell the remaining position before removing"' : ""}>Remove</button>` : ""}
+          </div>
+        </div>
+      </article>`;
+    }).join("");
+    return `<div class="mobile-holdings" aria-label="Portfolio holdings">
+      <div class="mobile-holdings__head"><span>Asset</span><span>Value</span><span>P/L</span><span></span></div>
+      ${mobileRows}
+    </div><div class="table-shell holdings-shell"><table class="holdings-table">
       <thead><tr><th>Asset</th><th>Position / price</th><th>Market value</th><th>Unrealized P/L</th><th>Allocation</th><th>Actions</th></tr></thead>
       <tbody>${slice.map((row) => {
-        const market = prices.get(row.id);
-        const quantity = num(row.position?.quantity);
-        const multiplier = num(row.instrument?.multiplier || 1);
-        const costBasis = row.costBasis;
-        const hasMarket = quantity > 0 && num(market?.price) > 0;
-        const marketValue = hasMarket ? num(market.price) * quantity * multiplier : 0;
-        const unrealized = hasMarket ? marketValue - costBasis : 0;
-        const unrealizedPercent = hasMarket && costBasis > 0 ? unrealized / costBasis * 100 : 0;
-        const pnlClass = unrealized >= 0 ? "positive" : "negative";
-        const pnlSign = unrealized > 0 ? "+" : "";
-        const allocationProgress = row.targetPercent > 0 ? row.currentPercent / row.targetPercent * 100 : 0;
-        const allocationState = allocationTone(allocationProgress);
-        const trim = trimRecommendation(row, market);
-        const tranches = num(row.target?.planned_tranches);
-        const canPlanBuy = ["stock", "etf"].includes(row.instrument.asset_type);
+        const { market, quantity, costBasis, hasMarket, marketValue, unrealized, unrealizedPercent, pnlClass, pnlSign, allocationProgress, allocationState, trim, tranches, canPlanBuy } = holdingMetrics(row);
         return `<tr>
         <td>${assetIdentity(row.instrument)}</td>
         <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
@@ -1553,6 +1601,7 @@
       state.holdingsQuery = search.value;
       state.holdingsPage = 1;
       $("#holdings-region").innerHTML = holdingsTable(portfolio);
+      refreshIcons();
     });
   }
 
@@ -3857,9 +3906,9 @@
       return;
     }
     const portfolioButton = event.target.closest("[data-portfolio-id]");
-    if (portfolioButton) { if (state.route === "watchlist") invalidateWatchlistBarsRequest(); state.selectedPortfolioId = portfolioButton.dataset.portfolioId; state.route = "portfolio"; state.holdingsPage = 1; state.holdingsQuery = ""; window.scrollTo(0, 0); render(); return; }
+    if (portfolioButton) { if (state.route === "watchlist") invalidateWatchlistBarsRequest(); state.selectedPortfolioId = portfolioButton.dataset.portfolioId; state.route = "portfolio"; state.holdingsPage = 1; state.holdingsQuery = ""; state.expandedHoldingId = null; window.scrollTo(0, 0); render(); return; }
     const openPortfolio = event.target.closest("[data-open-portfolio]");
-    if (openPortfolio) { if (state.route === "watchlist") invalidateWatchlistBarsRequest(); state.selectedPortfolioId = openPortfolio.dataset.openPortfolio; state.route = "portfolio"; window.scrollTo(0, 0); render(); return; }
+    if (openPortfolio) { if (state.route === "watchlist") invalidateWatchlistBarsRequest(); state.selectedPortfolioId = openPortfolio.dataset.openPortfolio; state.route = "portfolio"; state.expandedHoldingId = null; window.scrollTo(0, 0); render(); return; }
     const target = event.target.closest("[data-action]");
     if (!target) return;
     const action = target.dataset.action;
@@ -3999,6 +4048,17 @@
     else if (action === "asset-add") openAssetDialog();
     else if (action === "trade-add" || action === "trade-buy") openTradeDialog("buy");
     else if (action === "trade-sell") openTradeDialog("sell");
+    else if (action === "holding-toggle") {
+      state.expandedHoldingId = state.expandedHoldingId === target.dataset.instrumentId ? null : target.dataset.instrumentId;
+      const region = $("#holdings-region");
+      if (region) {
+        region.innerHTML = holdingsTable(currentPortfolio());
+        refreshIcons();
+        $(`[data-action="holding-toggle"][data-instrument-id="${CSS.escape(target.dataset.instrumentId)}"]`, region)?.focus({ preventScroll: true });
+      }
+    }
+    else if (action === "holding-buy") openTradeDialog("buy", { instrumentId: target.dataset.instrumentId });
+    else if (action === "holding-sell") openTradeDialog("sell", { instrumentId: target.dataset.instrumentId });
     else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
     else if (action === "execution-history") openExecutionHistoryDialog();
     else if (action === "trade-history-edit") openExecutionEditDialog(target.dataset.executionId);
@@ -4016,6 +4076,7 @@
     else if (action === "page-prev" || action === "page-next") {
       state.holdingsPage += action === "page-next" ? 1 : -1;
       $("#holdings-region").innerHTML = holdingsTable(currentPortfolio());
+      refreshIcons();
     }
     else if (action === "trade-history-prev" || action === "trade-history-next") {
       state.tradeHistoryPage += action === "trade-history-next" ? 1 : -1;

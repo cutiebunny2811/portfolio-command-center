@@ -1778,6 +1778,7 @@ tbody tr:last-child td { border-bottom: 0; }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 /* Integrated position ledger: price, P/L and allocation in one scan. */
+.mobile-holdings { display: none; }
 .holdings-table { min-width: 1180px; }
 .holdings-table th:first-child, .holdings-table td:first-child { position: sticky; left: 0; }
 .holdings-table th:first-child { z-index: 3; }
@@ -1799,9 +1800,132 @@ tbody tr:last-child td { border-bottom: 0; }
 .warning-box--allocation { border-left-color: var(--allocation-warn); background: var(--gold-wash); color: var(--paper); }
 
 @media (max-width: 760px) {
-  .holdings-table { min-width: 1060px; }
-  .holdings-table th, .holdings-table td { padding-top: 12px; padding-bottom: 12px; }
-  .holdings-table th:nth-child(5), .holdings-table td:nth-child(5) { min-width: 250px; }
+  .holdings-shell { display: none; }
+  .mobile-holdings {
+    width: 100%;
+    display: block;
+    overflow: hidden;
+    border-top: 1px solid var(--rule-strong);
+    border-bottom: 1px solid var(--rule-strong);
+    font-variant-numeric: tabular-nums;
+  }
+  .mobile-holdings__head,
+  .mobile-holding__toggle {
+    display: grid;
+    grid-template-columns: minmax(104px, 1.15fr) minmax(70px, .72fr) minmax(72px, .76fr) 18px;
+    gap: 8px;
+  }
+  .mobile-holdings__head {
+    min-height: 30px;
+    align-items: center;
+    padding: 0 8px;
+    color: var(--paper-faint);
+    font: 600 7px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .mobile-holdings__head span:nth-child(2),
+  .mobile-holdings__head span:nth-child(3) { text-align: right; }
+  .mobile-holding { min-width: 0; border-top: 1px solid var(--rule); }
+  .mobile-holding__toggle {
+    width: 100%;
+    min-height: 82px;
+    align-items: center;
+    border: 0;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 13px 8px;
+    text-align: left;
+  }
+  .mobile-holding__toggle:hover,
+  .mobile-holding__toggle:focus-visible,
+  .mobile-holding.is-expanded .mobile-holding__toggle { background: rgb(165 0 0 / .09); }
+  .mobile-holding__asset,
+  .mobile-holding__value,
+  .mobile-holding__pnl { min-width: 0; }
+  .mobile-holding__asset { display: grid; gap: 6px; }
+  .mobile-holding__asset .asset-identity { gap: 8px; }
+  .mobile-holding__asset .asset-mark { width: 30px; height: 30px; flex-basis: 30px; }
+  .mobile-holding__asset .asset-identity__copy strong { font-size: 12px; }
+  .mobile-holding__asset .asset-identity__copy small { max-width: 10ch; margin-top: 3px; font-size: 7px; }
+  .mobile-holding__asset > small {
+    padding-left: 38px;
+    color: var(--paper-faint);
+    font: 600 7px/1 var(--mono);
+    text-transform: uppercase;
+  }
+  .mobile-holding__value,
+  .mobile-holding__pnl { display: grid; justify-items: end; gap: 5px; text-align: right; }
+  .mobile-holding__value small,
+  .mobile-holding__pnl small { display: none; }
+  .mobile-holding__value strong,
+  .mobile-holding__pnl strong { max-width: 100%; overflow: hidden; font: 700 11px/1 var(--mono); text-overflow: ellipsis; }
+  .mobile-holding__pnl em { color: inherit; font: 600 8px/1 var(--mono); font-style: normal; }
+  .mobile-holding__chevron { display: grid; place-items: center; color: var(--paper-faint); }
+  .mobile-holding__chevron svg { width: 15px; height: 15px; transition: transform .18s ease; }
+  .mobile-holding.is-expanded .mobile-holding__chevron svg { transform: rotate(180deg); }
+  .mobile-holding__details {
+    border-top: 1px solid var(--rule);
+    border-left: 2px solid var(--ruby);
+    background: #0e0b0b;
+  }
+  .mobile-holding__details[hidden] { display: none; }
+  .mobile-holding__facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mobile-holding__facts > div {
+    min-width: 0;
+    min-height: 70px;
+    display: grid;
+    align-content: center;
+    gap: 7px;
+    border-right: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    padding: 12px;
+  }
+  .mobile-holding__facts > div:nth-child(2n) { border-right: 0; }
+  .mobile-holding__facts small,
+  .mobile-holding__allocation small {
+    color: var(--paper-faint);
+    font: 600 7px/1 var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .mobile-holding__facts strong { overflow-wrap: anywhere; color: var(--paper); font: 700 12px/1.2 var(--mono); }
+  .mobile-holding__facts span { color: var(--paper-faint); font: 500 8px/1 var(--mono); text-transform: uppercase; }
+  .mobile-holding__facts span.price-live { color: var(--green); }
+  .mobile-holding__allocation { display: grid; gap: 12px; border-bottom: 1px solid var(--rule); padding: 15px 12px; }
+  .mobile-holding__allocation-head { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .mobile-holding__allocation-head > span { display: grid; gap: 6px; }
+  .mobile-holding__allocation-head > span:last-child { justify-items: end; text-align: right; }
+  .mobile-holding__allocation-head strong { color: var(--paper); font: 700 11px/1 var(--mono); }
+  .mobile-holding__allocation .allocation-track { height: 6px; }
+  .mobile-holding__allocation-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: var(--paper-faint); font: 600 8px/1.35 var(--mono); }
+  .mobile-holding__allocation-meta span { max-width: 52%; text-align: right; }
+  .mobile-holding__allocation > p { margin: 0; border-left: 2px solid var(--red-bright); background: var(--red-wash); color: var(--paper-dim); padding: 9px 10px; font-size: 10px; line-height: 1.4; }
+  .mobile-holding__allocation > p strong { display: block; margin-bottom: 3px; color: var(--red-bright); font: 700 8px/1 var(--mono); text-transform: uppercase; }
+  .mobile-holding__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mobile-holding__actions .button {
+    width: 100%;
+    min-height: 44px;
+    border-width: 0 1px 1px 0;
+    border-radius: 0;
+  }
+  .mobile-holding__actions .button:nth-child(2n) { border-right: 0; }
+  .mobile-holding__actions .button:last-child,
+  .mobile-holding__actions .button:nth-last-child(2):nth-child(odd) { border-bottom: 0; }
+}
+
+@media (max-width: 360px) {
+  .mobile-holdings__head,
+  .mobile-holding__toggle {
+    grid-template-columns: minmax(86px, 1.1fr) minmax(58px, .7fr) minmax(58px, .72fr) 14px;
+    gap: 5px;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+  .mobile-holding__asset .asset-mark { width: 28px; height: 28px; flex-basis: 28px; }
+  .mobile-holding__asset > small { padding-left: 36px; }
+  .mobile-holding__value strong,
+  .mobile-holding__pnl strong { font-size: 10px; }
 }
 
 

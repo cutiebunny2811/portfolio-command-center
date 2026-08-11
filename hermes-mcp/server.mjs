@@ -204,8 +204,17 @@ const tools = [
     },
   },
   {
+    name: "refresh_brief_sources",
+    description: "Refresh the shared public reporting cache before a canonical Daily Market Brief or Continuation. This reuses the same budgeted collector as PCC News, never reads or changes a private portfolio, and safely returns cached-fallback guidance if a source is unavailable.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     name: "get_briefing_context",
-    description: "Read a grounded PCC fact pack for a market brief. shared_market is the canonical, privacy-safe mode: benchmarks, sectors, cached external market reporting, FRED risk/sentiment and high-impact Macro. Cached reporting is a fallback evidence pool when live pages block access; synthesize broad market drivers rather than copying headlines. personal adds the owner's dashboard, positions, watchlist, News and Earnings for a separate private analysis. This never publishes or triggers external syncs.",
+    description: "Read a grounded PCC fact pack for a market brief. shared_market is the canonical, privacy-safe mode: benchmarks, sectors, cached external market reporting, FRED risk/sentiment and high-impact Macro. Cached reporting is a fallback evidence pool when live pages block access; synthesize broad market drivers rather than copying headlines. personal adds the owner's dashboard, positions, watchlist, News and Earnings for a separate private analysis. Call refresh_brief_sources separately when a fresh canonical edition is being prepared.",
     inputSchema: {
       type: "object",
       properties: {
@@ -439,6 +448,7 @@ const actionByTool = {
   get_earnings_calendar: "earnings",
   get_macro_calendar: "macro_calendar",
   get_macro_alerts: "macro_alerts",
+  refresh_brief_sources: "refresh_brief_sources",
   get_briefing_context: "briefing_context",
   get_macro_risk_monitor: "macro_risk_monitor",
   get_daily_market_brief: "daily_market_brief",

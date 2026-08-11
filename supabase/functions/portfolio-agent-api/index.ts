@@ -484,12 +484,13 @@ async function sharedMarketNews(service: any, lookbackHours: number) {
     .from("research_articles")
     .select(articleFields)
     .gte("published_at", cutoff)
-    .neq("source", "x")
     .order("published_at", { ascending: false })
     .limit(120));
 
   const seen = new Set<string>();
   const entries = (rows as Record<string, unknown>[]).flatMap((article) => {
+    const keywords = Array.isArray(article.keywords) ? article.keywords.map(String) : [];
+    if (article.source === "x" && !keywords.includes("BRIEF_CANDIDATE")) return [];
     const title = String(article.title || "").replace(/\s+/g, " ").trim();
     const publisher = String(article.publisher_name || "").replace(/\s+/g, " ").trim();
     const url = String(article.canonical_url || "").trim();
@@ -521,6 +522,42 @@ async function sharedMarketNews(service: any, lookbackHours: number) {
     cutoff,
     guidance: "Privacy-safe external reporting cached before briefing time. Use it as source evidence and synthesize market-wide drivers; it is not a personalized News feed.",
   };
+}
+
+async function refreshBriefSources(supabaseUrl: string) {
+  const syncSecret = Deno.env.get("RESEARCH_SYNC_SECRET")?.trim();
+  if (!syncSecret) {
+    return { ok: false, status: "not_configured", message: "Shared source refresh is unavailable; use the cached fact pack." };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45_000);
+  try {
+    const refreshResponse = await fetch(`${supabaseUrl}/functions/v1/sync-research-news`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sync-secret": syncSecret,
+      },
+      body: "{}",
+      signal: controller.signal,
+    });
+    const payload = await refreshResponse.json().catch(() => null);
+    return {
+      ok: refreshResponse.ok,
+      status: refreshResponse.ok ? "refreshed" : "collector_error",
+      http_status: refreshResponse.status,
+      collector: payload,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: error instanceof DOMException && error.name === "AbortError" ? "timeout" : "unavailable",
+      message: "Shared source refresh failed; continue with the cached fact pack.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function earningsCalendar(
@@ -979,6 +1016,10 @@ Deno.serve(async (request) => {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     const action = String(body.action || "").trim();
     if (!action) return response({ error: "action is required" }, 400);
+
+    if (action === "refresh_brief_sources") {
+      return response({ action, data: await refreshBriefSources(supabaseUrl) });
+    }
 
     if (action === "overview") {
       return response({ action, data: await overview(service, identity.user_id) });

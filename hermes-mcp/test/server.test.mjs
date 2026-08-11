@@ -145,6 +145,7 @@ test("exposes canonical Daily Market Brief read and publish tools", async () => 
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
   assert.equal(byName.get("get_briefing_context").inputSchema.properties.news_hours.maximum, 168);
+  assert.equal(byName.get("refresh_brief_sources").inputSchema.additionalProperties, false);
   assert.deepEqual(byName.get("get_briefing_context").inputSchema.properties.audience.enum, ["shared_market", "personal"]);
   assert.equal(byName.get("get_briefing_context").inputSchema.properties.audience.default, "shared_market");
   assert.equal(byName.get("get_daily_market_brief").inputSchema.properties.brief_date.type, "string");
@@ -158,6 +159,7 @@ test("exposes canonical Daily Market Brief read and publish tools", async () => 
 });
 
 test("routes Daily Market Brief calls to scoped API actions", async () => {
+  const refresh = await callTool("refresh_brief_sources", {});
   const context = await callTool("get_briefing_context", { news_hours: 24, audience: "shared_market" });
   const brief = await callTool("get_daily_market_brief", { brief_date: "2026-08-09" });
   const publish = await callTool("publish_daily_market_brief", {
@@ -190,6 +192,8 @@ test("routes Daily Market Brief calls to scoped API actions", async () => {
     idempotency_key: "daily-market-brief:2026-08-09",
   });
 
+  assert.equal(refresh.response.result.isError, false);
+  assert.deepEqual(refresh.request, { action: "refresh_brief_sources" });
   assert.deepEqual(context.request, { action: "briefing_context", news_hours: 24, audience: "shared_market" });
   assert.deepEqual(brief.request, { action: "daily_market_brief", brief_date: "2026-08-09" });
   assert.equal(publish.request.action, "publish_market_brief");

@@ -8,8 +8,11 @@ not a second independent analysis.
 ```text
 Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
 
-1. Call get_briefing_context with news_hours=30 and audience=shared_market,
-   then call get_macro_risk_monitor for the compact FRED risk/sentiment facts.
+1. Call refresh_brief_sources once, then call get_briefing_context with
+   news_hours=30 and audience=shared_market, then call get_macro_risk_monitor
+   for the compact FRED risk/sentiment facts. If refresh_brief_sources reports
+   unavailable, continue with cached_market_news instead of cancelling the
+   edition.
 2. Write the brief in concise Thai, keeping tickers, release names and standard
    market terms in English when clearer. This is a SHARED, NEUTRAL brief for
    every PCC reader. Never mention or optimize for the owner's portfolio,
@@ -46,6 +49,10 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
    mixed' or 'the next release is CPI' without a current market reaction,
    changed expectation or decision-relevant transmission path. A blocked
    website must never be the sole reason that PCC has no daily brief.
+   Reuters X entries tagged BRIEF_CANDIDATE are current reporting leads with a
+   stable timestamp and source URL. They may establish a headline-level fact,
+   but cross-check material numbers and detailed claims with an official
+   release, market prices or another reputable publisher before writing them.
 5. Keep each section non-overlapping and exactly match the tool schema:
    - market_mood: the one-sentence regime and the tension that could change it.
    - market_snapshot: 3-10 verified numbers, each with label, value, change,
@@ -90,8 +97,10 @@ Check whether the preceding 20:00 Asia/Bangkok DAILY MARKET BRIEF needs a
 CONTINUATION.
 
 1. The canonical brief_date is yesterday's Asia/Bangkok date. Call
-   get_daily_market_brief for that date, then call get_briefing_context with
-   news_hours=8 and audience=shared_market, then call get_macro_risk_monitor.
+   get_daily_market_brief for that date, then call refresh_brief_sources once,
+   then call get_briefing_context with news_hours=8 and
+   audience=shared_market, then call get_macro_risk_monitor. If the refresh is
+   unavailable, continue with cached_market_news.
    Research current external sources with the web search tools and verify event
    dates before comparing.
    If the canonical brief is missing, return exactly [SILENT]; the 20:20
@@ -135,9 +144,10 @@ the 20:00 job did not publish it.
 
 1. Resolve today's Asia/Bangkok date and call get_daily_market_brief for that
    date. If it exists, return exactly [SILENT].
-2. If it does not exist, call get_briefing_context with news_hours=30 and
-   audience=shared_market, then call get_macro_risk_monitor. Do not request
-   personal context.
+2. If it does not exist, call refresh_brief_sources once, then call
+   get_briefing_context with news_hours=30 and audience=shared_market, then
+   call get_macro_risk_monitor. If the refresh is unavailable, continue with
+   cached_market_news. Do not request personal context.
 3. Retry external research across different domains, then use
    cached_market_news as the fallback evidence pool. A blocked article URL does
    not invalidate a cached item whose publisher, title, description, URL and

@@ -30,4 +30,8 @@ test("shared briefing context includes deterministic FRED risk facts", async () 
   assert.match(api, /sharedMarketNews\(service, lookbackHours\)/);
   assert.match(api, /publisher_count: Object\.keys\(publisherCounts\)\.length/);
   assert.match(api, /\.slice\(0, 24\)/);
+  assert.match(api, /keywords\.includes\("BRIEF_CANDIDATE"\)/);
+  assert.match(api, /action === "refresh_brief_sources"/);
+  assert.match(api, /functions\/v1\/sync-research-news/);
+  assert.doesNotMatch(api, /\.neq\("source", "x"\)/);
 });

@@ -1,4 +1,15 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  X_MONTHLY_POST_TARGET,
+  X_POST_READ_USD,
+  bangkokClock,
+  dueXWindow,
+  groupXSubscriptions,
+  normalizeXHandle,
+  reutersSearchQuery,
+  xBudgetAllowance,
+  xSourcePlan,
+} from "./x-core.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,7 +22,6 @@ const massive8KUrl = "https://api.massive.com/stocks/filings/8-K/vX/text";
 const xApiBaseUrl = "https://api.x.com/2";
 const regularLookbackHours = 72;
 const maxPages = 5;
-const xTimelineBatchSize = "10";
 
 const xMacroSignals: Array<[string, RegExp]> = [
   ["FED", /\b(fed|fomc|federal reserve|powell|warsh)\b|เฟด|ธนาคารกลาง/i],
@@ -67,6 +77,14 @@ type XSubscription = {
   display_name?: string | null;
   external_user_id?: string | null;
   last_resource_id?: string | null;
+};
+
+type XSourceState = {
+  source_key: string;
+  display_name?: string | null;
+  external_user_id?: string | null;
+  last_resource_id?: string | null;
+  last_window_key?: string | null;
 };
 
 type XUser = {
@@ -202,21 +220,33 @@ async function fetchXUser(token: string, handle: string): Promise<XUser> {
   return payload.data;
 }
 
-async function fetchXPosts(token: string, subscription: XSubscription): Promise<XPost[]> {
-  if (!subscription.external_user_id) throw new Error(`X user ID missing for @${subscription.source_key}`);
-  const url = new URL(`${xApiBaseUrl}/users/${encodeURIComponent(subscription.external_user_id)}/tweets`);
+async function fetchXPosts(token: string, state: XSourceState, maxResults: number): Promise<XPost[]> {
+  if (!state.external_user_id) throw new Error(`X user ID missing for @${state.source_key}`);
+  const url = new URL(`${xApiBaseUrl}/users/${encodeURIComponent(state.external_user_id)}/tweets`);
   url.searchParams.set("exclude", "retweets,replies");
-  // A hard ten-post ceiling prevents a noisy account or a long offline window
-  // from consuming the monthly X budget in one collector run.
-  url.searchParams.set("max_results", xTimelineBatchSize);
+  url.searchParams.set("max_results", String(maxResults));
   url.searchParams.set("tweet.fields", "id,text,created_at,lang,entities,public_metrics");
-  if (subscription.last_resource_id) url.searchParams.set("since_id", subscription.last_resource_id);
+  if (state.last_resource_id) url.searchParams.set("since_id", state.last_resource_id);
   const result = await fetch(url, { headers: xBearerHeaders(token) });
   const payload = await result.json().catch(() => null) as { data?: XPost[]; detail?: string; title?: string } | null;
   if (!result.ok) {
-    throw new Error(`X timeline request failed for @${subscription.source_key}: ${payload?.detail || payload?.title || `HTTP ${result.status}`}`);
+    throw new Error(`X timeline request failed for @${state.source_key}: ${payload?.detail || payload?.title || `HTTP ${result.status}`}`);
   }
   return Array.isArray(payload?.data) ? payload.data : [];
+}
+
+async function fetchReutersPosts(token: string, state: XSourceState, maxResults: number): Promise<XPost[]> {
+  const url = new URL(`${xApiBaseUrl}/tweets/search/recent`);
+  url.searchParams.set("query", reutersSearchQuery(state.source_key));
+  url.searchParams.set("max_results", String(Math.max(maxResults, 10)));
+  url.searchParams.set("tweet.fields", "id,text,created_at,lang,entities,public_metrics");
+  if (state.last_resource_id) url.searchParams.set("since_id", state.last_resource_id);
+  const result = await fetch(url, { headers: xBearerHeaders(token) });
+  const payload = await result.json().catch(() => null) as { data?: XPost[]; detail?: string; title?: string } | null;
+  if (!result.ok) {
+    throw new Error(`X Reuters search failed: ${payload?.detail || payload?.title || `HTTP ${result.status}`}`);
+  }
+  return Array.isArray(payload?.data) ? payload.data.slice(0, maxResults) : [];
 }
 
 function highestResourceId(values: string[]): string | null {
@@ -300,7 +330,7 @@ function classifyXPost(
 }
 
 async function storeArticlesAndMatches(
-  admin: ReturnType<typeof createClient>,
+  admin: ReturnType<typeof createClient<any>>,
   source: string,
   articleRows: Record<string, unknown>[],
   scopeBySymbol: Map<string, InstrumentScope[]>,
@@ -322,7 +352,11 @@ async function storeArticlesAndMatches(
   if (articleError) throw articleError;
 
   const matches: Record<string, unknown>[] = [];
-  for (const article of storedArticles || []) {
+  for (const article of (storedArticles || []) as Array<{
+    id: string;
+    source_article_id: string;
+    tickers: string[] | null;
+  }>) {
     const matchedScopes = new Map<string, InstrumentScope>();
     for (const ticker of article.tickers || []) {
       for (const scope of scopeBySymbol.get(normalizedSymbol(ticker)) || []) {
@@ -349,7 +383,7 @@ async function storeArticlesAndMatches(
 }
 
 async function storeSourceArticleMatches(
-  admin: ReturnType<typeof createClient>,
+  admin: ReturnType<typeof createClient<any>>,
   subscription: XSubscription,
   articleRows: Record<string, unknown>[],
 ): Promise<number> {
@@ -362,7 +396,7 @@ async function storeSourceArticleMatches(
     .in("source_article_id", sourceIds);
   if (articleError) throw articleError;
 
-  const rows = (storedArticles || []).map((article) => ({
+  const rows = ((storedArticles || []) as Array<{ id: string; source_article_id: string }>).map((article) => ({
     user_id: subscription.user_id,
     article_id: article.id,
     source: subscription.source,
@@ -388,8 +422,10 @@ Deno.serve(async (request) => {
     const xBearerToken = Deno.env.get("X_BEARER_TOKEN")?.trim();
     const xDefaultHandles = (Deno.env.get("X_SOURCE_HANDLES") || "")
       .split(",")
-      .map((handle) => handle.replace(/^@/, "").trim().toLowerCase())
+      .map(normalizeXHandle)
       .filter(Boolean);
+    const xManagedHandles = [...new Set([...xDefaultHandles, "reuters"])]
+      .filter((handle) => Boolean(xSourcePlan(handle)));
     const syncSecret = Deno.env.get("RESEARCH_SYNC_SECRET")?.trim();
     if (!serviceRoleKey) return response({ error: "SUPABASE_SERVICE_ROLE_KEY is not configured" }, 500);
     if (!massiveApiKey) return response({ error: "MASSIVE_API_KEY is not configured" }, 503);
@@ -531,20 +567,24 @@ Deno.serve(async (request) => {
       console.warn("SEC 8-K sync skipped:", secError);
     }
 
-    const now = new Date().toISOString();
+    const runAt = new Date();
+    const now = runAt.toISOString();
+    const xClock = bangkokClock(runAt);
     const userIds = [...new Set([...scopes.values()].map((scope) => scope.userId))];
     let xPostsChecked = 0;
     let xPostsFiltered = 0;
     let xArticles = 0;
     let xMatches = 0;
     let xError: string | null = null;
+    const xSourceErrors: Record<string, string> = {};
+    const xSourceRuns: Record<string, Record<string, unknown>> = {};
     try {
-      if (requestedUserId && xDefaultHandles.length) {
-        const defaults = xDefaultHandles.map((handle) => ({
+      if (requestedUserId && xManagedHandles.length) {
+        const defaults = xManagedHandles.map((handle) => ({
           user_id: requestedUserId,
           source: "x",
           source_key: handle,
-          display_name: `@${handle}`,
+          display_name: xSourcePlan(handle)?.displayName || `@${handle}`,
           is_active: true,
           updated_at: now,
         }));
@@ -566,72 +606,165 @@ Deno.serve(async (request) => {
 
       if (subscriptions.length && !xBearerToken) throw new Error("X_BEARER_TOKEN is not configured");
 
-      for (const originalSubscription of subscriptions) {
-        let subscription = { ...originalSubscription };
-        if (!subscription.external_user_id) {
-          const xUser = await fetchXUser(xBearerToken!, subscription.source_key);
-          subscription = {
-            ...subscription,
-            external_user_id: xUser.id,
-            display_name: xUser.name || `@${subscription.source_key}`,
+      const subscriptionGroups = groupXSubscriptions(subscriptions) as Map<string, XSubscription[]>;
+      const sourceKeys = [...subscriptionGroups.keys()];
+      if (sourceKeys.length) {
+        const { error } = await admin
+          .from("research_x_source_state")
+          .upsert(sourceKeys.map((sourceKey) => ({
+            source_key: sourceKey,
+            display_name: xSourcePlan(sourceKey)?.displayName || `@${sourceKey}`,
+            updated_at: now,
+          })), { onConflict: "source_key", ignoreDuplicates: true });
+        if (error) throw error;
+      }
+
+      const [{ data: stateData, error: stateError }, { data: usageData, error: usageError }] = await Promise.all([
+        sourceKeys.length
+          ? admin.from("research_x_source_state").select("*").in("source_key", sourceKeys)
+          : Promise.resolve({ data: [], error: null }),
+        admin.from("research_x_usage_monthly")
+          .select("usage_month,source_key,posts_read,requests_made,estimated_cost_usd")
+          .eq("usage_month", xClock.monthKey),
+      ]);
+      if (stateError) throw stateError;
+      if (usageError) throw usageError;
+      const stateBySource = new Map((stateData || []).map((state) => [String(state.source_key), state as XSourceState]));
+      const usageRows = [...(usageData || [])] as Record<string, unknown>[];
+
+      for (const [sourceKey, sourceSubscriptions] of subscriptionGroups) {
+        const plan = xSourcePlan(sourceKey);
+        if (!plan) continue;
+        const windowKey = dueXWindow(sourceKey, runAt, stateBySource.get(sourceKey)?.last_window_key);
+        const allowance = xBudgetAllowance(sourceKey, usageRows);
+        if (!windowKey || allowance <= 0 || (plan.mode === "search" && allowance < 10)) {
+          xSourceRuns[sourceKey] = {
+            status: allowance <= 0 ? "budget_exhausted" : "not_due",
+            allowance,
+            window_key: windowKey,
           };
-          const { error } = await admin
+          continue;
+        }
+
+        try {
+          const originalState = stateBySource.get(sourceKey) || { source_key: sourceKey };
+          let state: XSourceState = {
+            ...originalState,
+            display_name: originalState.display_name || sourceSubscriptions[0]?.display_name || plan.displayName,
+            external_user_id: originalState.external_user_id
+              || sourceSubscriptions.find((subscription) => subscription.external_user_id)?.external_user_id
+              || null,
+            last_resource_id: originalState.last_resource_id
+              || sourceSubscriptions.find((subscription) => subscription.last_resource_id)?.last_resource_id
+              || null,
+          };
+          if (plan.mode === "timeline" && !state.external_user_id) {
+            const xUser = await fetchXUser(xBearerToken!, sourceKey);
+            state = { ...state, external_user_id: xUser.id, display_name: xUser.name || plan.displayName };
+          }
+
+          const posts = plan.mode === "search"
+            ? await fetchReutersPosts(xBearerToken!, state, allowance)
+            : await fetchXPosts(xBearerToken!, state, allowance);
+          xPostsChecked += posts.length;
+          const { data: recordedUsage, error: recordError } = await admin.rpc("collector_record_x_usage", {
+            p_usage_month: xClock.monthKey,
+            p_source_key: sourceKey,
+            p_posts_read: posts.length,
+          });
+          if (recordError) throw recordError;
+          const usageRecord = recordedUsage as Record<string, unknown>;
+          const usageIndex = usageRows.findIndex((row) => normalizeXHandle(row.source_key) === sourceKey);
+          if (usageIndex >= 0) usageRows[usageIndex] = usageRecord;
+          else usageRows.push(usageRecord);
+
+          const xRows = posts.flatMap((post) => {
+            const text = String(post.text || "").replace(/\s+/g, " ").trim();
+            const classification = classifyXPost(post, trackedAliases);
+            if (!classification.keep && !plan.briefCandidate) return [];
+            const keywords = new Set([...classification.keywords, `@${sourceKey}`]);
+            if (plan.briefCandidate) {
+              keywords.add("X_SIGNAL");
+              keywords.add("MARKET_EVENT");
+              keywords.add("BRIEF_CANDIDATE");
+              keywords.add("REUTERS");
+            }
+            return [{
+              source: "x",
+              source_article_id: post.id,
+              canonical_url: `https://x.com/${sourceKey}/status/${post.id}`,
+              title: text || `New post from @${sourceKey}`,
+              description: null,
+              publisher_name: `X / @${sourceKey}`,
+              publisher_homepage_url: `https://x.com/${sourceKey}`,
+              publisher_logo_url: null,
+              published_at: post.created_at || now,
+              tickers: classification.tickers,
+              keywords: [...keywords],
+              raw_payload: post,
+              updated_at: now,
+            }];
+          });
+          xPostsFiltered += posts.length - xRows.length;
+          if (xRows.length) {
+            const { error } = await admin
+              .from("research_articles")
+              .upsert(xRows, { onConflict: "source,source_article_id" });
+            if (error) throw error;
+          }
+          for (const subscription of sourceSubscriptions) {
+            xMatches += await storeSourceArticleMatches(admin, subscription, xRows);
+          }
+          xMatches += await storeArticlesAndMatches(admin, "x", xRows, scopeBySymbol);
+          xArticles += xRows.length;
+
+          const latestPostId = highestResourceId(posts.map((post) => post.id)) || state.last_resource_id || null;
+          const stateUpdate = {
+            display_name: state.display_name || plan.displayName,
+            external_user_id: state.external_user_id || null,
+            last_resource_id: latestPostId,
+            last_window_key: windowKey,
+            last_checked_at: now,
+            last_success_at: now,
+            last_error: null,
+            updated_at: now,
+          };
+          const { error: sharedStateError } = await admin
+            .from("research_x_source_state")
+            .update(stateUpdate)
+            .eq("source_key", sourceKey);
+          if (sharedStateError) throw sharedStateError;
+          const { error: subscriptionStateError } = await admin
             .from("research_source_subscriptions")
             .update({
-              external_user_id: xUser.id,
-              display_name: xUser.name || `@${subscription.source_key}`,
+              display_name: stateUpdate.display_name,
+              external_user_id: stateUpdate.external_user_id,
+              last_resource_id: latestPostId,
               updated_at: now,
             })
-            .eq("user_id", subscription.user_id)
             .eq("source", "x")
-            .eq("source_key", subscription.source_key);
-          if (error) throw error;
-        }
-
-        const posts = await fetchXPosts(xBearerToken!, subscription);
-        xPostsChecked += posts.length;
-        const xRows = posts.flatMap((post) => {
-          const text = String(post.text || "").replace(/\s+/g, " ").trim();
-          const classification = classifyXPost(post, trackedAliases);
-          if (!classification.keep) return [];
-          return [{
-            source: "x",
-            source_article_id: post.id,
-            canonical_url: `https://x.com/${subscription.source_key}/status/${post.id}`,
-            title: text || `New post from @${subscription.source_key}`,
-            description: null,
-            publisher_name: `X · @${subscription.source_key}`,
-            publisher_homepage_url: `https://x.com/${subscription.source_key}`,
-            publisher_logo_url: null,
-            published_at: post.created_at || now,
-            tickers: classification.tickers,
-            keywords: [...classification.keywords, `@${subscription.source_key}`],
-            raw_payload: post,
+            .eq("source_key", sourceKey);
+          if (subscriptionStateError) throw subscriptionStateError;
+          stateBySource.set(sourceKey, { source_key: sourceKey, ...stateUpdate });
+          xSourceRuns[sourceKey] = {
+            status: "ok",
+            posts_read: posts.length,
+            articles_kept: xRows.length,
+            window_key: windowKey,
+            month_posts: Number(usageRecord.posts_read || 0),
+          };
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          xSourceErrors[sourceKey] = detail;
+          xSourceRuns[sourceKey] = { status: "error", error: detail, window_key: windowKey };
+          await admin.from("research_x_source_state").update({
+            last_checked_at: now,
+            last_error: detail,
             updated_at: now,
-          }];
-        });
-        xPostsFiltered += posts.length - xRows.length;
-        if (xRows.length) {
-          const { error } = await admin
-            .from("research_articles")
-            .upsert(xRows, { onConflict: "source,source_article_id" });
-          if (error) throw error;
-        }
-        xMatches += await storeSourceArticleMatches(admin, subscription, xRows);
-        xMatches += await storeArticlesAndMatches(admin, "x", xRows, scopeBySymbol);
-        xArticles += xRows.length;
-
-        const latestPostId = highestResourceId(posts.map((post) => post.id));
-        if (latestPostId) {
-          const { error } = await admin
-            .from("research_source_subscriptions")
-            .update({ last_resource_id: latestPostId, updated_at: now })
-            .eq("user_id", subscription.user_id)
-            .eq("source", "x")
-            .eq("source_key", subscription.source_key);
-          if (error) throw error;
+          }).eq("source_key", sourceKey);
         }
       }
+      xError = Object.keys(xSourceErrors).length ? JSON.stringify(xSourceErrors) : null;
     } catch (error) {
       xError = error instanceof Error ? error.message : String(error);
       console.warn("X source sync skipped:", xError);
@@ -687,6 +820,12 @@ Deno.serve(async (request) => {
       news_articles: articleRows.length,
       sec_8k_filings: secRows.length,
       x_articles: xArticles,
+      x_source_runs: xSourceRuns,
+      x_budget: {
+        month: xClock.monthKey,
+        target_posts: X_MONTHLY_POST_TARGET,
+        target_cost_usd: X_MONTHLY_POST_TARGET * X_POST_READ_USD,
+      },
       matches: massiveMatches + secMatches + xMatches,
       sec_error: secError,
       x_error: xError,

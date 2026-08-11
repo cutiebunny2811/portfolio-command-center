@@ -96,6 +96,11 @@ Hermes connects to data, not dashboard files:
 Hermes -> local stdio MCP -> portfolio-agent-api -> Supabase
 ```
 
+Canonical brief jobs call `refresh_brief_sources` before reading their shared
+fact pack. That action reuses the budgeted News collector, so Reuters X posts
+are fetched once and shared by News and Briefs; a failed refresh falls back to
+the existing cache instead of cancelling the edition.
+
 Run [`supabase/017_hermes_agent_api.sql`](supabase/017_hermes_agent_api.sql),
 then deploy both Edge Functions:
 
@@ -126,3 +131,7 @@ multiple current domains and must synthesize market-wide drivers; Market Pulse,
 FRED risk and official Macro facts verify numbers but never substitute for news
 headlines. A silent 20:20 recovery job retries that evidence workflow only when
 the 20:00 canonical edition is still missing.
+
+Reuters X reporting is collected once into the shared Research corpus under a
+fixed monthly Post budget. News and Hermes read the same canonical rows; members
+retain separate read, saved and hidden state without multiplying X API usage.

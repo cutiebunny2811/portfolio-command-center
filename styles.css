@@ -2270,8 +2270,9 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
   -webkit-mask: radial-gradient(circle, transparent 0 56%, #000 57% 70%, transparent 71%);
   mask: radial-gradient(circle, transparent 0 56%, #000 57% 70%, transparent 71%);
 }
-.sentiment-gauge__needle { position: absolute; left: calc(50% - 3px); bottom: 2px; width: 6px; height: 59%; background: var(--paper); transform: rotate(var(--gauge-angle)); transform-origin: 50% 100%; transition: transform .35s ease; }
-.sentiment-gauge__needle::after { content: ""; position: absolute; inset: 0 -3px auto; height: 18px; background: var(--gold-bright); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.sentiment-gauge__needle { position: absolute; left: calc(50% - 9px); bottom: 2px; width: 18px; height: 61%; transform: rotate(var(--gauge-angle)); transform-origin: 50% 100%; transition: transform .35s ease; }
+.sentiment-gauge__needle::before { content: ""; position: absolute; top: 13px; bottom: 0; left: 7px; width: 4px; background: var(--paper); }
+.sentiment-gauge__needle::after { content: ""; position: absolute; top: 0; left: 2px; width: 14px; height: 18px; background: var(--gold-bright); clip-path: polygon(50% 0, 100% 100%, 50% 78%, 0 100%); }
 .sentiment-gauge__hub { position: absolute; left: 50%; bottom: -1px; width: 122px; height: 94px; display: grid; align-content: end; justify-items: center; gap: 4px; border: 1px solid var(--rule-strong); border-bottom: 0; border-radius: 72px 72px 0 0; background: var(--ink); padding-bottom: 12px; transform: translateX(-50%); }
 .sentiment-gauge__hub strong { font: 700 42px/.85 var(--mono); }
 .sentiment-gauge__hub span { color: var(--gold-bright); font: 700 8px/1 var(--mono); letter-spacing: 0; }
@@ -2290,6 +2291,42 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
 .fear-greed__components > header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--rule); padding: 0 18px; }
 .fear-greed__components > header span { color: var(--gold); }
 .fear-greed__components > header p { margin: 0; color: var(--paper-faint); font-size: 9px; }
+
+@media (min-width: 1101px) {
+  .risk-summary__score span,
+  .risk-summary__date small,
+  .risk-summary__date span,
+  .macro-signal__score small,
+  .macro-signal__source { font-size: 10px; }
+  .risk-summary__read > span { font-size: 11px; }
+  .risk-summary__read p { font-size: 13px; line-height: 1.5; }
+  .risk-summary__date strong { font-size: 24px; }
+  .macro-signal {
+    grid-template-columns: 56px minmax(0, 1fr) 190px 90px;
+    min-height: 132px;
+  }
+  .macro-signal__index { font-size: 10px; }
+  .macro-signal__body {
+    grid-template-columns: minmax(220px, .42fr) minmax(300px, .58fr);
+    grid-template-rows: auto auto;
+    column-gap: clamp(28px, 4vw, 64px);
+    row-gap: 8px;
+    padding: 24px 32px;
+  }
+  .macro-signal__body > span { grid-column: 1; grid-row: 1; font-size: 10px; }
+  .macro-signal__body strong { grid-column: 1; grid-row: 2; font-size: 24px; }
+  .macro-signal__body p {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    max-width: 58ch;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .macro-signal__score { padding: 22px; }
+  .macro-signal__score strong { font-size: 32px; }
+  .sentiment-gauge > p { font-size: 11px; line-height: 1.5; }
+}
 
 .brief-shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); border-top: 1px solid var(--rule-strong); }
 .brief-archive { min-width: 0; border-right: 1px solid var(--rule-strong); }

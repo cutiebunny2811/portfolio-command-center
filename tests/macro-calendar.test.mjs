@@ -52,8 +52,10 @@ test("maps observations to release periods and keeps only advance GDP months", (
       9: [], 192: [], 180: [],
     },
     observationsBySeries: {
-      CPIAUCSL: [{ date: "2026-07-01", value: "0.2" }, { date: "2026-06-01", value: "0.3" }],
-      CPILFESL: [{ date: "2026-07-01", value: "0.3" }, { date: "2026-06-01", value: "0.2" }],
+      "CPIAUCSL:pch": [{ date: "2026-07-01", value: "0.1" }, { date: "2026-06-01", value: "-0.4" }],
+      "CPIAUCSL:pc1": [{ date: "2026-07-01", value: "3.4" }, { date: "2026-06-01", value: "3.5" }],
+      "CPILFESL:pch": [{ date: "2026-07-01", value: "0.2" }, { date: "2026-06-01", value: "0.0" }],
+      "CPILFESL:pc1": [{ date: "2026-07-01", value: "2.5" }, { date: "2026-06-01", value: "2.6" }],
       A191RL1Q225SBEA: [{ date: "2026-07-01", value: "2.4" }, { date: "2026-04-01", value: "2.1" }],
     },
     now: "2026-08-12T13:00:00.000Z",
@@ -61,10 +63,17 @@ test("maps observations to release periods and keeps only advance GDP months", (
     windowFrom: "2026-08-10",
     windowTo: "2026-10-31",
   });
-  const headline = rows.find((row) => row.series_id === "CPIAUCSL");
-  assert.equal(headline.actual, "0.2%");
-  assert.equal(headline.previous, "0.3%");
+  const cpiRows = rows.filter((row) => row.series_id === "CPIAUCSL" || row.series_id === "CPILFESL");
+  const headline = cpiRows.find((row) => row.event_name === "CPI Inflation (MoM)");
+  assert.equal(headline.actual, "0.1%");
+  assert.equal(headline.previous, "-0.4%");
   assert.equal(headline.reference_period, "Jul 2026");
+  assert.deepEqual(cpiRows.map((row) => [row.event_name, row.actual, row.previous]), [
+    ["CPI Inflation (MoM)", "0.1%", "-0.4%"],
+    ["CPI Inflation (YoY)", "3.4%", "3.5%"],
+    ["Core CPI (MoM)", "0.2%", "0%"],
+    ["Core CPI (YoY)", "2.5%", "2.6%"],
+  ]);
   assert.deepEqual(rows.filter((row) => row.series_id === "A191RL1Q225SBEA").map((row) => row.scheduled_at.slice(0, 10)), ["2026-10-29"]);
   assert.equal(rows.some((row) => Object.hasOwn(row, "forecast")), false);
 });

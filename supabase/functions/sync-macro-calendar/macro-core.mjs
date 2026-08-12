@@ -17,12 +17,40 @@ export const FRED_EVENTS = [
   },
   {
     releaseId: 10,
+    seriesId: "CPIAUCSL",
+    eventName: "CPI Inflation (YoY)",
+    eventGroup: "inflation",
+    signalFamily: "inflation",
+    category: "CPI",
+    units: "pc1",
+    valueKind: "percent",
+    lagMonths: 1,
+    time: "08:30",
+    agency: "BLS",
+    sourceUrl: "https://www.bls.gov/cpi/",
+  },
+  {
+    releaseId: 10,
     seriesId: "CPILFESL",
     eventName: "Core CPI (MoM)",
     eventGroup: "inflation",
     signalFamily: "inflation",
     category: "Core CPI",
     units: "pch",
+    valueKind: "percent",
+    lagMonths: 1,
+    time: "08:30",
+    agency: "BLS",
+    sourceUrl: "https://www.bls.gov/cpi/",
+  },
+  {
+    releaseId: 10,
+    seriesId: "CPILFESL",
+    eventName: "Core CPI (YoY)",
+    eventGroup: "inflation",
+    signalFamily: "inflation",
+    category: "Core CPI",
+    units: "pc1",
     valueKind: "percent",
     lagMonths: 1,
     time: "08:30",
@@ -518,7 +546,8 @@ export function buildFredRows(
   const rows = [];
   for (const config of FRED_EVENTS) {
     const observations = sortedObservations(
-      observationsBySeries[config.seriesId],
+      observationsBySeries[`${config.seriesId}:${config.units}`] ??
+        observationsBySeries[config.seriesId],
     );
     const allDates = [
       ...new Set(

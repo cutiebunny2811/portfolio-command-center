@@ -111,10 +111,22 @@ Deno.serve(async (request) => {
     const releaseIds = [
       ...new Set(FRED_EVENTS.map((event) => event.releaseId)),
     ];
-    const seriesIds = [...new Set([
-      ...FRED_EVENTS.map((event) => event.seriesId),
+    const eventObservationRequests = [
+      ...new Map(FRED_EVENTS.map((event) => [
+        `${event.seriesId}:${event.units}`,
+        { key: `${event.seriesId}:${event.units}`, seriesId: event.seriesId, units: event.units },
+      ])).values(),
+    ];
+    const linearEventSeries = new Set(
+      eventObservationRequests.filter((request) => request.units === "lin").map((request) => request.seriesId),
+    );
+    const rawObservationRequests = [...new Set([
       ...RISK_SERIES.map((series) => series.seriesId),
-    ])];
+      "DFEDTARL",
+      "DFEDTARU",
+    ])]
+      .filter((seriesId) => !linearEventSeries.has(seriesId))
+      .map((seriesId) => ({ key: seriesId, seriesId, units: "lin" }));
     const releaseResponses = await Promise.all(
       releaseIds.map(async (releaseId) => {
         const payload = await fredJson("release/dates", {
@@ -130,18 +142,18 @@ Deno.serve(async (request) => {
       }),
     );
     const observationResponses = await Promise.all(
-      [...seriesIds, "DFEDTARL", "DFEDTARU"].map(async (seriesId) => {
-        const config = FRED_EVENTS.find((event) => event.seriesId === seriesId);
+      [...eventObservationRequests, ...rawObservationRequests].map(async (request) => {
+        const { key, seriesId, units } = request;
         const payload = await fredJson("series/observations", {
           series_id: seriesId,
-          units: config?.units || "lin",
+          units,
           sort_order: "desc",
           limit: LONG_SENTIMENT_HISTORY.has(seriesId)
             ? "1800"
             : RISK_SERIES.some((series) => series.seriesId === seriesId) ? "500" : "80",
         }, fredApiKey);
         return [
-          seriesId,
+          key,
           Array.isArray(payload.observations) ? payload.observations : [],
         ] as const;
       }),
@@ -156,6 +168,11 @@ Deno.serve(async (request) => {
 
     const releaseDatesById = Object.fromEntries(releaseResponses);
     const observationsBySeries = Object.fromEntries(observationResponses);
+    for (const request of eventObservationRequests) {
+      if (request.units === "lin" && !observationsBySeries[request.seriesId]) {
+        observationsBySeries[request.seriesId] = observationsBySeries[request.key];
+      }
+    }
     const rows = dedupeMacroRows([
       ...buildFredRows({
         releaseDatesById,

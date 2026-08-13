@@ -9,7 +9,9 @@ on:
   schedule:
     # 08:30 ET releases are 12:30 UTC in EDT and 13:30 UTC in EST.
     - cron: "25-59/5 12,13 * * 1-5"
-    - cron: "0,30 14-22 * * 1-5"
+    # 10:00 ET releases are 14:00 UTC in EDT and 15:00 UTC in EST.
+    - cron: "0-30/5 14,15 * * 1-5"
+    - cron: "0,30 16-22 * * 1-5"
     - cron: "15 0 * * *"
   workflow_dispatch:
 
@@ -21,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Refresh high-impact US macro events
+      - name: Refresh red and orange US macro events
         env:
           MACRO_SYNC_SECRET: ${{ secrets.MACRO_SYNC_SECRET }}
         run: |

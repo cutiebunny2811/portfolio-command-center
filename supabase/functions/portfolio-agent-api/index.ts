@@ -725,7 +725,7 @@ async function macroAlerts(service: any, body: Record<string, unknown>) {
     .from("macro_events")
     .select(macroEventFields)
     .eq("is_active", true)
-    .eq("source", "fred")
+    .in("source", ["fred", "university_michigan"])
     .is("actual", null)
     .gte("scheduled_at", backIso)
     .lte("scheduled_at", nowIso);

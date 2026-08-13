@@ -6,10 +6,12 @@ import {
   buildFomcRows,
   buildFredRows,
   buildIsmRows,
+  buildMichiganRows,
   buildMacroRiskSnapshot,
   dedupeMacroRows,
   FRED_EVENTS,
   parseFomcMeetings,
+  parseMichiganSnapshot,
   RISK_SERIES,
   zonedIso,
 } from "./macro-core.mjs";
@@ -27,6 +29,7 @@ const FRED_BASE = "https://api.stlouisfed.org/fred";
 const BLS_PUBLIC_API = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
 const FOMC_CALENDAR =
   "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
+const MICHIGAN_SENTIMENT = "https://www.sca.isr.umich.edu/";
 
 const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
 const shiftDays = (date: Date, days: number) =>
@@ -200,6 +203,17 @@ Deno.serve(async (request) => {
         "The Federal Reserve calendar could not be read; existing data was preserved",
       );
     }
+    let michiganSnapshot = null;
+    let michiganWarning: string | null = null;
+    try {
+      const michiganHtml = await (await fetchWithRetry(MICHIGAN_SENTIMENT)).text();
+      michiganSnapshot = parseMichiganSnapshot(michiganHtml);
+      if (!michiganSnapshot.referenceDate) {
+        throw new Error("University of Michigan release page could not be parsed");
+      }
+    } catch (error) {
+      michiganWarning = error instanceof Error ? error.message : String(error);
+    }
 
     const releaseDatesById = Object.fromEntries(releaseResponses);
     const observationsBySeries = Object.fromEntries(observationResponses);
@@ -226,7 +240,7 @@ Deno.serve(async (request) => {
         windowFrom,
         windowTo,
       }), blsOverrides, fetchedAt);
-    const rows = dedupeMacroRows([
+    let rows = dedupeMacroRows([
       ...fredRows,
       ...buildFomcRows({
         meetings,
@@ -238,10 +252,42 @@ Deno.serve(async (request) => {
         windowTo,
       }),
       ...buildIsmRows({ fetchedAt, windowFrom, windowTo }),
+      ...buildMichiganRows({
+        snapshot: michiganSnapshot,
+        now: fetchedAt,
+        fetchedAt,
+        windowFrom,
+        windowTo,
+      }),
     ]);
+    const michiganIds = rows
+      .filter((row) => row.source === "university_michigan")
+      .map((row) => row.external_id);
+    if (michiganIds.length) {
+      const { data: existingMichigan, error: michiganError } = await service
+        .from("macro_events")
+        .select("external_id,actual,previous")
+        .eq("source", "university_michigan")
+        .in("external_id", michiganIds);
+      if (michiganError) throw michiganError;
+      const existingById = new Map(
+        (existingMichigan || []).map((row) => [row.external_id, row]),
+      );
+      rows = rows.map((row) => {
+        if (row.source !== "university_michigan") return row;
+        const existingRow = existingById.get(row.external_id);
+        return existingRow
+          ? {
+            ...row,
+            actual: row.actual ?? existingRow.actual,
+            previous: row.previous ?? existingRow.previous,
+          }
+          : row;
+      });
+    }
     if (!rows.length) {
       throw new Error(
-        "No curated US high-impact events were returned; existing data was preserved",
+        "No curated red or orange US macro events were returned; existing data was preserved",
       );
     }
 
@@ -273,7 +319,7 @@ Deno.serve(async (request) => {
     const { data: existing, error: existingError } = await service
       .from("macro_events")
       .select("id,source,external_id")
-      .in("source", ["fred", "federal_reserve", "ism"])
+      .in("source", ["fred", "federal_reserve", "ism", "university_michigan"])
       .gte("scheduled_at", `${windowFrom}T00:00:00Z`)
       .lt(
         "scheduled_at",
@@ -319,8 +365,8 @@ Deno.serve(async (request) => {
     return result({
       updated: rows.length,
       risk_snapshots: riskSnapshots.length,
-      sources: ["BLS Public Data API", "FRED", "Federal Reserve", "ISM"],
-      source_warning: blsWarning,
+      sources: ["BLS Public Data API", "FRED", "Federal Reserve", "ISM", "University of Michigan"],
+      source_warning: [blsWarning, michiganWarning].filter(Boolean).join("; ") || null,
       window_from: windowFrom,
       window_to: windowTo,
     });

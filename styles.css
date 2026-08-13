@@ -2180,6 +2180,7 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
 .macro-impact i { width: 5px; height: 4px; background: var(--red-bright); }
 .macro-impact i:nth-child(2) { height: 6px; }
 .macro-impact i:nth-child(3) { height: 8px; }
+.macro-impact--medium i { background: var(--gold-bright); }
 .macro-event__body { min-width: 0; display: grid; align-content: center; gap: 7px; padding: 17px 20px; }
 .macro-event__body > span { color: var(--gold); }
 .macro-event__body h3 { overflow-wrap: anywhere; margin: 0; font-size: 18px; line-height: 1.05; }

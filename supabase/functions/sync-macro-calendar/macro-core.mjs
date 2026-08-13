@@ -185,6 +185,22 @@ export const FRED_EVENTS = [
     time: "08:30",
     agency: "Census",
     sourceUrl: "https://www.census.gov/retail/index.html",
+    importance: 2,
+  },
+  {
+    releaseId: 9,
+    seriesId: "RSFSXMV",
+    eventName: "Core Retail Sales (MoM)",
+    eventGroup: "consumption",
+    signalFamily: "growth",
+    category: "Retail Sales ex Autos",
+    units: "pch",
+    valueKind: "percent",
+    lagMonths: 1,
+    time: "08:30",
+    agency: "Census",
+    sourceUrl: "https://www.census.gov/retail/index.html",
+    importance: 2,
   },
   {
     releaseId: 192,
@@ -214,7 +230,17 @@ export const FRED_EVENTS = [
     time: "08:30",
     agency: "DOL",
     sourceUrl: "https://www.dol.gov/ui/data.pdf",
+    importance: 2,
   },
+];
+
+export const MICHIGAN_PRELIMINARY_RELEASES = [
+  "2026-01-09", "2026-02-06", "2026-03-13", "2026-04-10",
+  "2026-05-08", "2026-06-12", "2026-07-17", "2026-08-14",
+  "2026-09-11", "2026-10-09", "2026-11-06", "2026-12-04",
+  "2027-01-08", "2027-02-12", "2027-03-12", "2027-04-09",
+  "2027-05-07", "2027-06-11", "2027-07-16", "2027-08-13",
+  "2027-09-10", "2027-10-08", "2027-11-05", "2027-12-03",
 ];
 
 export const BLS_PPI_SERIES = [
@@ -290,6 +316,7 @@ export function formatFredValue(value, kind) {
   if (kind === "millions_from_thousands") return `${tidy(number / 1000, 2)}M`;
   if (kind === "persons_to_thousands") return `${Math.round(number / 1000)}K`;
   if (kind === "thousands") return `${Math.round(number)}K`;
+  if (kind === "index") return tidy(number, 1);
   return tidy(number, 2);
 }
 
@@ -610,7 +637,7 @@ export function buildFredRows(
           ? formatFredValue(previousObservation.value, config.valueKind)
           : null,
         revised: null,
-        importance: 3,
+        importance: config.importance ?? 3,
         currency: "USD",
         unit: config.valueKind,
         source_name: `${config.agency} via FRED`,
@@ -980,6 +1007,134 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
     cursor.setUTCMonth(cursor.getUTCMonth() + 1);
   }
   return rows;
+}
+
+function plainText(html) {
+  return String(html || "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function monthStart(monthName, year) {
+  const date = new Date(`${monthName} 1, ${year} 00:00:00 UTC`);
+  if (Number.isNaN(date.getTime())) return null;
+  return `${year}-${pad(date.getUTCMonth() + 1)}-01`;
+}
+
+export function parseMichiganSnapshot(html) {
+  const heading = String(html || "").match(
+    /(?:Preliminary|Final)\s+Results\s+for\s+([A-Za-z]+)\s+(\d{4})/i,
+  );
+  const headingText = String(heading?.[0] || "").toLowerCase();
+  const releaseType = headingText.startsWith("preliminary")
+    ? "preliminary"
+    : headingText.startsWith("final") ? "final" : null;
+  const referenceDate = heading ? monthStart(heading[1], heading[2]) : null;
+  const sentimentRow = [...String(html || "").matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi)]
+    .map((match) => match[0])
+    .find((row) => /Index of Consumer Sentiment/i.test(row));
+  const sentimentValues = plainText(sentimentRow).match(/-?\d+(?:\.\d+)?/g) || [];
+  const inflationSentence = plainText(html).match(
+    /Year-ahead inflation expectations[\s\S]*?this month/i,
+  )?.[0] || "";
+  const inflationValues = [...inflationSentence.matchAll(/(-?\d+(?:\.\d+)?)%/g)]
+    .map((match) => Number(match[1]));
+
+  return {
+    releaseType,
+    referenceDate,
+    sentimentActual: Number.isFinite(Number(sentimentValues[0])) ? Number(sentimentValues[0]) : null,
+    sentimentPrevious: Number.isFinite(Number(sentimentValues[1])) ? Number(sentimentValues[1]) : null,
+    inflationActual: Number.isFinite(inflationValues[1]) ? inflationValues[1] : null,
+    inflationPrevious: Number.isFinite(inflationValues[0]) ? inflationValues[0] : null,
+  };
+}
+
+export function buildMichiganRows({
+  releases = MICHIGAN_PRELIMINARY_RELEASES,
+  snapshot = null,
+  now,
+  fetchedAt,
+  windowFrom,
+  windowTo,
+}) {
+  const current = new Date(now);
+  const configs = [
+    {
+      slug: "sentiment",
+      eventName: "Prelim UoM Consumer Sentiment",
+      eventGroup: "consumption",
+      signalFamily: "growth",
+      category: "Consumer Sentiment",
+      unit: "index",
+      actualKey: "sentimentActual",
+      previousKey: "sentimentPrevious",
+    },
+    {
+      slug: "inflation-expectations",
+      eventName: "Prelim UoM Inflation Expectations",
+      eventGroup: "inflation",
+      signalFamily: "inflation",
+      category: "Inflation Expectations",
+      unit: "percent",
+      actualKey: "inflationActual",
+      previousKey: "inflationPrevious",
+    },
+  ];
+
+  return releases.filter((date) => inWindow(date, windowFrom, windowTo)).flatMap((date) => {
+    const scheduledAt = zonedIso(date, "10:00");
+    const referenceDate = `${date.slice(0, 7)}-01`;
+    const previousReferenceDate = shiftMonthStart(referenceDate, -1);
+    const snapshotMatches = snapshot?.releaseType === "preliminary" &&
+      snapshot?.referenceDate === referenceDate && new Date(scheduledAt) <= current;
+    const snapshotIsPreviousMonth = snapshot?.referenceDate === previousReferenceDate;
+    return configs.map((config) => {
+      const actual = snapshotMatches ? snapshot?.[config.actualKey] : null;
+      const previous = snapshotMatches
+        ? snapshot?.[config.previousKey]
+        : snapshotIsPreviousMonth ? snapshot?.[config.actualKey] : null;
+      return {
+        source: "university_michigan",
+        external_id: `uom-prelim-${config.slug}:${date}`,
+        series_id: null,
+        event_group: config.eventGroup,
+        signal_family: config.signalFamily,
+        event_name: config.eventName,
+        category: config.category,
+        reference_period: referenceLabel({}, referenceDate),
+        scheduled_at: scheduledAt,
+        actual: Number.isFinite(actual)
+          ? formatFredValue(String(actual), config.unit === "percent" ? "percent" : "index")
+          : null,
+        previous: Number.isFinite(previous)
+          ? formatFredValue(String(previous), config.unit === "percent" ? "percent" : "index")
+          : null,
+        revised: null,
+        importance: 2,
+        currency: "USD",
+        unit: config.unit,
+        source_name: "University of Michigan",
+        source_url: "https://www.sca.isr.umich.edu/",
+        is_active: true,
+        raw_payload: {
+          schedule: "official preliminary release calendar",
+          release_type: "preliminary",
+          snapshot_release_type: snapshot?.releaseType || null,
+          snapshot_reference_date: snapshot?.referenceDate || null,
+        },
+        fetched_at: fetchedAt,
+        updated_at: fetchedAt,
+      };
+    });
+  });
 }
 
 export function dedupeMacroRows(rows) {

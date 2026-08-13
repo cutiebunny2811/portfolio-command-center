@@ -936,7 +936,7 @@
       }
       if (data?.error) throw new Error(data.error);
       await loadMacroPage({ renderAfter: false });
-      if (notify) toast(`${data?.updated || 0} high-impact macro events synced`);
+      if (notify) toast(`${data?.updated || 0} market-moving macro events synced`);
       return data;
     } catch (error) {
       console.warn(error);
@@ -2039,9 +2039,12 @@
     const read = macroRead(event);
     const sourceUrl = /^https:\/\//i.test(event.source_url || "") ? event.source_url : "";
     const consensus = event.forecast ? `<small>CONSENSUS ${esc(event.forecast)}</small>` : "";
+    const importance = Number(event.importance) >= 3 ? 3 : 2;
+    const impactLabel = importance === 3 ? "High impact" : "Medium impact";
+    const impactBars = Array.from({ length: importance }, () => "<i></i>").join("");
     return `<article class="macro-event">
       <div class="macro-event__time">
-        <span class="macro-impact" aria-label="High impact"><i></i><i></i><i></i></span>
+        <span class="macro-impact macro-impact--${importance === 3 ? "high" : "medium"}" aria-label="${impactLabel}">${impactBars}</span>
         <strong>${esc(macroTime(event.scheduled_at, "America/New_York", true))}</strong>
         <small>${esc(macroTime(event.scheduled_at, "Asia/Bangkok"))} BKK</small>
       </div>
@@ -2206,7 +2209,7 @@
     const nextRead = nextEvent ? macroRead(nextEvent) : { label: "CLEAR", tone: "neutral" };
 
     viewRoot.innerHTML = `
-      ${pageHead("US macro · High impact only", "The releases that move the tape.", "FOMC, inflation, labor, growth and activity — a deliberately narrow calendar built from official releases with FRED fallback.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources…" : "Update sources"}</button>`)}
+      ${pageHead("US macro · Red + orange", "The releases that move the tape.", "Market-moving US policy, inflation, labor, consumption, growth and activity releases from official schedules with FRED fallback.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources…" : "Update sources"}</button>`)}
       ${macroTabs()}
       ${!state.macroReady ? `<div class="warning-box macro-setup"><strong>Macro Calendar is not installed yet.</strong> Run <code>035_us_macro_calendar.sql</code>, add <code>FRED_API_KEY</code>, then deploy <code>sync-macro-calendar</code>.</div>` : ""}
       <section class="macro-hero" aria-label="Macro command summary">
@@ -2223,7 +2226,7 @@
         </article>
       </section>
       <section class="macro-ledger" aria-label="Macro calendar status">
-        <div><small>NEXT 7 DAYS</small><strong>${sevenDays}</strong><span>high-impact releases</span></div>
+        <div><small>NEXT 7 DAYS</small><strong>${sevenDays}</strong><span>red + orange releases</span></div>
         <div><small>35-DAY TAPE</small><strong>${entries.length}</strong><span>curated events</span></div>
         <div><small>JUST REPORTED</small><strong>${released}</strong><span>actual values loaded</span></div>
         <div><small>LAST SOURCE READ</small><strong class="macro-ledger__time">${esc(syncLabel)}</strong><span>official releases + FRED fallback</span></div>
@@ -2241,9 +2244,9 @@
                   <div>${events.map(macroEventMarkup).join("")}</div>
                 </section>`;
               }).join("")
-            : `<div class="macro-empty"><strong>No high-impact events loaded.</strong><p>The official calendar has no entries in this 35-day window.</p></div>`}
+            : `<div class="macro-empty"><strong>No red or orange events loaded.</strong><p>The official calendar has no entries in this 35-day window.</p></div>`}
       </section>
-      <p class="macro-disclaimer">Actual and previous values come from FRED; release dates come from FRED, the Federal Reserve and ISM. Consensus forecasts are left blank unless a verified source is added. “Hotter”, “firmer” and related labels compare only with the previous reading — they are not trade signals.</p>`;
+      <p class="macro-disclaimer">Actual and previous values come from official releases or FRED fallback; release dates come from FRED, the Federal Reserve, ISM and the University of Michigan. Consensus forecasts are left blank unless a verified source is added. “Hotter”, “firmer” and related labels compare only with the previous reading — they are not trade signals.</p>`;
   }
 
   function smartMoneyCodeLabel(code) {

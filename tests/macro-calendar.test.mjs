@@ -6,10 +6,12 @@ import {
   buildFomcRows,
   buildFredRows,
   buildIsmRows,
+  buildMichiganRows,
   buildMacroRiskSnapshot,
   expectedPeriodDate,
   formatFredValue,
   parseFomcMeetings,
+  parseMichiganSnapshot,
   zonedIso,
 } from "../supabase/functions/sync-macro-calendar/macro-core.mjs";
 
@@ -152,6 +154,67 @@ test("generates the two high-impact ISM releases only", () => {
   assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at]), [
     ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z"],
     ["ISM Services PMI", "2026-08-05T14:00:00.000Z"],
+  ]);
+});
+
+test("adds both orange retail releases and preserves their importance", () => {
+  const rows = buildFredRows({
+    releaseDatesById: { 9: [{ date: "2026-08-14" }] },
+    observationsBySeries: {
+      "RSAFS:pch": [
+        { date: "2026-07-01", value: "0.1" },
+        { date: "2026-06-01", value: "0.2" },
+      ],
+      "RSFSXMV:pch": [
+        { date: "2026-07-01", value: "0.2" },
+        { date: "2026-06-01", value: "-0.2" },
+      ],
+    },
+    now: "2026-08-14T13:00:00.000Z",
+    fetchedAt: "2026-08-14T13:00:00.000Z",
+    windowFrom: "2026-08-14",
+    windowTo: "2026-08-14",
+  });
+  const retail = rows.filter((row) => row.category.startsWith("Retail Sales"));
+
+  assert.deepEqual(retail.map((row) => [row.event_name, row.actual, row.importance]), [
+    ["Retail Sales (MoM)", "0.1%", 2],
+    ["Core Retail Sales (MoM)", "0.2%", 2],
+  ]);
+});
+
+test("parses Michigan preliminary data and builds recurring orange releases", () => {
+  const html = `
+    <h1>Preliminary Results for August 2026</h1>
+    <table>
+      <tr><th></th><th>Aug 2026</th><th>Jul 2026</th></tr>
+      <tr><td>Index of Consumer Sentiment</td><td>54.7</td><td>55.2</td><td>61.7</td></tr>
+    </table>
+    <p>Year-ahead inflation expectations ticked down from 4.2% in July to 4.0% this month.</p>
+  `;
+  const snapshot = parseMichiganSnapshot(html);
+  assert.deepEqual(snapshot, {
+    releaseType: "preliminary",
+    referenceDate: "2026-08-01",
+    sentimentActual: 54.7,
+    sentimentPrevious: 55.2,
+    inflationActual: 4,
+    inflationPrevious: 4.2,
+  });
+
+  const rows = buildMichiganRows({
+    releases: ["2026-08-14", "2026-09-11"],
+    snapshot,
+    now: "2026-08-14T14:05:00.000Z",
+    fetchedAt: "2026-08-14T14:05:00.000Z",
+    windowFrom: "2026-08-14",
+    windowTo: "2026-09-11",
+  });
+  assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at, row.actual, row.importance]), [
+    ["Prelim UoM Consumer Sentiment", "2026-08-14T14:00:00.000Z", "54.7", 2],
+    ["Prelim UoM Inflation Expectations", "2026-08-14T14:00:00.000Z", "4%", 2],
+    ["Prelim UoM Consumer Sentiment", "2026-09-11T14:00:00.000Z", null, 2],
+    ["Prelim UoM Inflation Expectations", "2026-09-11T14:00:00.000Z", null, 2],
   ]);
 });
 

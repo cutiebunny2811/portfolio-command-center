@@ -23,5 +23,19 @@ test("mixed portfolios allocate stocks by market value and options by maximum lo
   assert.equal(value.marketValue, 900);
   assert.equal(value.allocationDeployed, 860);
   assert.equal(value.allocationCapital, 1060);
+  assert.equal(value.cashPercent, 200 / 950 * 100);
   assert.equal(value.maximumLossBasis, true);
+});
+
+test("cash percent uses actual remaining cash against displayed total capital", () => {
+  const value = portfolioMath.portfolioValuation({
+    portfolio: { portfolio_mode: "mixed" },
+    cash: 61.92,
+    positions: [{ instrument_id: "stock", quantity: 1, cost_basis: 2836.46 }],
+    instrumentsById: new Map([["stock", { asset_type: "stock", multiplier: 1 }]]),
+    pricesById: new Map(),
+  });
+
+  assert.equal(value.bookCapital, 2898.38);
+  assert.ok(Math.abs(value.cashPercent - (61.92 / 2898.38 * 100)) < 1e-12);
 });

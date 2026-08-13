@@ -1358,7 +1358,7 @@
                 <div><small>Remaining</small><strong>${money(stats.cash)}</strong></div>
                 <div class="portfolio-card__return ${stats.returnAmount > 0 ? "positive" : stats.returnAmount < 0 ? "negative" : ""}"><small>Portfolio return</small><strong>${stats.returnAmount > 0 ? "+" : ""}${percent(stats.returnPercent, 2)}</strong></div>
               </div>
-              <div><div class="meter ${plan.isOver ? "is-risk" : plan.isComplete ? "is-complete" : ""}" style="--meter:${clamp(plan.planned, 0, 100)}%"><i></i></div><p class="meta">${percent(plan.planned)} planned · ${percent(plan.unallocated)} stays as cash</p></div>
+              <div><div class="meter ${plan.isOver ? "is-risk" : plan.isComplete ? "is-complete" : ""}" style="--meter:${clamp(plan.planned, 0, 100)}%"><i></i></div><p class="meta">${percent(plan.planned)} planned · ${percent(stats.cashPercent)} stays as cash</p></div>
             </button>`;
           }).join("")}
         </div>

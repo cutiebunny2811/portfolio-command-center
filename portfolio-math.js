@@ -47,6 +47,7 @@
     const currentEquity = cashBalance + marketValue;
     const allocationCapital = Math.max(cashBalance + allocationDeployed, 0);
     const utilization = allocationCapital > 0 ? allocationDeployed / allocationCapital * 100 : 0;
+    const cashPercent = bookCapital > 0 ? Math.max(cashBalance, 0) / bookCapital * 100 : 0;
     const returnAmount = currentEquity - bookCapital;
     const returnPercent = bookCapital > 0 ? returnAmount / bookCapital * 100 : 0;
 
@@ -60,6 +61,7 @@
       allocationDeployed,
       allocationCapital,
       utilization,
+      cashPercent,
       returnAmount,
       returnPercent,
       maximumLossBasis: activePositions.some((position) => isOption(instrumentsById.get(position.instrument_id)))

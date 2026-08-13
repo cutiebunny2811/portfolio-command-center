@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  applyBlsPpiOverrides,
+  buildBlsPpiOverrides,
   buildFomcRows,
   buildFredRows,
   buildIsmRows,
@@ -76,6 +78,47 @@ test("maps observations to release periods and keeps only advance GDP months", (
   ]);
   assert.deepEqual(rows.filter((row) => row.series_id === "A191RL1Q225SBEA").map((row) => row.scheduled_at.slice(0, 10)), ["2026-10-29"]);
   assert.equal(rows.some((row) => Object.hasOwn(row, "forecast")), false);
+});
+
+test("uses the official BLS PPI release before the FRED fallback catches up", () => {
+  const fetchedAt = "2026-08-13T12:31:00.000Z";
+  const rows = buildFredRows({
+    releaseDatesById: { 10: [], 54: [], 50: [], 46: [{ date: "2026-08-13" }], 53: [], 9: [], 192: [], 180: [] },
+    observationsBySeries: {
+      "PPIFIS:pch": [{ date: "2026-06-01", value: "-0.3" }],
+      "PPIFES:pch": [{ date: "2026-06-01", value: "0.2" }],
+    },
+    now: fetchedAt,
+    fetchedAt,
+    windowFrom: "2026-08-13",
+    windowTo: "2026-08-13",
+  });
+  const overrides = buildBlsPpiOverrides([
+    {
+      seriesID: "WPSFD4",
+      data: [
+        { year: "2026", period: "M07", value: "156.563" },
+        { year: "2026", period: "M06", value: "156.607" },
+        { year: "2026", period: "M05", value: "156.783" },
+      ],
+    },
+    {
+      seriesID: "WPSFD49104",
+      data: [
+        { year: "2026", period: "M07", value: "154.450" },
+        { year: "2026", period: "M06", value: "154.076" },
+        { year: "2026", period: "M05", value: "153.420" },
+      ],
+    },
+  ], fetchedAt);
+  const updated = applyBlsPpiOverrides(rows, overrides, fetchedAt);
+
+  assert.deepEqual(updated.map((row) => [row.event_name, row.actual, row.source_name]), [
+    ["Producer Price Index (MoM)", "0%", "BLS Public Data API"],
+    ["Core PPI (MoM)", "0.2%", "BLS Public Data API"],
+  ]);
+  assert.equal(updated[0].raw_payload.fallback_source, "fred");
+  assert.equal(updated[1].raw_payload.bls_series_id, "WPSFD49104");
 });
 
 test("parses FOMC meetings and builds decision, press conference, and minutes", () => {

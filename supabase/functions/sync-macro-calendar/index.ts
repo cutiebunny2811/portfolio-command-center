@@ -1,5 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
+  applyBlsPpiOverrides,
+  BLS_PPI_SERIES,
+  buildBlsPpiOverrides,
   buildFomcRows,
   buildFredRows,
   buildIsmRows,
@@ -8,6 +11,7 @@ import {
   FRED_EVENTS,
   parseFomcMeetings,
   RISK_SERIES,
+  zonedIso,
 } from "./macro-core.mjs";
 
 const corsHeaders = {
@@ -20,6 +24,7 @@ const corsHeaders = {
 const LONG_SENTIMENT_HISTORY = new Set(["SP500", "VIXCLS", "BAMLH0A0HYM2"]);
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const FRED_BASE = "https://api.stlouisfed.org/fred";
+const BLS_PUBLIC_API = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
 const FOMC_CALENDAR =
   "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
 
@@ -34,12 +39,16 @@ function result(payload: unknown, status = 200) {
   });
 }
 
-async function fetchWithRetry(url: URL | string) {
+async function fetchWithRetry(url: URL | string, init: RequestInit = {}) {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const response = await fetch(url, {
-        headers: { Accept: "application/json, text/html" },
+        ...init,
+        headers: {
+          Accept: "application/json, text/html",
+          ...(init.headers || {}),
+        },
       });
       if (!response.ok) throw new Error(`Upstream returned ${response.status}`);
       return response;
@@ -53,6 +62,32 @@ async function fetchWithRetry(url: URL | string) {
   throw lastError instanceof Error
     ? lastError
     : new Error("Upstream request failed");
+}
+
+function isPpiReleaseWindow(releaseDates: unknown[], now: Date) {
+  return (releaseDates || []).some((item) => {
+    const releaseDate = String((item as Record<string, unknown>)?.date || item || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) return false;
+    const delta = now.getTime() - new Date(zonedIso(releaseDate, "08:30")).getTime();
+    return delta >= -10 * 60_000 && delta <= 4 * 60 * 60_000;
+  });
+}
+
+async function blsPpiSeries(now: Date) {
+  const response = await fetchWithRetry(BLS_PUBLIC_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      seriesid: BLS_PPI_SERIES.map((item) => item.blsSeriesId),
+      startyear: String(now.getUTCFullYear() - 1),
+      endyear: String(now.getUTCFullYear()),
+    }),
+  });
+  const payload = await response.json() as Record<string, any>;
+  if (payload.status !== "REQUEST_SUCCEEDED" || !Array.isArray(payload.Results?.series)) {
+    throw new Error(`BLS Public Data API returned ${payload.status || "an invalid payload"}`);
+  }
+  return payload.Results.series;
 }
 
 async function fredJson(
@@ -173,15 +208,26 @@ Deno.serve(async (request) => {
         observationsBySeries[request.seriesId] = observationsBySeries[request.key];
       }
     }
-    const rows = dedupeMacroRows([
-      ...buildFredRows({
+    let blsWarning: string | null = null;
+    let blsOverrides = new Map();
+    if (isPpiReleaseWindow(releaseDatesById[46] || [], now)) {
+      try {
+        blsOverrides = buildBlsPpiOverrides(await blsPpiSeries(now), fetchedAt);
+      } catch (error) {
+        blsWarning = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    const fredRows = applyBlsPpiOverrides(buildFredRows({
         releaseDatesById,
         observationsBySeries,
         now: fetchedAt,
         fetchedAt,
         windowFrom,
         windowTo,
-      }),
+      }), blsOverrides, fetchedAt);
+    const rows = dedupeMacroRows([
+      ...fredRows,
       ...buildFomcRows({
         meetings,
         lowerObservations: observationsBySeries.DFEDTARL,
@@ -273,7 +319,8 @@ Deno.serve(async (request) => {
     return result({
       updated: rows.length,
       risk_snapshots: riskSnapshots.length,
-      sources: ["FRED", "Federal Reserve", "ISM"],
+      sources: ["BLS Public Data API", "FRED", "Federal Reserve", "ISM"],
+      source_warning: blsWarning,
       window_from: windowFrom,
       window_to: windowTo,
     });

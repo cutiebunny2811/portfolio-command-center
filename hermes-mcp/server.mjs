@@ -192,7 +192,7 @@ const tools = [
   },
   {
     name: "get_macro_alerts",
-    description: "Read an alert-ready cached macro feed: high-impact events due soon, releases with an Actual in the recent window, next FOMC, and source freshness. This does not send notifications itself. When monitoring, de-duplicate by event id plus Actual and never invent consensus or trading advice.",
+    description: "Read an alert-ready cached macro feed: high-impact events due soon, releases with an Actual, releases still awaiting an official Actual, next FOMC, and source freshness. This does not send notifications itself. When monitoring, de-duplicate by event id plus Actual, surface pending_actual as a source delay, and never invent consensus or trading advice.",
     inputSchema: {
       type: "object",
       properties: {

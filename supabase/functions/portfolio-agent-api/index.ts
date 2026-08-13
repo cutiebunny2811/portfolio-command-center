@@ -721,14 +721,24 @@ async function macroAlerts(service: any, body: Record<string, unknown>) {
     .not("actual", "is", null)
     .gte("scheduled_at", backIso)
     .lte("scheduled_at", nowIso);
+  let pendingQuery = service
+    .from("macro_events")
+    .select(macroEventFields)
+    .eq("is_active", true)
+    .eq("source", "fred")
+    .is("actual", null)
+    .gte("scheduled_at", backIso)
+    .lte("scheduled_at", nowIso);
   if (category) {
     upcomingQuery = upcomingQuery.eq("category", category);
     releasedQuery = releasedQuery.eq("category", category);
+    pendingQuery = pendingQuery.eq("category", category);
   }
 
-  const [upcoming, released, nextFomc, syncState] = await Promise.all([
+  const [upcoming, released, pendingActual, nextFomc, syncState] = await Promise.all([
     must(upcomingQuery.order("scheduled_at").order("event_name").limit(100)),
     must(releasedQuery.order("scheduled_at", { ascending: false }).order("event_name").limit(100)),
+    must(pendingQuery.order("scheduled_at", { ascending: false }).order("event_name").limit(100)),
     must(service
       .from("macro_events")
       .select(macroEventFields)
@@ -751,9 +761,11 @@ async function macroAlerts(service: any, body: Record<string, unknown>) {
     alert_window: { hours_ahead: hoursAhead, hours_back: hoursBack },
     upcoming: upcoming || [],
     released: released || [],
+    pending_actual: pendingActual || [],
     next_fomc: nextFomc || null,
     last_synced_at: (syncState as Record<string, unknown> | null)?.last_success_at || null,
-    guidance: "Use event id plus actual value to de-duplicate notifications. Actual and previous are facts; do not infer a consensus or treat the comparison as trade advice.",
+    source_status: pendingActual?.length ? "AWAITING_ACTUAL" : "OK",
+    guidance: "Use event id plus actual value to de-duplicate notifications. pending_actual means the scheduled release passed but its official value has not reached PCC yet; report the source delay instead of treating it as no event. Actual and previous are facts; do not infer a consensus or treat the comparison as trade advice.",
   };
 }
 

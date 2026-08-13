@@ -15,7 +15,7 @@ test("Smart Money is lazy and cannot take down the mobile dashboard startup", as
   assert.match(app, /state\.smartMoneyError = friendlyError\(error\)/);
   assert.match(app, /data-action="smart-money-retry"/);
   assert.doesNotMatch(app, /\n\s*optionalSmartMoneyQuery\(\),\n/);
-  assert.match(index, /app\.js\?v=20260813-cpi-yoy/);
+  assert.match(index, /app\.js\?v=20260813-bls-primary/);
 });
 
 test("Smart Money RPC has indexes for normalized symbols and global filing lookup", async () => {

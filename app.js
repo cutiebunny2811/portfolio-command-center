@@ -2206,7 +2206,7 @@
     const nextRead = nextEvent ? macroRead(nextEvent) : { label: "CLEAR", tone: "neutral" };
 
     viewRoot.innerHTML = `
-      ${pageHead("US macro · High impact only", "The releases that move the tape.", "FOMC, inflation, labor, growth and activity — a deliberately narrow calendar built from official schedules and FRED observations.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources…" : "Update sources"}</button>`)}
+      ${pageHead("US macro · High impact only", "The releases that move the tape.", "FOMC, inflation, labor, growth and activity — a deliberately narrow calendar built from official releases with FRED fallback.", `<button class="button button--primary" type="button" data-action="macro-sync" ${state.macroSyncBusy || !state.macroReady ? "disabled" : ""}>${state.macroSyncBusy ? "Reading sources…" : "Update sources"}</button>`)}
       ${macroTabs()}
       ${!state.macroReady ? `<div class="warning-box macro-setup"><strong>Macro Calendar is not installed yet.</strong> Run <code>035_us_macro_calendar.sql</code>, add <code>FRED_API_KEY</code>, then deploy <code>sync-macro-calendar</code>.</div>` : ""}
       <section class="macro-hero" aria-label="Macro command summary">
@@ -2226,7 +2226,7 @@
         <div><small>NEXT 7 DAYS</small><strong>${sevenDays}</strong><span>high-impact releases</span></div>
         <div><small>35-DAY TAPE</small><strong>${entries.length}</strong><span>curated events</span></div>
         <div><small>JUST REPORTED</small><strong>${released}</strong><span>actual values loaded</span></div>
-        <div><small>LAST SOURCE READ</small><strong class="macro-ledger__time">${esc(syncLabel)}</strong><span>FRED + official calendars</span></div>
+        <div><small>LAST SOURCE READ</small><strong class="macro-ledger__time">${esc(syncLabel)}</strong><span>official releases + FRED fallback</span></div>
       </section>
       <section class="macro-tape" aria-live="polite" aria-busy="${state.macroBusy}">
         <header class="section-head macro-tape__head"><div><span class="section-index">03 / EVENT TAPE</span><h2>Thirty-five days. No filler.</h2></div><p>Times shown in New York and Bangkok.</p></header>

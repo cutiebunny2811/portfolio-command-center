@@ -217,6 +217,11 @@ export const FRED_EVENTS = [
   },
 ];
 
+export const BLS_PPI_SERIES = [
+  { pccSeriesId: "PPIFIS", blsSeriesId: "WPSFD4" },
+  { pccSeriesId: "PPIFES", blsSeriesId: "WPSFD49104" },
+];
+
 export const RISK_SERIES = [
   { seriesId: "SAHMREALTIME", sourceUrl: "https://fred.stlouisfed.org/series/SAHMREALTIME" },
   { seriesId: "ICSA", sourceUrl: "https://fred.stlouisfed.org/series/ICSA" },
@@ -615,6 +620,7 @@ export function buildFredRows(
           release_id: config.releaseId,
           series_id: config.seriesId,
           fred_url: `https://fred.stlouisfed.org/series/${config.seriesId}`,
+          expected_observation_date: expected,
           observation_date: actualObservation?.date || null,
           observation_value: actualObservation?.value || null,
         },
@@ -624,6 +630,89 @@ export function buildFredRows(
     }
   }
   return rows;
+}
+
+function blsObservationDate(item) {
+  const year = String(item?.year || "");
+  const month = /^M(\d{2})$/.exec(String(item?.period || ""))?.[1];
+  return /^\d{4}$/.test(year) && month ? `${year}-${month}-01` : null;
+}
+
+function oneMonthPercentChange(current, previous) {
+  const currentValue = Number(current);
+  const previousValue = Number(previous);
+  if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue) || previousValue === 0) {
+    return null;
+  }
+  return ((currentValue / previousValue) - 1) * 100;
+}
+
+export function buildBlsPpiOverrides(series, fetchedAt) {
+  const bySeries = new Map((series || []).map((item) => [item.seriesID, item]));
+  const overrides = new Map();
+
+  for (const config of BLS_PPI_SERIES) {
+    const observations = [...(bySeries.get(config.blsSeriesId)?.data || [])]
+      .map((item) => ({ ...item, date: blsObservationDate(item) }))
+      .filter((item) => item.date && Number.isFinite(Number(item.value)))
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    for (let index = 0; index < observations.length - 1; index += 1) {
+      const current = observations[index];
+      const previous = observations[index + 1];
+      const actualChange = oneMonthPercentChange(current.value, previous.value);
+      const earlier = observations[index + 2];
+      const previousChange = earlier
+        ? oneMonthPercentChange(previous.value, earlier.value)
+        : null;
+      if (actualChange === null) continue;
+
+      overrides.set(`${config.pccSeriesId}:${current.date}`, {
+        actual: formatFredValue(String(actualChange), "percent"),
+        previous: previousChange === null
+          ? null
+          : formatFredValue(String(previousChange), "percent"),
+        source_name: "BLS Public Data API",
+        source_url: "https://www.bls.gov/ppi/",
+        raw_payload: {
+          primary_source: "bls_api",
+          bls_series_id: config.blsSeriesId,
+          observation_date: current.date,
+          observation_value: current.value,
+          previous_observation_date: previous.date,
+          previous_observation_value: previous.value,
+          fetched_at: fetchedAt,
+        },
+      });
+    }
+  }
+
+  return overrides;
+}
+
+export function applyBlsPpiOverrides(rows, overrides, now) {
+  const current = new Date(now);
+  return rows.map((row) => {
+    if (row.source !== "fred" || !row.series_id || new Date(row.scheduled_at) > current) {
+      return row;
+    }
+    const expectedDate = row.raw_payload?.expected_observation_date;
+    const override = overrides.get(`${row.series_id}:${expectedDate}`);
+    if (!override) return row;
+
+    return {
+      ...row,
+      actual: override.actual,
+      previous: override.previous ?? row.previous,
+      source_name: override.source_name,
+      source_url: override.source_url,
+      raw_payload: {
+        ...row.raw_payload,
+        fallback_source: "fred",
+        ...override.raw_payload,
+      },
+    };
+  });
 }
 
 const MONTHS = {

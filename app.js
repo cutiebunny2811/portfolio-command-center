@@ -57,7 +57,7 @@
 
   const state = {
     user: null, member: null,
-    portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [], executions: [],
+    portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [], executions: [], cashMovements: [],
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
@@ -80,7 +80,7 @@
     agentTokens: [], agentDrafts: [],
     route: initialRoute, selectedPortfolioId: null,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, expandedHoldingId: null,
-    tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "",
+    tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "", tradeHistoryView: "trades",
     loading: false, lastSync: null
   };
 
@@ -1158,7 +1158,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -1166,6 +1166,7 @@
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
         query("Position capacity", db.from("position_capacity").select("*")),
         query("Transaction history", db.from("executions").select("id,portfolio_id,instrument_id,side,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").order("executed_at", { ascending: false }).limit(200)),
+        query("Cash activity", db.from("cash_movements").select("id,portfolio_id,movement_type,amount,occurred_at,notes,metadata").order("occurred_at", { ascending: false }).limit(200)),
         query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
@@ -1177,7 +1178,7 @@
         fetchMacroRiskFeed(),
         fetchBriefFeed()
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
       state.researchEntries = researchFeed.entries;
       state.researchTotal = num(researchFeed.total_count);
       applyEarningsFeed(earningsFeed);
@@ -1479,13 +1480,13 @@
     </table></div><div class="pagination"><span>${rows.length} assets · showing ${start + 1}–${Math.min(start + state.holdingsPageSize, rows.length)}</span><div><button class="button button--small" type="button" data-action="page-prev" ${state.holdingsPage <= 1 ? "disabled" : ""}>← Prev</button> <button class="button button--small" type="button" data-action="page-next" ${state.holdingsPage >= pages ? "disabled" : ""}>Next →</button></div></div>`;
   }
 
-  function historyDialogMarkup(portfolio) {
+  function tradeHistoryDialogMarkup(portfolio) {
     const instruments = instrumentMap();
     const query = state.tradeHistoryQuery.trim().toLowerCase();
     const rows = state.executions.filter((item) => {
       const instrument = instruments.get(item.instrument_id);
       return item.portfolio_id === portfolio.id && (!query || `${instrument?.symbol || ""} ${instrument?.display_name || ""}`.toLowerCase().includes(query));
-    });
+    }).sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
     const pages = Math.max(1, Math.ceil(rows.length / state.tradeHistoryPageSize));
     state.tradeHistoryPage = clamp(state.tradeHistoryPage, 1, pages);
     const start = (state.tradeHistoryPage - 1) * state.tradeHistoryPageSize;
@@ -1517,13 +1518,98 @@
     return `<div class="table-shell history-table-shell"><table class="trade-history-table"><thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th><th>Price</th><th>Cash movement</th><th>Realized P/L</th><th>Action</th></tr></thead><tbody>${tableRows}</tbody></table></div><div class="history-mobile-list">${mobileCards}</div><div class="pagination"><span>${start + 1}-${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} transactions · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next</button></div></div>`;
   }
 
+  const cashMovementLabels = {
+    deposit: "Deposit",
+    withdrawal: "Withdrawal",
+    initial_funding: "Initial funding",
+    dividend: "Dividend",
+    interest: "Interest",
+    tax: "Tax"
+  };
+
+  function cashMovementLabel(value) {
+    const key = String(value || "").toLowerCase();
+    return cashMovementLabels[key] || key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()) || "Cash movement";
+  }
+
+  function cashMovementEffect(movement) {
+    const amount = Math.abs(num(movement?.amount));
+    return ["withdrawal", "tax"].includes(String(movement?.movement_type || "").toLowerCase()) ? -amount : amount;
+  }
+
+  function cashHistoryDialogMarkup(portfolio) {
+    const query = state.tradeHistoryQuery.trim().toLowerCase();
+    const rows = state.cashMovements.filter((item) => {
+      const label = cashMovementLabel(item.movement_type);
+      return item.portfolio_id === portfolio.id && (!query || `${label} ${item.notes || ""}`.toLowerCase().includes(query));
+    }).sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
+    const pages = Math.max(1, Math.ceil(rows.length / state.tradeHistoryPageSize));
+    state.tradeHistoryPage = clamp(state.tradeHistoryPage, 1, pages);
+    const start = (state.tradeHistoryPage - 1) * state.tradeHistoryPageSize;
+    const visible = rows.slice(start, start + state.tradeHistoryPageSize);
+    if (!visible.length) return `<div class="empty-state"><div><strong>No matching cash activity</strong>${query ? "Try another movement or note." : "Deposits, withdrawals, dividends and other confirmed cash movements will appear here."}</div></div>`;
+    const formatted = visible.map((movement) => {
+      const effect = cashMovementEffect(movement);
+      const outflow = effect < 0;
+      const occurred = new Date(movement.occurred_at);
+      return {
+        movement,
+        effect,
+        outflow,
+        label: cashMovementLabel(movement.movement_type),
+        date: occurred.toLocaleDateString(),
+        time: occurred.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        note: movement.notes || movement.metadata?.source || "No note"
+      };
+    });
+    const tableRows = formatted.map(({ movement, effect, outflow, label, date, time, note }) =>
+      `<tr><td><span class="cell-main mono">${date}</span><span class="cell-sub">${time}</span></td><td><span class="status status--${outflow ? "risk" : "good"}">${esc(label)}</span></td><td><strong class="mono ${outflow ? "negative" : "positive"}">${effect > 0 ? "+" : ""}${money(effect)}</strong></td><td class="history-note"><span class="cell-main">${esc(note)}</span><span class="cell-sub">${esc(String(movement.movement_type || "cash").replaceAll("_", " "))}</span></td></tr>`
+    ).join("");
+    const mobileCards = formatted.map(({ effect, outflow, label, date, time, note }) =>
+      `<article class="history-mobile-card cash-history-card"><header><div><span class="status status--${outflow ? "risk" : "good"}">${esc(label)}</span><strong class="mono ${outflow ? "negative" : "positive"}">${effect > 0 ? "+" : ""}${money(effect)}</strong></div></header><dl><div><dt>Date</dt><dd>${date}<small>${time}</small></dd></div><div><dt>Direction</dt><dd class="${outflow ? "negative" : "positive"}">${outflow ? "Cash out" : "Cash in"}</dd></div><div><dt>Notes</dt><dd>${esc(note)}</dd></div></dl></article>`
+    ).join("");
+    return `<div class="table-shell history-table-shell"><table class="cash-history-table"><thead><tr><th>Date</th><th>Movement</th><th>Cash effect</th><th>Notes</th></tr></thead><tbody>${tableRows}</tbody></table></div><div class="history-mobile-list">${mobileCards}</div><div class="pagination"><span>${start + 1}-${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} cash movements · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next</button></div></div>`;
+  }
+
+  function historyDialogMarkup(portfolio) {
+    return state.tradeHistoryView === "cash" ? cashHistoryDialogMarkup(portfolio) : tradeHistoryDialogMarkup(portfolio);
+  }
+
+  function historyTabsMarkup(portfolio) {
+    const tradeCount = state.executions.filter((item) => item.portfolio_id === portfolio.id).length;
+    const cashCount = state.cashMovements.filter((item) => item.portfolio_id === portfolio.id).length;
+    return `<nav class="history-tabs" aria-label="Transaction history views" role="tablist"><button class="${state.tradeHistoryView === "trades" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "trades"}" data-action="trade-history-view" data-history-view="trades"><span>01</span>Trades<strong>${tradeCount}</strong></button><button class="${state.tradeHistoryView === "cash" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "cash"}" data-action="trade-history-view" data-history-view="cash"><span>02</span>Cash activity<strong>${cashCount}</strong></button></nav>`;
+  }
+
+  function refreshHistoryDialog(portfolio) {
+    const body = $("#dialog-body");
+    const cashView = state.tradeHistoryView === "cash";
+    $$("[data-history-view]", body).forEach((button) => {
+      const active = button.dataset.historyView === state.tradeHistoryView;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    const label = $("[data-history-search-label]", body);
+    const search = $("[data-trade-history-search]", body);
+    const retention = $("[data-history-retention]", body);
+    if (label) label.textContent = cashView ? "Search cash activity" : "Search ticker";
+    if (search) {
+      search.value = state.tradeHistoryQuery;
+      search.placeholder = cashView ? "Dividend, deposit, note..." : "RKLB, NVDA...";
+    }
+    if (retention) retention.textContent = cashView ? "Loads the latest 200 cash movements" : "Loads the latest 200 trades";
+    const region = $("#trade-history-region", body);
+    if (region) region.innerHTML = historyDialogMarkup(portfolio);
+  }
+
   function openExecutionHistoryDialog() {
     const portfolio = currentPortfolio();
     state.tradeHistoryPage = 1;
     state.tradeHistoryQuery = "";
+    state.tradeHistoryView = "trades";
     openDialog({
       kicker: `${portfolio.name} · Audit trail`, title: "Transaction history", cancelLabel: "Done", wide: true, variant: "history",
-      body: `<div class="history-commandbar"><label class="field"><span>Search ticker</span><input type="search" autocomplete="off" data-trade-history-search placeholder="RKLB, NVDA..."></label><span class="meta">Loads only the latest 200 transactions</span></div><div id="trade-history-region">${historyDialogMarkup(portfolio)}</div>`,
+      body: `${historyTabsMarkup(portfolio)}<div class="history-commandbar"><label class="field"><span data-history-search-label>Search ticker</span><input type="search" autocomplete="off" data-trade-history-search placeholder="RKLB, NVDA..."></label><span class="meta" data-history-retention>Loads the latest 200 trades</span></div><div id="trade-history-region">${historyDialogMarkup(portfolio)}</div>`,
       onSubmit: null
     });
     const search = $("[data-trade-history-search]", $("#dialog-body"));
@@ -4145,6 +4231,12 @@
     else if (action === "holding-sell") openTradeDialog("sell", { instrumentId: target.dataset.instrumentId });
     else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
     else if (action === "execution-history") openExecutionHistoryDialog();
+    else if (action === "trade-history-view") {
+      state.tradeHistoryView = target.dataset.historyView === "cash" ? "cash" : "trades";
+      state.tradeHistoryPage = 1;
+      state.tradeHistoryQuery = "";
+      refreshHistoryDialog(currentPortfolio());
+    }
     else if (action === "trade-history-edit") openExecutionEditDialog(target.dataset.executionId);
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
@@ -4430,6 +4522,16 @@
       ["p-opt", "i-tsla-opt", 25, 30, 2]
     ].map(([portfolio_id, instrument_id, target_percent, maximum_percent, planned_tranches]) => ({ portfolio_id, instrument_id, target_percent, maximum_percent, planned_tranches, is_active: true }));
     const cash = [{ portfolio_id: "p-long", cash_balance: 11515 }, { portfolio_id: "p-swing", cash_balance: 9700 }, { portfolio_id: "p-spec", cash_balance: 3120 }, { portfolio_id: "p-opt", cash_balance: 6300 }];
+    const executions = [
+      { id: "ex-1", portfolio_id: "p-long", instrument_id: "i-nvda", side: "buy", quantity: 5, price: 125, multiplier: 1, fee: 0.25, gross_amount: 625, cash_effect: -625.25, realized_pnl: 0, executed_at: "2026-08-12T14:30:00Z" },
+      { id: "ex-2", portfolio_id: "p-long", instrument_id: "i-googl", side: "sell", quantity: 2, price: 195, multiplier: 1, fee: 0.20, gross_amount: 390, cash_effect: 389.80, realized_pnl: 49.80, executed_at: "2026-08-10T15:10:00Z" }
+    ];
+    const cashMovements = [
+      { id: "cm-1", portfolio_id: "p-long", movement_type: "dividend", amount: 42.60, occurred_at: "2026-08-13T13:00:00Z", notes: "Quarterly dividend", metadata: {} },
+      { id: "cm-2", portfolio_id: "p-long", movement_type: "deposit", amount: 1000, occurred_at: "2026-08-08T10:30:00Z", notes: "Broker transfer", metadata: {} },
+      { id: "cm-3", portfolio_id: "p-long", movement_type: "tax", amount: 6.39, occurred_at: "2026-08-13T13:00:00Z", notes: "Dividend withholding tax", metadata: {} },
+      { id: "cm-4", portfolio_id: "p-swing", movement_type: "withdrawal", amount: 250, occurred_at: "2026-08-09T09:15:00Z", notes: "Cash withdrawal", metadata: {} }
+    ];
     const capacities = targets.map((target) => {
       const portfolio = portfolios.find((p) => p.id === target.portfolio_id);
       const position = positions.find((p) => p.portfolio_id === target.portfolio_id && p.instrument_id === target.instrument_id);
@@ -4598,7 +4700,7 @@
       { id: "notice-update", notification_type: "brief_continuation", title: "Daily Market Brief · Continuation", preview: "Indexes softened, but the original thesis remains current.", entity_id: "update-preview", created_at: new Date().toISOString(), read_at: null },
       { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, notifications, selectedBriefId: "brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, executions, cashMovements, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, notifications, selectedBriefId: "brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;

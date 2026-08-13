@@ -1524,7 +1524,9 @@
     initial_funding: "Initial funding",
     dividend: "Dividend",
     interest: "Interest",
-    tax: "Tax"
+    tax: "Tax",
+    correction_in: "Balance correction in",
+    correction_out: "Balance correction out"
   };
 
   function cashMovementLabel(value) {
@@ -1533,8 +1535,12 @@
   }
 
   function cashMovementEffect(movement) {
-    const amount = Math.abs(num(movement?.amount));
-    return ["withdrawal", "tax"].includes(String(movement?.movement_type || "").toLowerCase()) ? -amount : amount;
+    const rawAmount = num(movement?.amount);
+    const amount = Math.abs(rawAmount);
+    const type = String(movement?.movement_type || "").toLowerCase();
+    if (["withdrawal", "tax", "correction_out"].includes(type)) return -amount;
+    if (["deposit", "initial_funding", "dividend", "interest", "correction_in"].includes(type)) return amount;
+    return rawAmount;
   }
 
   function cashHistoryDialogMarkup(portfolio) {

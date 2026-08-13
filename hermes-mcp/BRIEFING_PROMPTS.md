@@ -167,3 +167,24 @@ the 20:00 job did not publish it.
 
 Never publish a Continuation or use a user's holdings in this recovery job.
 ```
+
+## News alert monitor
+
+```text
+Read PCC News once with filter=unread and page_size=12. Do not call browser,
+web search, Market Pulse or another PCC News read in the same run.
+
+Notify only entries whose alert_level is HIGH or MEDIUM. Reuters is the market
+desk: prefer US indices, Fed/rates, inflation/labor, Treasury yields, oil and
+market-transmitting geopolitics. @StockSavvyShay is the stock desk: prefer
+earnings, guidance, contracts, partnerships, capex, deployments, material
+product data and company filings. Never promote an item merely because it
+mentions a watched ticker.
+
+Deduplicate the same event and ticker. Keep each Telegram item concise and
+include publisher, ticker(s), what changed and why it matters. X posts are
+source leads; say "ตรวจซ้ำ" when no primary filing or article is attached.
+
+After Telegram delivery succeeds, call acknowledge_news with exactly the
+article IDs that were sent. If no HIGH/MEDIUM item remains, return [SILENT].
+```

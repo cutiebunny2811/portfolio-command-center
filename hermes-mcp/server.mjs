@@ -153,7 +153,7 @@ const tools = [
   },
   {
     name: "get_news",
-    description: "Read the user's cached PCC Research News feed. Supports the same filters and ticker search as the News page and never triggers an external sync.",
+    description: "Read the user's cached PCC Research News feed. Each entry includes alert_level (HIGH, MEDIUM or LOW); news monitors should notify only unread HIGH/MEDIUM entries and stay silent when none exist. Never triggers an external sync.",
     inputSchema: {
       type: "object",
       properties: {
@@ -162,6 +162,23 @@ const tools = [
         page_size: { type: "integer", minimum: 1, maximum: 50, default: 25 },
         search: { type: "string", description: "Exact ticker symbol, for example NVDA." },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "acknowledge_news",
+    description: "Mark News entries read only after their HIGH/MEDIUM Telegram alert was delivered successfully. This changes reading state only; it cannot change a portfolio, watchlist or broker data.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        article_ids: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 50,
+        },
+      },
+      required: ["article_ids"],
       additionalProperties: false,
     },
   },
@@ -445,6 +462,7 @@ const actionByTool = {
   get_sell_history: "sell_history",
   get_watchlist: "watchlist",
   get_news: "news",
+  acknowledge_news: "acknowledge_news",
   get_earnings_calendar: "earnings",
   get_macro_calendar: "macro_calendar",
   get_macro_alerts: "macro_alerts",

@@ -1852,6 +1852,7 @@
     const tickers = (article.tickers || []).slice(0, 5);
     const isTickerEvent = article.source === "x" && (article.keywords || []).includes("TICKER_EVENT");
     const isMacro = article.source === "x" && (article.keywords || []).includes("MARKET_MACRO");
+    const alertLevel = (article.keywords || []).includes("ALERT_HIGH") ? "HIGH" : (article.keywords || []).includes("ALERT_MEDIUM") ? "MEDIUM" : "";
     const publisher = article.publisher_name || "Source unavailable";
     const description = String(article.description || "").trim();
     const sourceLabel = article.source === "sec-8k" ? "SEC 8-K" : isTickerEvent ? "TICKER EVENT" : isMacro ? "MARKET / MACRO" : article.source === "x" ? "X POST" : "NEWS";
@@ -1861,6 +1862,7 @@
       <div class="news-item__body">
         <div class="news-item__meta">
           <b>${sourceLabel}</b>
+          ${alertLevel ? `<b>${alertLevel}</b>` : ""}
           <span>${esc(publisher)}</span>
           <time datetime="${esc(article.published_at)}">${esc(researchTime(article.published_at))}</time>
           ${article.is_portfolio ? `<strong>IN PORTFOLIO</strong>` : ""}

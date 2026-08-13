@@ -2,6 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   X_MONTHLY_POST_TARGET,
   X_POST_READ_USD,
+  assessXContent,
   bangkokClock,
   dueXWindow,
   groupXSubscriptions,
@@ -309,7 +310,8 @@ function extractExplicitXTickers(post: XPost): string[] {
 function classifyXPost(
   post: XPost,
   trackedAliases: Map<string, Set<string>>,
-): { keep: boolean; tickers: string[]; keywords: string[] } {
+  sourceKey: string,
+): { keep: boolean; tickers: string[]; keywords: string[]; alertLevel: string | null } {
   const text = String(post.text || "").replace(/\s+/g, " ").trim();
   const trackedTickers = extractXTickers(post, trackedAliases);
   const explicitTickers = extractExplicitXTickers(post);
@@ -324,9 +326,12 @@ function classifyXPost(
     macroTags.forEach((tag) => keywords.add(tag));
   }
   if (isMarketEvent) keywords.add("MARKET_EVENT");
-  const keep = tickers.length > 0 || macroTags.length > 0 || isMarketEvent;
+  const assessment = assessXContent(sourceKey, { text, tickers });
+  const keep = assessment.keep;
+  if (assessment.desk) keywords.add(assessment.desk);
+  if (assessment.alertLevel) keywords.add(`ALERT_${assessment.alertLevel}`);
   if (keep) keywords.add("X_SIGNAL");
-  return { keep, tickers, keywords: [...keywords] };
+  return { keep, tickers, keywords: [...keywords], alertLevel: assessment.alertLevel };
 }
 
 async function storeArticlesAndMatches(
@@ -424,7 +429,7 @@ Deno.serve(async (request) => {
       .split(",")
       .map(normalizeXHandle)
       .filter(Boolean);
-    const xManagedHandles = [...new Set([...xDefaultHandles, "reuters"])]
+    const xManagedHandles = [...new Set([...xDefaultHandles, "reuters", "stocksavvyshay"])]
       .filter((handle) => Boolean(xSourcePlan(handle)));
     const syncSecret = Deno.env.get("RESEARCH_SYNC_SECRET")?.trim();
     if (!serviceRoleKey) return response({ error: "SUPABASE_SERVICE_ROLE_KEY is not configured" }, 500);
@@ -680,12 +685,10 @@ Deno.serve(async (request) => {
 
           const xRows = posts.flatMap((post) => {
             const text = String(post.text || "").replace(/\s+/g, " ").trim();
-            const classification = classifyXPost(post, trackedAliases);
-            if (!classification.keep && !plan.briefCandidate) return [];
+            const classification = classifyXPost(post, trackedAliases, sourceKey);
+            if (!classification.keep) return [];
             const keywords = new Set([...classification.keywords, `@${sourceKey}`]);
             if (plan.briefCandidate) {
-              keywords.add("X_SIGNAL");
-              keywords.add("MARKET_EVENT");
               keywords.add("BRIEF_CANDIDATE");
               keywords.add("REUTERS");
             }

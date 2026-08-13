@@ -390,6 +390,25 @@ async function confirmedExecutionSync(
   }));
 }
 
+function researchAlertLevel(
+  article: Record<string, unknown>,
+  scope: { is_portfolio: boolean; is_watchlist: boolean },
+): "HIGH" | "MEDIUM" | "LOW" {
+  const keywords = Array.isArray(article.keywords) ? article.keywords.map(String) : [];
+  if (keywords.includes("ALERT_HIGH")) return "HIGH";
+  if (keywords.includes("ALERT_MEDIUM")) return "MEDIUM";
+  if (article.source === "sec-8k") return scope.is_portfolio ? "HIGH" : "MEDIUM";
+
+  const text = `${article.title || ""} ${article.description || ""}`;
+  const publisher = String(article.publisher_name || "");
+  const opinionPublisher = /\b(the motley fool|investorplace|zacks|marketbeat|barchart)\b/i.test(publisher);
+  if (opinionPublisher) return "LOW";
+  const materialEvent = /\b(earnings?|guidance|acquir(?:e|es|ed|ing)|merger|buyout|offering|bankrupt(?:cy)?|fda|investigation|contract|partnership|layoffs?|forecast|raises?|cuts?|beats?|misses?)\b/i.test(text);
+  if (materialEvent && scope.is_portfolio) return "HIGH";
+  if (materialEvent || scope.is_portfolio || keywords.includes("MARKET_MACRO")) return "MEDIUM";
+  return "LOW";
+}
+
 async function researchNews(
   service: any,
   userId: string,
@@ -451,12 +470,20 @@ async function researchNews(
       return {
         ...article,
         ...scope,
+        alert_level: researchAlertLevel(article, scope),
         is_read: Boolean(state?.is_read),
         is_saved: Boolean(state?.is_saved),
         is_hidden: Boolean(state?.is_hidden),
       };
     })
-    .filter((entry) => entry.source !== "x" || (entry.keywords as string[]).includes("X_SIGNAL"))
+    .filter((entry) => entry.source !== "x" || (
+      (entry.keywords as string[]).includes("X_SIGNAL")
+      && (
+        (entry.keywords as string[]).includes("ALERT_HIGH")
+        || (entry.keywords as string[]).includes("ALERT_MEDIUM")
+        || (!(entry.keywords as string[]).includes("REUTERS") && (entry.keywords as string[]).includes("TICKER_EVENT"))
+      )
+    ))
     .filter((entry) => !searchTicker || (entry.tickers as string[]).includes(searchTicker))
     .filter((entry) => !entry.is_hidden)
     .filter((entry) => filter !== "unread" || !entry.is_read)
@@ -475,6 +502,42 @@ async function researchNews(
     filter,
     search_ticker: searchTicker,
   };
+}
+
+async function acknowledgeNews(
+  service: any,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const requestedIds = Array.isArray(body.article_ids)
+    ? unique(body.article_ids.map(String).filter((id) => /^[0-9a-f-]{36}$/i.test(id))).slice(0, 50)
+    : [];
+  if (!requestedIds.length) throw new Error("article_ids must contain at least one article UUID");
+
+  const [instrumentLinks, sourceLinks] = await Promise.all([
+    must(service.from("research_article_matches")
+      .select("article_id")
+      .eq("user_id", userId)
+      .in("article_id", requestedIds)),
+    must(service.from("research_source_article_matches")
+      .select("article_id")
+      .eq("user_id", userId)
+      .in("article_id", requestedIds)),
+  ]);
+  const allowedIds = unique([...instrumentLinks, ...sourceLinks].map((row: Record<string, unknown>) => String(row.article_id)));
+  if (!allowedIds.length) throw new Error("No linked news articles were found");
+
+  const now = new Date().toISOString();
+  await must(service.from("research_article_state").upsert(allowedIds.map((articleId) => ({
+    user_id: userId,
+    article_id: articleId,
+    updated_at: now,
+  })), { onConflict: "user_id,article_id", ignoreDuplicates: true }));
+  await must(service.from("research_article_state")
+    .update({ is_read: true, read_at: now, updated_at: now })
+    .eq("user_id", userId)
+    .in("article_id", allowedIds));
+  return { acknowledged: allowedIds.length, article_ids: allowedIds };
 }
 
 async function sharedMarketNews(service: any, lookbackHours: number) {
@@ -1112,6 +1175,10 @@ Deno.serve(async (request) => {
 
     if (action === "news") {
       return response({ action, data: await researchNews(service, identity.user_id, body) });
+    }
+
+    if (action === "acknowledge_news") {
+      return response({ action, data: await acknowledgeNews(service, identity.user_id, body) });
     }
 
     if (action === "earnings") {

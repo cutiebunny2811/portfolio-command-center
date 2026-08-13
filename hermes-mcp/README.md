@@ -22,6 +22,8 @@ Center without editing dashboard files or receiving Supabase SQL access.
 - Draft confirmation is intentionally absent from MCP. Confirm from
   `Account > Agent drafts` in the dashboard.
 - Watchlist writes never change cash, positions, allocation, or broker orders.
+- `acknowledge_news` changes only the member's News read state. Alert jobs call
+  it after Telegram delivery succeeds so an item cannot be announced twice.
 - The agent token is separate from the browser session and can be revoked.
 
 ## Hermes configuration

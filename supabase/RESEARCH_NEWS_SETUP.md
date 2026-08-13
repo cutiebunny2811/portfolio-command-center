@@ -44,11 +44,17 @@ subscribed member, so adding friends does not multiply X reads. The same stored
 Reuters rows serve the News page and Hermes briefing context.
 
 The internal target is 900 Post reads per Bangkok month (about $4.50 at $0.005
-per Post), with plans of 600 for `@Reuters` and 150 each for
-`@stocksavvyshay` and `@naklongpoong`. Reuters runs after 19:00 and 23:00
-Bangkok; the two existing News sources run once after 12:00. Repeated collector
+per Post), with plans of 420 for the Reuters market desk and up to 480 for the
+`@stocksavvyshay` stock desk. Reuters runs after 19:00 and 23:00 Bangkok.
+Shay runs after 20:00, 00:00 and 03:00 Bangkok to cover the observed US-session
+posting pattern. `@naklongpoong` is disabled because its posts frequently repeat
+the same upstream stock stories. Repeated collector
 invocations in the same window do not call X again. Keep the X Developer Console
 spending limit at $5 as the external hard stop.
+
+Every kept X row is tagged `ALERT_HIGH` or `ALERT_MEDIUM`. Hermes News monitors
+must request `unread`, notify only those two levels, mark an item read only after
+successful Telegram delivery, and return `[SILENT]` when no qualifying row exists.
 
 Hermes calls `refresh_brief_sources` immediately before the 20:00 brief and
 00:00 continuation. The action invokes this same collector with the server-side

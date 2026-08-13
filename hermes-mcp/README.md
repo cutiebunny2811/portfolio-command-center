@@ -44,7 +44,7 @@ Example MCP configuration:
     "portfolio-command-center": {
       "command": "node",
       "args": [
-        "C:\\Users\\Asus\\Documents\\Codex\\2026-07-16\\gridgeist\\portfolio-command-center\\hermes-mcp\\server.mjs"
+        "C:\\Users\\Asus\\Documents\\Codex\\2026-07-16\\gridgeist\\portfolio-command-center-release\\hermes-mcp\\server.mjs"
       ],
       "env": {
         "PCC_AGENT_API_URL": "https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/portfolio-agent-api",

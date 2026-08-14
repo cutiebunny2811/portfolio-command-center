@@ -153,11 +153,11 @@ const tools = [
   },
   {
     name: "get_news",
-    description: "Read the user's cached PCC Research News feed. Each entry includes alert_level (HIGH, MEDIUM or LOW); news monitors should notify only unread HIGH/MEDIUM entries and stay silent when none exist. Never triggers an external sync.",
+    description: "Read the user's cached PCC Research News feed. Use filter=alerts for unread HIGH/MEDIUM monitor candidates; stay silent when none exist. Each entry includes alert_level (HIGH, MEDIUM or LOW). Never triggers an external sync.",
     inputSchema: {
       type: "object",
       properties: {
-        filter: { type: "string", enum: ["all", "unread", "portfolio", "macro", "saved"], default: "all" },
+        filter: { type: "string", enum: ["all", "unread", "alerts", "portfolio", "macro", "saved"], default: "all" },
         page: { type: "integer", minimum: 1, default: 1 },
         page_size: { type: "integer", minimum: 1, maximum: 50, default: 25 },
         search: { type: "string", description: "Exact ticker symbol, for example NVDA." },

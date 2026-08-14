@@ -415,7 +415,7 @@ async function researchNews(
   body: Record<string, unknown>,
 ) {
   const filter = String(body.filter || "all").trim().toLowerCase();
-  if (!["all", "unread", "portfolio", "macro", "saved"].includes(filter)) {
+  if (!["all", "unread", "alerts", "portfolio", "macro", "saved"].includes(filter)) {
     throw new Error("Unsupported Research filter");
   }
   const page = integer(body.page, 1, 1, 100_000);
@@ -487,6 +487,9 @@ async function researchNews(
     .filter((entry) => !searchTicker || (entry.tickers as string[]).includes(searchTicker))
     .filter((entry) => !entry.is_hidden)
     .filter((entry) => filter !== "unread" || !entry.is_read)
+    .filter((entry) => filter !== "alerts" || (
+      !entry.is_read && ["HIGH", "MEDIUM"].includes(String(entry.alert_level))
+    ))
     .filter((entry) => filter !== "portfolio" || entry.is_portfolio)
     .filter((entry) => filter !== "saved" || entry.is_saved)
     .filter((entry) => filter !== "macro"

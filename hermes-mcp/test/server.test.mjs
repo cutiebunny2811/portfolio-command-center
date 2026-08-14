@@ -102,7 +102,7 @@ test("exposes read-only News and Earnings tools", async () => {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
   assert.deepEqual(byName.get("get_news").inputSchema.properties.filter.enum, [
-    "all", "unread", "portfolio", "macro", "saved",
+    "all", "unread", "alerts", "portfolio", "macro", "saved",
   ]);
   assert.equal(byName.get("get_news").inputSchema.properties.page_size.maximum, 50);
   assert.equal(byName.get("get_earnings_calendar").inputSchema.properties.symbol.type, "string");

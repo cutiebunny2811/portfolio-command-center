@@ -547,6 +547,10 @@
     return data || [];
   }
 
+  async function fetchLatestInstrumentPrices() {
+    return query("Prices", db.rpc("api_get_latest_instrument_prices"));
+  }
+
   async function optionalWatchlistQuery() {
     if (localPreviewEnabled) return state.watchlist;
     const { data, error } = await db.from("watchlist_items").select("*").order("created_at");
@@ -1095,7 +1099,7 @@
       state.lastWebullRefresh = new Date();
       if (num(data?.updated) > 0) {
         [state.prices, state.instruments] = await Promise.all([
-          query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
+          fetchLatestInstrumentPrices(),
           query("Instruments", db.from("instruments").select("*").order("symbol"))
         ]);
       }
@@ -1179,7 +1183,7 @@
         query("Position capacity", db.from("position_capacity").select("*")),
         query("Transaction history", db.from("executions").select("id,portfolio_id,instrument_id,side,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").order("executed_at", { ascending: false }).limit(200)),
         query("Cash activity", db.from("cash_movements").select("id,portfolio_id,movement_type,amount,occurred_at,notes,metadata").order("occurred_at", { ascending: false }).limit(200)),
-        query("Prices", db.from("instrument_prices").select("*").order("fetched_at", { ascending: false }).limit(2000)),
+        fetchLatestInstrumentPrices(),
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
         optionalMarketPulseQuery(),

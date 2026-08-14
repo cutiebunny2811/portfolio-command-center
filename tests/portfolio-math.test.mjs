@@ -39,3 +39,17 @@ test("cash percent uses actual remaining cash against displayed total capital", 
   assert.equal(value.bookCapital, 2898.38);
   assert.ok(Math.abs(value.cashPercent - (61.92 / 2898.38 * 100)) < 1e-12);
 });
+
+test("a zero option close is a real market price instead of a cost-basis fallback", () => {
+  const value = portfolioMath.portfolioValuation({
+    portfolio: { portfolio_mode: "mixed" },
+    cash: 20,
+    positions: [{ instrument_id: "option", quantity: 2, cost_basis: 71.27, maximum_loss: 71.27 }],
+    instrumentsById: new Map([["option", { asset_type: "option", multiplier: 100 }]]),
+    pricesById: new Map([["option", { price: 0, source: "massive_eod" }]]),
+  });
+
+  assert.equal(value.marketValue, 0);
+  assert.equal(value.currentEquity, 20);
+  assert.equal(value.returnAmount, -71.27);
+});

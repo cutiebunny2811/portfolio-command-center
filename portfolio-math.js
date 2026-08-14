@@ -17,9 +17,11 @@
 
   function positionMarketValue(position, instrument, priceRecord) {
     const quantity = number(position?.quantity);
-    const marketPrice = number(priceRecord?.price);
+    const rawMarketPrice = Number(priceRecord?.price);
+    const hasMarketPrice = Boolean(priceRecord) && Number.isFinite(rawMarketPrice) && rawMarketPrice >= 0;
+    const marketPrice = hasMarketPrice ? rawMarketPrice : 0;
     const multiplier = number(instrument?.multiplier) || 1;
-    if (quantity > 0 && marketPrice > 0) return quantity * marketPrice * multiplier;
+    if (quantity > 0 && hasMarketPrice) return quantity * marketPrice * multiplier;
     return number(position?.cost_basis);
   }
 

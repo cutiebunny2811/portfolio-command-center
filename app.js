@@ -61,7 +61,7 @@
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
-    journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null,
+    journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null, optionPriceAccess: false,
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
@@ -247,6 +247,16 @@
     return `Webull prices updated ${minutes} minutes ago`;
   }
 
+  function priceSourceLabel(source) {
+    if (source === "massive_eod") return "Massive EOD";
+    if (source === "webull") return "Webull";
+    return source || "Manual";
+  }
+
+  function optionPriceStatusLabel() {
+    return state.optionPriceAccess ? "options EOD · manual fallback" : "options use manual prices";
+  }
+
   function portfolioStats(portfolio) {
     const positions = state.positions.filter((item) => item.portfolio_id === portfolio.id && num(item.quantity) > 0);
     const cash = num(state.cash.find((item) => item.portfolio_id === portfolio.id)?.cash_balance);
@@ -331,12 +341,13 @@
 
   function instrumentPriceFreshness(market) {
     if (!market) return "Manual price";
+    const source = priceSourceLabel(market.source);
     const timestamp = new Date(market.market_time || market.fetched_at).getTime();
-    if (!Number.isFinite(timestamp)) return esc(market.source || "Manual price");
+    if (!Number.isFinite(timestamp)) return esc(source);
     const minutes = Math.max(Math.floor((Date.now() - timestamp) / 60_000), 0);
-    if (minutes < 1) return `${esc(market.source || "Market")} · just now`;
-    if (minutes === 1) return `${esc(market.source || "Market")} · 1 min ago`;
-    return `${esc(market.source || "Market")} · ${minutes} min ago`;
+    if (minutes < 1) return `${esc(source)} · just now`;
+    if (minutes === 1) return `${esc(source)} · 1 min ago`;
+    return `${esc(source)} · ${minutes} min ago`;
   }
 
   function buyProjection(portfolio, row, amount, price, fee = 0) {
@@ -1065,10 +1076,10 @@
 
   async function refreshStockPrices({ force = false, notify = false } = {}) {
     if (localPreviewEnabled || !state.user || state.priceRefreshBusy) return null;
-    const eligible = state.instruments.some((item) => ["stock", "etf"].includes(String(item.asset_type).toLowerCase()));
+    const eligible = state.instruments.some((item) => ["stock", "etf", "option"].includes(String(item.asset_type).toLowerCase()));
     if (!eligible) return null;
     state.priceRefreshBusy = true;
-    if (notify) setSync(true, "Updating Webull prices...");
+    if (notify) setSync(true, "Updating market prices...");
     try {
       const { data, error } = await db.functions.invoke("refresh-stock-prices", { body: { force } });
       if (error) {
@@ -1077,9 +1088,10 @@
           const payload = await error.context?.clone?.().json();
           detail = payload?.error || payload?.failures?.map((item) => `${item.symbol}: ${item.message}`).join("; ") || detail;
         } catch (_) { /* Response body is optional. */ }
-        throw new Error(`Webull price refresh: ${detail}`);
+        throw new Error(`Market price refresh: ${detail}`);
       }
-      if (data?.error) throw new Error(`Webull price refresh: ${data.error}`);
+      if (data?.error) throw new Error(`Market price refresh: ${data.error}`);
+      state.optionPriceAccess = data?.option_price_access === true;
       state.lastWebullRefresh = new Date();
       if (num(data?.updated) > 0) {
         [state.prices, state.instruments] = await Promise.all([
@@ -1091,8 +1103,8 @@
       if (notify) {
         const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
         if (failed) toast(`${data.updated || 0} prices updated; ${failed} could not be read`, true);
-        else if (data?.skipped) toast("Stock prices are already current");
-        else toast(`${data?.updated || 0} stock prices updated from Webull`);
+        else if (data?.skipped) toast("Market prices are already current");
+        else toast(`${data?.updated || 0} prices updated · ${data?.stock_updated || 0} Webull · ${data?.option_updated || 0} option EOD`);
       }
       render();
       return data;
@@ -1408,7 +1420,7 @@
       const quantity = num(row.position?.quantity);
       const multiplier = num(row.instrument?.multiplier || 1);
       const costBasis = row.costBasis;
-      const hasMarket = quantity > 0 && num(market?.price) > 0;
+      const hasMarket = quantity > 0 && Boolean(market) && Number.isFinite(Number(market.price)) && Number(market.price) >= 0;
       const marketValue = hasMarket ? num(market.price) * quantity * multiplier : 0;
       const unrealized = hasMarket ? marketValue - costBasis : 0;
       const unrealizedPercent = hasMarket && costBasis > 0 ? unrealized / costBasis * 100 : 0;
@@ -1439,7 +1451,7 @@
         <div class="mobile-holding__details" id="${detailId}" ${expanded ? "" : "hidden"}>
           <div class="mobile-holding__facts">
             <div><small>Quantity</small><strong>${quantityLabel}</strong></div>
-            <div><small>Market price</small><strong>${marketLabel}</strong><span class="${metrics.market?.source === "webull" ? "price-live" : ""}">${metrics.market ? esc(metrics.market.source || "manual") : "Waiting for price"}</span></div>
+            <div><small>Market price</small><strong>${marketLabel}</strong><span class="${metrics.market?.source === "webull" ? "price-live" : ""}">${metrics.market ? esc(priceSourceLabel(metrics.market.source)) : "Waiting for price"}</span></div>
             <div><small>Average cost</small><strong>${averageLabel}</strong></div>
             <div><small>Cost basis</small><strong>${money(metrics.costBasis)}</strong></div>
             ${row.instrument.asset_type === "option" ? `<div><small>Maximum loss</small><strong>${money(row.position?.maximum_loss)}</strong></div><div><small>Notional</small><strong>${money(row.position?.notional_value)}</strong></div>` : ""}
@@ -1470,7 +1482,7 @@
         const { market, quantity, costBasis, hasMarket, marketValue, unrealized, unrealizedPercent, pnlClass, pnlSign, allocationProgress, allocationState, trim, tranches, canPlanBuy } = holdingMetrics(row);
         return `<tr>
         <td>${assetIdentity(row.instrument)}</td>
-        <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(market.source || "manual")}` : "MKT —"}</span></td>
+        <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(priceSourceLabel(market.source))}` : "MKT —"}</span></td>
         <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${row.instrument.asset_type === "option" ? `<span class="cell-sub">MAX LOSS ${money(row.position?.maximum_loss)}</span><span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
         <td class="allocation-cell ${trim ? "is-over" : ""}"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track is-${allocationState} ${allocationProgress > 100 ? "is-over" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="${trim ? "negative" : "gold"}">${trim ? `${money(trim.excess)} over` : `${money(row.remaining)} left`}</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div>${trim ? `<div class="allocation-cell__advice"><strong>Suggested trim</strong><span>Sell ~${formatTradeQuantity(trim.quantity)} ${trim.unit}${trim.estimatedProceeds != null ? ` · about ${money(trim.estimatedProceeds)} at market` : ""} to return near ${percent(row.targetPercent)}.</span></div>` : ""}</td>
@@ -1685,7 +1697,7 @@
       </section>
       <section class="section">
         <div class="section-head"><div><span class="section-index">01 / ASSETS</span><h2>Positions, P/L and allocation.</h2></div><p>${rows.length} assets · 25 rows per page</p></div>
-        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${esc(priceFreshnessLabel())} · options use manual prices</span><button class="button button--small" type="button" data-action="price-refresh">Update stock prices</button></div></div>
+        <div class="toolbar"><div class="toolbar__filters"><input id="holding-search" type="search" value="${esc(state.holdingsQuery)}" placeholder="Search ticker or company" aria-label="Search assets"></div><div class="price-sync"><span class="meta">${esc(priceFreshnessLabel())} · ${esc(optionPriceStatusLabel())}</span><button class="button button--small" type="button" data-action="price-refresh">${state.optionPriceAccess ? "Update market prices" : "Update stock prices"}</button></div></div>
         <div id="holdings-region">${holdingsTable(portfolio)}</div>
       </section>
       `;

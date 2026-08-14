@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,6 +12,8 @@ const snapshotPath = "/openapi/market-data/stock/snapshot";
 const barsPath = "/openapi/market-data/stock/bars";
 const webullLogoCdn = "https://quotes-static.webullfintech.com/ticker-icon";
 const refreshWindowMs = 15 * 60_000;
+const optionEodRefreshWindowMs = 8 * 60 * 60_000;
+const optionEodRequestLimit = 4;
 const marketPulseBenchmarks = [
   { symbol: "SPY", displayName: "S&P 500 proxy" },
   { symbol: "QQQ", displayName: "Nasdaq-100 proxy" },
@@ -47,6 +50,16 @@ type Instrument = {
   asset_type: "stock" | "etf";
 };
 
+type OptionInstrument = {
+  id: string;
+  symbol: string;
+  asset_type: "option";
+  underlying_symbol: string | null;
+  option_type: "call" | "put";
+  strike: number;
+  expiry: string;
+};
+
 type PriceResult = {
   instrument: Instrument;
   price: number;
@@ -54,6 +67,34 @@ type PriceResult = {
   webullInstrumentId: string | null;
   logoUrl: string | null;
 };
+
+type OptionPriceResult = {
+  instrument: OptionInstrument;
+  ticker: string;
+  price: number;
+  marketTime: string;
+};
+
+async function fetchMassiveOptionEod(instrument: OptionInstrument, apiKey: string): Promise<OptionPriceResult> {
+  const ticker = buildMassiveOptionTicker(instrument);
+  const to = new Date();
+  const from = new Date(to.getTime() - 21 * 24 * 60 * 60_000);
+  const day = (value: Date) => value.toISOString().slice(0, 10);
+  const url = new URL(`https://api.massive.com/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/1/day/${day(from)}/${day(to)}`);
+  url.searchParams.set("adjusted", "true");
+  url.searchParams.set("sort", "desc");
+  url.searchParams.set("limit", "21");
+  url.searchParams.set("apiKey", apiKey);
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = String(payload?.error || payload?.message || `HTTP ${response.status}`);
+    throw new Error(`Massive ${ticker}: ${message}`);
+  }
+  const quote = latestOptionEodQuote(payload);
+  if (!quote) throw new Error(`Massive ${ticker}: no recent EOD trade found`);
+  return { instrument, ticker, ...quote };
+}
 
 type MarketPulseInstrument = Instrument & {
   instrumentId: string | null;
@@ -476,7 +517,7 @@ async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
 }
 
 async function syncInstrumentLogos(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   items: Array<{ instrumentId: string | null; webullInstrumentId: string | null; logoUrl: string | null }>,
 ): Promise<string | null> {
   const logos = items.flatMap((item) =>
@@ -754,6 +795,9 @@ Deno.serve(async (request) => {
     }
 
     const force = body?.force === true;
+    const massiveApiKey = Deno.env.get("MASSIVE_API_KEY") || "";
+    const optionOwnerUserId = Deno.env.get("OPTIONS_EOD_OWNER_USER_ID") || "";
+    const optionPriceAccess = Boolean(massiveApiKey && optionOwnerUserId && authData.user.id === optionOwnerUserId);
     const [{ data: targets, error: targetError }, { data: positions, error: positionError }, watchlistResult] = await Promise.all([
       supabase.from("allocation_targets").select("instrument_id").eq("is_active", true),
       supabase.from("position_balances").select("instrument_id").gt("quantity", 0),
@@ -764,20 +808,35 @@ Deno.serve(async (request) => {
     // Keep the existing portfolio price refresh working before migration 011 is installed.
     const watchlist = watchlistResult.error ? [] : (watchlistResult.data || []);
     const activeIds = [...new Set([...(targets || []), ...(positions || []), ...watchlist].map((item) => item.instrument_id).filter(Boolean))];
-    if (!activeIds.length) return new Response(JSON.stringify({ updated: 0, skipped: true, reason: "No active stocks" }), { headers: jsonHeaders });
+    if (!activeIds.length) return new Response(JSON.stringify({
+      updated: 0,
+      stock_updated: 0,
+      option_updated: 0,
+      option_price_access: optionPriceAccess,
+      skipped: true,
+      reason: "No active instruments",
+    }), { headers: jsonHeaders });
 
     const { data: instruments, error: instrumentError } = await supabase
       .from("instruments")
-      .select("id,symbol,asset_type")
+      .select("id,symbol,asset_type,underlying_symbol,option_type,strike,expiry")
       .in("id", activeIds)
-      .in("asset_type", ["stock", "etf"])
+      .in("asset_type", ["stock", "etf", "option"])
       .order("symbol")
       .limit(300);
     if (instrumentError) throw instrumentError;
-    if (!instruments?.length) return new Response(JSON.stringify({ updated: 0, skipped: true, reason: "Options are excluded" }), { headers: jsonHeaders });
+    if (!instruments?.length) return new Response(JSON.stringify({
+      updated: 0,
+      stock_updated: 0,
+      option_updated: 0,
+      option_price_access: optionPriceAccess,
+      skipped: true,
+      reason: "No supported instruments",
+    }), { headers: jsonHeaders });
 
-    let pending = instruments as Instrument[];
-    if (!force) {
+    const stockInstruments = instruments.filter((item) => ["stock", "etf"].includes(item.asset_type)) as Instrument[];
+    let pending = stockInstruments;
+    if (!force && pending.length) {
       const cutoff = new Date(Date.now() - refreshWindowMs).toISOString();
       const { data: fresh, error: freshError } = await supabase
         .from("instrument_prices")
@@ -789,9 +848,8 @@ Deno.serve(async (request) => {
       const freshIds = new Set((fresh || []).map((item) => item.instrument_id));
       pending = pending.filter((item) => !freshIds.has(item.id));
     }
-    if (!pending.length) return new Response(JSON.stringify({ updated: 0, skipped: true, checked: instruments.length }), { headers: jsonHeaders });
 
-    const snapshots = await mapLimit(pending, 6, fetchSnapshot);
+    const snapshots = pending.length ? await mapLimit(pending, 6, fetchSnapshot) : [];
     const successes = snapshots.filter((result): result is PromiseFulfilledResult<PriceResult> => result.status === "fulfilled");
     const failures = snapshots.flatMap((result, index) => result.status === "rejected"
       ? [{ symbol: pending[index].symbol, message: result.reason instanceof Error ? result.reason.message : String(result.reason) }]
@@ -811,9 +869,81 @@ Deno.serve(async (request) => {
       logoUrl: value.logoUrl,
     })));
     if (logoFailure) failures.push({ symbol: "logos", message: logoFailure });
-    const updated = writes.filter((result) => !result.error).length;
-    return new Response(JSON.stringify({ updated, checked: pending.length, failures }), {
-      status: updated || !pending.length ? 200 : 502,
+    const stockUpdated = writes.filter((result) => !result.error).length;
+
+    const openPositionIds = new Set((positions || []).map((item) => item.instrument_id));
+    const today = new Date().toISOString().slice(0, 10);
+    const optionInstruments = optionPriceAccess
+      ? instruments.filter((item) => item.asset_type === "option" && openPositionIds.has(item.id) && String(item.expiry || "") >= today) as OptionInstrument[]
+      : [];
+    let optionPending = optionInstruments;
+    let optionPriceRows: Record<string, unknown>[] = [];
+    if (optionInstruments.length) {
+      const { data: priceRows, error: priceRowsError } = await supabase
+        .from("instrument_prices")
+        .select("instrument_id,source,market_time,fetched_at")
+        .in("instrument_id", optionInstruments.map((item) => item.id))
+        .order("fetched_at", { ascending: false })
+        .limit(500);
+      if (priceRowsError) throw priceRowsError;
+      optionPriceRows = priceRows || [];
+      const optionCutoff = Date.now() - optionEodRefreshWindowMs;
+      const freshOptionIds = new Set(optionPriceRows
+        .filter((item) => item.source === "massive_eod" && new Date(String(item.fetched_at)).getTime() >= optionCutoff)
+        .map((item) => item.instrument_id));
+      optionPending = optionInstruments.filter((item) => !freshOptionIds.has(item.id));
+    }
+    const limitedOptionPending = optionPending.slice(0, optionEodRequestLimit);
+    const optionSnapshots = limitedOptionPending.length
+      ? await mapLimit(limitedOptionPending, 1, (instrument) => fetchMassiveOptionEod(instrument, massiveApiKey))
+      : [];
+    const latestOptionPrice = new Map<string, Record<string, unknown>>();
+    optionPriceRows.forEach((item) => {
+      const id = String(item.instrument_id);
+      if (!latestOptionPrice.has(id)) latestOptionPrice.set(id, item);
+    });
+    let optionUpdated = 0;
+    let optionProtected = 0;
+    for (let index = 0; index < optionSnapshots.length; index += 1) {
+      const result = optionSnapshots[index];
+      if (result.status === "rejected") {
+        failures.push({
+          symbol: limitedOptionPending[index].symbol,
+          message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+        continue;
+      }
+      const quote = result.value;
+      if (!shouldRecordOptionEod(latestOptionPrice.get(quote.instrument.id), quote)) {
+        optionProtected += 1;
+        continue;
+      }
+      const write = await supabase.rpc("api_record_instrument_price", {
+        p_instrument_id: quote.instrument.id,
+        p_price: quote.price,
+        p_market_time: quote.marketTime,
+        p_source: "massive_eod",
+      });
+      if (write.error) failures.push({ symbol: quote.instrument.symbol, message: write.error.message });
+      else optionUpdated += 1;
+    }
+    const deferredOptions = Math.max(optionPending.length - limitedOptionPending.length, 0);
+    const updated = stockUpdated + optionUpdated;
+    const checked = pending.length + limitedOptionPending.length;
+    return new Response(JSON.stringify({
+      updated,
+      stock_updated: stockUpdated,
+      option_updated: optionUpdated,
+      option_price_access: optionPriceAccess,
+      option_checked: limitedOptionPending.length,
+      option_cached: Math.max(optionInstruments.length - optionPending.length, 0),
+      option_protected: optionProtected,
+      option_deferred: deferredOptions,
+      checked,
+      skipped: checked === 0,
+      failures,
+    }), {
+      status: updated || checked === 0 || failures.length === 0 ? 200 : 502,
       headers: jsonHeaders,
     });
   } catch (error) {

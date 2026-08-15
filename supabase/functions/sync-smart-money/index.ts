@@ -10,10 +10,11 @@ const massiveForm4Url = "https://api.massive.com/stocks/filings/vX/form-4";
 const initialLookbackDays = 90;
 const regularLookbackDays = 4;
 const maxPages = 10;
-// Massive's free tier is rate constrained. One regular market-wide request plus
-// four ticker backfills keeps a scheduled run bounded while still completing a
-// 200-name watchlist progressively.
-const maxBackfillSymbolsPerRun = 4;
+// Smart Money, research news and option EOD share one Massive key. Keep this
+// collector deliberately quiet so one feature cannot starve the others.
+const massiveRequestGapMs = 15_000;
+const massiveRateLimitRetries = 1;
+const maxBackfillSymbolsPerRun = 1;
 
 type WatchlistRow = {
   user_id: string;
@@ -66,6 +67,27 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function retryAfterMilliseconds(value: string | null): number {
+  if (!value) return massiveRequestGapMs;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(massiveRequestGapMs, seconds * 1_000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(massiveRequestGapMs, date - Date.now()) : massiveRequestGapMs;
+}
+
+function createMassiveRateGate() {
+  let lastRequestAt = 0;
+  return async () => {
+    const waitFor = massiveRequestGapMs - (Date.now() - lastRequestAt);
+    if (waitFor > 0) await sleep(waitFor);
+    lastRequestAt = Date.now();
+  };
+}
+
 function relationship(row: MassiveForm4): string | null {
   const values = [
     row.is_director ? "Director" : "",
@@ -98,7 +120,12 @@ async function stableKey(row: MassiveForm4): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function fetchMassiveRows(apiKey: string, since: string, symbol?: string): Promise<MassiveForm4[]> {
+async function fetchMassiveRows(
+  apiKey: string,
+  since: string,
+  waitForRateGate: () => Promise<void>,
+  symbol?: string,
+): Promise<MassiveForm4[]> {
   const rows: MassiveForm4[] = [];
   let nextUrl: string | null = massiveForm4Url;
   let page = 0;
@@ -114,7 +141,14 @@ async function fetchMassiveRows(apiKey: string, since: string, symbol?: string):
       url.searchParams.set("limit", "10000");
     }
     url.searchParams.set("apiKey", apiKey);
-    const result = await fetch(url, { headers: { Accept: "application/json" } });
+    let result: Response | null = null;
+    for (let attempt = 0; attempt <= massiveRateLimitRetries; attempt += 1) {
+      await waitForRateGate();
+      result = await fetch(url, { headers: { Accept: "application/json" } });
+      if (result.status !== 429 || attempt === massiveRateLimitRetries) break;
+      await sleep(retryAfterMilliseconds(result.headers.get("Retry-After")));
+    }
+    if (!result) throw new Error("Massive Form 4 request did not return a response");
     const payload = await result.json().catch(() => null) as { results?: unknown[]; next_url?: string } | null;
     if (!result.ok) {
       const detail = payload ? JSON.stringify(payload).slice(0, 500) : `HTTP ${result.status}`;
@@ -148,6 +182,8 @@ Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return response({ error: "Method not allowed" }, 405);
 
+  let admin: ReturnType<typeof createClient> | null = null;
+  let syncUserIds: string[] = [];
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim();
@@ -161,7 +197,7 @@ Deno.serve(async (request) => {
     const userId = scheduled ? null : await authenticatedUserId(request);
     if (!scheduled && !userId) return response({ error: "Authentication required" }, 401);
 
-    const admin = createClient(supabaseUrl, serviceRoleKey, {
+    admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
@@ -176,6 +212,7 @@ Deno.serve(async (request) => {
     if (!eligible.length) return response({ ok: true, checked: 0, matched: 0, inserted: 0, message: "Watchlist is empty" });
 
     const userIds = [...new Set(eligible.map((row) => row.user_id))];
+    syncUserIds = userIds;
     const { data: syncRows, error: syncRowsError } = await admin
       .from("smart_money_sync_state")
       .select("user_id,source,last_success_at")
@@ -185,7 +222,8 @@ Deno.serve(async (request) => {
     // The regular request catches fresh and amended filings for every watched
     // symbol. It intentionally overlaps four days to tolerate delayed filings.
     const since = dateDaysAgo(regularLookbackDays);
-    const regularFilings = await fetchMassiveRows(massiveApiKey, since);
+    const waitForMassiveRateGate = createMassiveRateGate();
+    const regularFilings = await fetchMassiveRows(massiveApiKey, since, waitForMassiveRateGate);
 
     // A 90D filter in the UI can only be truthful when every newly watched
     // instrument has received a historical backfill. Track that work per
@@ -205,9 +243,18 @@ Deno.serve(async (request) => {
     )].slice(0, maxBackfillSymbolsPerRun);
 
     const fetchedBackfills: MassiveForm4[] = [];
+    const completedBackfillSymbols: string[] = [];
+    const backfillErrors: string[] = [];
     const backfillSince = dateDaysAgo(initialLookbackDays);
     for (const symbol of backfillSymbols) {
-      fetchedBackfills.push(...await fetchMassiveRows(massiveApiKey, backfillSince, symbol));
+      try {
+        fetchedBackfills.push(...await fetchMassiveRows(massiveApiKey, backfillSince, waitForMassiveRateGate, symbol));
+        completedBackfillSymbols.push(symbol);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        backfillErrors.push(`${symbol}: ${message}`);
+        console.warn(`Smart Money backfill deferred for ${symbol}: ${message}`);
+      }
     }
 
     // The regular window can overlap a ticker backfill. Remove duplicates
@@ -281,7 +328,7 @@ Deno.serve(async (request) => {
 
     const now = new Date().toISOString();
     const completedBackfillRows = pendingBackfills
-      .filter((row) => backfillSymbols.includes(normalizedSymbol(row.instruments?.symbol)))
+      .filter((row) => completedBackfillSymbols.includes(normalizedSymbol(row.instruments?.symbol)))
       .map((row) => ({
         user_id: row.user_id,
         source: `massive-backfill:${row.instrument_id}`,
@@ -313,7 +360,7 @@ Deno.serve(async (request) => {
       }, null),
       last_checked_at: now,
       last_success_at: now,
-      last_error: null,
+      last_error: backfillErrors.length ? `Backfill deferred: ${backfillErrors.join(" | ").slice(0, 900)}` : null,
       updated_at: now,
     }));
     const { error: stateError } = await admin
@@ -330,13 +377,31 @@ Deno.serve(async (request) => {
       since,
       backfill_since: backfillSince,
       backfilled_symbols: backfillSymbols,
+      completed_backfill_symbols: completedBackfillSymbols,
+      deferred_backfills: backfillErrors,
       backfills_remaining: Math.max(
         0,
-        new Set(pendingBackfills.map((row) => normalizedSymbol(row.instruments?.symbol))).size - backfillSymbols.length,
+        new Set(pendingBackfills.map((row) => normalizedSymbol(row.instruments?.symbol))).size - completedBackfillSymbols.length,
       ),
     });
   } catch (error) {
     console.error(error);
-    return response({ error: error instanceof Error ? error.message : String(error) }, 500);
+    const message = error instanceof Error ? error.message : String(error);
+    if (admin && syncUserIds.length) {
+      const now = new Date().toISOString();
+      try {
+        const { error: stateError } = await admin.from("smart_money_sync_state").upsert(syncUserIds.map((userId) => ({
+          user_id: userId,
+          source: "massive",
+          last_checked_at: now,
+          last_error: message.slice(0, 1_000),
+          updated_at: now,
+        })), { onConflict: "user_id,source" });
+        if (stateError) console.error("Could not store Smart Money error", stateError);
+      } catch (stateError) {
+        console.error("Could not store Smart Money error", stateError);
+      }
+    }
+    return response({ error: message }, 500);
   }
 });

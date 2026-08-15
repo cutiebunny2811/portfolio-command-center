@@ -26,16 +26,19 @@ itself: dashboard calls require a valid user bearer token, while scheduler calls
 require the private `x-sync-secret` header. This lets Supabase Cron call the
 function without exposing a user session.
 
-Recommended schedule: every 30 minutes on U.S. business days. Form 4 filings are
-not market-price data, so checking every minute only wastes quota.
+Recommended schedule: every four hours on U.S. business days. Form 4 filings are
+not market-price data, so sub-hour polling only wastes the shared Massive quota.
 
 ## 4. Expected behavior
 
 - Every run overlaps the last four days so fresh, late, and amended filings are caught.
 - Every newly watched instrument also receives a one-time 90-day ticker backfill.
-- To respect the free API rate limit, at most four new symbols are backfilled per
-  run. A large imported watchlist therefore fills progressively across scheduled
-  runs, while newly added symbols are picked up automatically.
+- To respect the shared API rate limit, requests are spaced by at least 15 seconds
+  and at most one new symbol is backfilled per run. A large imported watchlist
+  therefore fills progressively, while newly added symbols are picked up
+  automatically.
+- A rate-limited historical backfill is deferred to the next run. It does not
+  discard fresh market-wide filings that the same run already fetched.
 - Backfill completion is stored per instrument in `smart_money_sync_state`,
   including symbols with no matching filings, so empty histories are not fetched
   repeatedly.

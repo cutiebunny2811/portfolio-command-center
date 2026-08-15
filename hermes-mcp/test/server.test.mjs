@@ -215,14 +215,12 @@ test("exposes deterministic weekly Smart Money Brief tools", async () => {
   const publish = byName.get("publish_smart_money_brief");
 
   assert.equal(context.inputSchema.additionalProperties, false);
-  assert.deepEqual(publish.inputSchema.required, ["report_date", "summary", "content", "idempotency_key"]);
+  assert.deepEqual(publish.inputSchema.required, ["report_date", "summary", "content"]);
   assert.equal(publish.inputSchema.properties.content.properties.open_market_buys.minItems, 0);
   assert.equal(publish.inputSchema.properties.content.properties.noise_removed.minItems, 1);
   assert.equal(publish.inputSchema.properties.content.properties.sources.maxItems, 30);
-  assert.deepEqual(
-    publish.inputSchema.properties.content.properties.bottom_line.items.required,
-    ["title", "detail", "tone", "event_keys", "source_ids"],
-  );
+  assert.equal(publish.inputSchema.properties.content.required.includes("sources"), false);
+  assert.equal(publish.inputSchema.properties.content.properties.bottom_line, undefined);
 });
 
 test("routes weekly Smart Money context and publication actions", async () => {
@@ -254,13 +252,6 @@ test("routes weekly Smart Money context and publication actions", async () => {
         tone: "neutral",
         event_keys: [],
         source_ids: [],
-      }],
-      bottom_line: [{
-        title: "Selective signal",
-        detail: "One new purchase cluster is more useful than the volume of mechanical filings.",
-        tone: "neutral",
-        event_keys: ["accession:key-1"],
-        source_ids: ["sec:accession"],
       }],
       sources: [{ id: "sec:accession", title: "SEC Form 4", url: "https://www.sec.gov/example", publisher: "SEC" }],
     },

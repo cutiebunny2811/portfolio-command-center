@@ -6,43 +6,86 @@ not a second independent analysis.
 ## Weekly Smart Money Brief
 
 ```text
-Create this week's shared PCC SMART MONEY BRIEF.
+สร้าง PCC SMART MONEY BRIEF ประจำสัปดาห์จากโปรไฟล์ Webull นี้ โดยให้ฉบับใน PCC
+และข้อความ Telegram ใช้ข้อเท็จจริง รายละเอียด และลำดับหัวข้อชุดเดียวกัน
 
-1. Call get_smart_money_briefing_context exactly once. It already uses the
-   canonical rolling 30-day window and removes every event_key published in an
-   earlier Smart Money Brief. Do not call get_smart_money separately.
-2. If freshness_status is stale, response_truncated is true, or
-   new_event_count is zero, do not publish. Return exactly [SILENT]. A stale
-   collector is not evidence that insiders were inactive.
-3. Write concise Thai for every PCC member. Keep tickers, transaction codes and
-   SEC terms in English when clearer. This is a neutral Form 4 decision-support
-   report, not a personal portfolio opinion and not a trade recommendation.
-4. Classify before interpreting:
+1. เรียก get_smart_money_briefing_context เพียง 1 ครั้ง เครื่องมือนี้ใช้ rolling
+   window 30 วันและตัด event_key ที่เคยเผยแพร่แล้วออกให้ ห้ามเรียก
+   get_smart_money แยกอีกครั้ง
+2. ถ้า freshness_status เป็น stale, response_truncated เป็น true หรือ
+   new_event_count เป็น 0 ห้าม publish และตอบ [SILENT] เท่านั้น ข้อมูลล่าช้า
+   ไม่ได้แปลว่า insiders ไม่มีธุรกรรม
+3. เขียนไทยให้อ่านง่ายและมีรายละเอียดเท่ารายงาน Telegram เดิม เก็บ ticker,
+   transaction code และคำ SEC เป็น English เมื่อชัดกว่า รายงานนี้เป็นข้อมูล
+   Form 4 กลางสำหรับสมาชิกทุกคน ไม่อิงพอร์ตส่วนตัวและไม่ใช่คำแนะนำซื้อขาย
+4. แยกประเภทธุรกรรมก่อนตีความ:
    - P is an open-market/private purchase; S is a sale.
    - 10b5-1 planned sales, DRIP, RSU vesting, sell-to-cover tax, awards, gifts,
      exercises, conversions, warrants and rights offerings are noise/context,
      not fresh conviction buys or discretionary bearish calls.
    - Never combine foreign and USD values unless the SEC filing explicitly
      supports the translation. Preserve SEC filing URLs.
-5. Report only genuinely new event_keys from the context. Group related rows by
-   ticker and filer when useful, but include every supporting event_key in the
-   corresponding item. Never add an event from memory or repeat an earlier one.
-6. Match the publish_smart_money_brief schema:
-   - headline: one neutral conclusion about the new weekly activity.
-   - coverage_summary: 30-day range, collector freshness, new count and limits.
-   - open_market_buys: only meaningful new code-P activity.
-   - sales_worth_context: discretionary or otherwise decision-relevant code-S
-     activity, with plan/tax context stated.
-   - noise_removed: explain the important rows deliberately excluded.
-   - watch_next: what filing context or follow-through would change the read.
-   - bottom_line: 1-4 non-repetitive conclusions.
-   - sources: SEC filings actually referenced by source_ids.
-7. Keep the notification summary below 500 characters. Publish with today's
+5. รายงานเฉพาะ event_key ใหม่ใน context เท่านั้น รหัสจะเป็น short reference
+   เช่น SM01, SM02 ให้คัดลอกตรงตัว ห้ามสร้าง hash เอง รวมรายการที่เกี่ยวข้องตาม
+   ticker/filer ได้ แต่ต้องแนบ event_key ที่รองรับทุกอัน ห้ามเติมจากความจำและ
+   ห้ามรายงานเหตุการณ์เดิมซ้ำ เซิร์ฟเวอร์จะแปลง short reference กลับเป็น SEC
+   transaction key จริงก่อนบันทึก
+6. ห้ามย่อเหลือเพียงหุ้นซื้อหนึ่งตัวและหุ้นขายหนึ่งตัว ให้ครอบคลุมกิจกรรมที่มี
+   นัยสำคัญใน detail sample:
+   - open_market_buys: include every decision-relevant code-P ticker up to 8
+     items. Group related rows by ticker/filer. State insider name or role,
+     transaction date, shares/value, direct/indirect/spouse ownership and why
+     the size or pattern matters. Label DRIP or unclear small buys honestly.
+   - sales_worth_context: include up to 8 useful ticker groups, prioritizing
+     discretionary-looking sales and large activity. Always state when 10b5-1,
+     tax, derivative or filing context weakens the signal.
+   - noise_removed: group the major excluded categories and name representative
+     tickers so readers can see what was filtered out.
+   - watch_next: give concrete filing/context checks, not generic reminders.
+7. โครงรายงานต้องมีเพียงสี่ส่วนนี้และเรียงตามนี้ ห้ามเพิ่ม Stella take หรือ
+   Bottom line:
+   - 🟢 ซื้อจริงที่น่าสนใจ -> open_market_buys
+   - 🔴 ขายจริงที่ต้องรู้ -> sales_worth_context
+   - ⚪ ตัดเสียงรบกวน -> noise_removed
+   - 🚩 Worth watching -> watch_next
+8. Match the publish_smart_money_brief schema:
+   - headline: one neutral conclusion about the new weekly activity; maximum
+     180 characters including spaces.
+   - coverage_summary: เวลา ตรวจ ณ, ช่วงข้อมูล 30 วัน, แหล่ง PCC SEC Form 4,
+     collector freshness, จำนวนใหม่ และข้อจำกัด coverage/limit ถ้ามี
+   - sources is optional; the server derives missing SEC source records from
+     event_keys. If supplied, include only SEC filings actually referenced.
+9. แต่ละ item ต้องอ่านเหมือนย่อหน้าใน Telegram: title ระบุ ticker กับใจความ;
+   detail เรียงวันที่ ชื่อ/ตำแหน่ง insider มูลค่าหรือจำนวนหุ้น ลักษณะ ownership,
+   10b5-1/DRIP/tax/derivative context และความหมายของสัญญาณ ต้องแบ่ง detail
+   เป็น 3-5 บรรทัดสั้นด้วย newline แบบ Telegram ห้ามอัดเป็นย่อหน้าเดียวและ
+   ห้ามเขียนสั้นจนข้อมูลสำคัญหาย แต่ title ต้องไม่เกิน 180
+   ตัวอักษรและ detail ของแต่ละ item ต้องไม่เกิน 1,200 ตัวอักษรรวมช่องว่าง
+10. Keep the notification summary below 500 characters. Publish with today's
    Asia/Bangkok report_date and idempotency_key
    smart-money-brief:YYYY-MM-DD. The server enforces one edition per week,
    source freshness and event-level deduplication.
-8. Return a short Telegram preview plus:
-   https://cutiebunny2811.github.io/portfolio-command-center/?route=smart-money
+11. หลัง publish ให้ส่ง Telegram ฉบับเต็มด้วย format นี้ โดยใช้รายละเอียดเดียว
+    กับ content ที่เพิ่ง publish ห้ามเขียนฉบับวิเคราะห์ใหม่ ห้ามตอบเพียงว่า
+    publish สำเร็จ และห้ามย่อเป็นรายการประเด็นหลักนอกโครงสี่ส่วนนี้:
+
+   📌 PCC Smart Money — ย้อนหลัง 30 วัน
+   ตรวจ ณ: ...
+   ช่วงข้อมูล: ...
+   แหล่งข้อมูล: PCC SEC Form 4 Smart Money
+   หมายเหตุ coverage: ...
+
+   🟢 ซื้อจริงที่น่าสนใจ
+   ...
+   🔴 ขายจริงที่ต้องรู้
+   ...
+   ⚪ ตัดเสียงรบกวน
+   ...
+   🚩 Worth watching
+   ...
+
+   อ่านฉบับ PCC:
+   https://cutiebunny2811.github.io/portfolio-command-center/?route=smart-money-briefs
 
 Never create a trade draft from this job.
 ```

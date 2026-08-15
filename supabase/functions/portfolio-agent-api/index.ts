@@ -196,12 +196,11 @@ function validateSmartMoneyBriefContent(value: unknown) {
     ["sales_worth_context", 0, 8],
     ["noise_removed", 1, 8],
     ["watch_next", 1, 8],
-    ["bottom_line", 1, 4],
   ] as const) {
     requireArraySection(content, key, min, max).forEach((value, index) => {
       const item = jsonObject(value, `content.${key}[${index}]`);
       requiredText(item.title, `content.${key}[${index}].title`, 180);
-      requiredText(item.detail, `content.${key}[${index}].detail`, 1200);
+      requiredText(item.detail, `content.${key}[${index}].detail`, 2400);
       validateBriefTone(item.tone, `content.${key}[${index}].tone`);
       const itemSources = validateStringItems(item.source_ids, `content.${key}[${index}].source_ids`, 0, 10);
       itemSources.forEach((id) => {
@@ -1056,7 +1055,7 @@ function smartMoneyEventKey(row: Record<string, unknown>) {
 function smartMoneyFootnoteText(rawPayload: unknown) {
   if (!rawPayload || typeof rawPayload !== "object") return "";
   try {
-    return JSON.stringify(rawPayload).replace(/\s+/g, " ").slice(0, 2400);
+    return JSON.stringify(rawPayload).replace(/\s+/g, " ").slice(0, 180);
   } catch {
     return "";
   }
@@ -1065,6 +1064,7 @@ function smartMoneyFootnoteText(rawPayload: unknown) {
 async function smartMoneyBriefingContext(
   service: any,
   userId: string,
+  includeAvailableKeys = false,
 ) {
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
   const [rows, previousBriefs, syncStates] = await Promise.all([
@@ -1113,15 +1113,54 @@ async function smartMoneyBriefingContext(
       ? "partial"
       : "fresh";
   const availableRows = newRows.slice(0, 5000);
-  const detailRows = availableRows
-    .filter((row) => ["P", "S"].includes(String(row.transaction_code || "").toUpperCase()))
-    .sort((a, b) => Number(b.transaction_value || 0) - Number(a.transaction_value || 0))
-    .slice(0, 500);
-  const compactEvents = detailRows.map((row) => {
+  const byValue = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+    Number(b.transaction_value || 0) - Number(a.transaction_value || 0);
+  const selectedDetailKeys = new Set<string>();
+  const detailRows: Record<string, unknown>[] = [];
+  const detailLimit = 36;
+  const addDetailRows = (candidates: Record<string, unknown>[], limit: number) => {
+    for (const row of candidates) {
+      if (detailRows.length >= detailLimit || limit <= 0) break;
+      const key = smartMoneyEventKey(row);
+      if (selectedDetailKeys.has(key)) continue;
+      selectedDetailKeys.add(key);
+      detailRows.push(row);
+      limit -= 1;
+    }
+  };
+  const rowsForCode = (code: string) => availableRows
+    .filter((row) => String(row.transaction_code || "").toUpperCase() === code)
+    .sort(byValue);
+  const diversifyByInstrument = (candidates: Record<string, unknown>[]) => {
+    const seen = new Set<string>();
+    const diverse: Record<string, unknown>[] = [];
+    const repeats: Record<string, unknown>[] = [];
+    for (const row of candidates) {
+      const instrumentId = String(row.instrument_id || "unknown");
+      if (seen.has(instrumentId)) repeats.push(row);
+      else {
+        seen.add(instrumentId);
+        diverse.push(row);
+      }
+    }
+    return [...diverse, ...repeats];
+  };
+
+  // Preserve every meaningful lane before filling the remaining response budget.
+  // A single value-ranked P/S pool allowed large sales to crowd purchases and
+  // mechanical context out of the weekly fact pack.
+  addDetailRows(rowsForCode("P"), 20);
+  addDetailRows(diversifyByInstrument(rowsForCode("S")), 12);
+  addDetailRows(diversifyByInstrument(availableRows.filter((row) =>
+    !["P", "S"].includes(String(row.transaction_code || "").toUpperCase()))), 4);
+  addDetailRows(availableRows, detailLimit - detailRows.length);
+  const compactEvents = detailRows.map((row, index) => {
     const instrument = instrumentMap.get(String(row.instrument_id || ""));
     const footnoteText = smartMoneyFootnoteText(row.raw_payload);
+    const eventRef = `SM${String(index + 1).padStart(2, "0")}`;
     return {
-      event_key: smartMoneyEventKey(row),
+      event_key: eventRef,
+      ...(includeAvailableKeys ? { actual_event_key: smartMoneyEventKey(row) } : {}),
       symbol: String(instrument?.symbol || ""),
       company: String(instrument?.display_name || ""),
       filer_name: row.filer_name,
@@ -1171,7 +1210,7 @@ async function smartMoneyBriefingContext(
     detailed_event_count: compactEvents.length,
     returned_event_count: compactEvents.length,
     response_truncated: newRows.length > availableRows.length,
-    detail_sampling: "All new code-P/code-S rows ranked by transaction value; up to 500 detailed rows. Every available key is consumed after publication.",
+    detail_sampling: "Compact stratified fact pack of up to 36 rows: up to 20 code-P purchases, 12 value-ranked code-S sales diversified across instruments, and 4 diversified other Form 4 rows, then newest remaining rows. Every available key is consumed after publication.",
     transaction_code_counts: transactionCodeCounts,
     counts: {
       all: { total: sourceRows.length, new: newRows.length },
@@ -1183,11 +1222,11 @@ async function smartMoneyBriefingContext(
   return {
     source_context: sourceContext,
     events: compactEvents,
-    available_event_keys: availableRows.map(smartMoneyEventKey),
+    ...(includeAvailableKeys ? { available_event_keys: availableRows.map(smartMoneyEventKey) } : {}),
     previous_report: (previousBriefs as Record<string, unknown>[])[0] || null,
     guidance: {
       cadence: "Publish at most once per week using this rolling 30-day context.",
-      deduplication: "All available_event_keys are consumed on publication, including low-signal rows omitted from prose, so inspected noise never reruns.",
+      deduplication: "Use the short SMxx event_key references exactly as returned. The server resolves them to immutable SEC transaction keys and consumes all available events on publication, including low-signal rows omitted from prose.",
       no_change: "If new_event_count is zero, do not publish and do not notify.",
       stale_source: "If freshness_status is stale, do not publish. Never describe stale coverage as no activity.",
       classification: "Treat only code P/S as purchases/sales. Separate 10b5-1, DRIP, tax, awards, exercises, conversions and rights offerings from conviction signals.",
@@ -1201,12 +1240,62 @@ async function publishSmartMoneyBrief(
   identity: AgentIdentity,
   body: Record<string, unknown>,
 ) {
-  const validated = validateSmartMoneyBriefContent(body.content);
-  const context = await smartMoneyBriefingContext(service, identity.user_id);
+  const reportDate = dateKey(body.report_date, "report_date");
+  const context = await smartMoneyBriefingContext(service, identity.user_id, true);
   const sourceContext = context.source_context as Record<string, unknown>;
   if (sourceContext.freshness_status === "stale") {
     throw new Error("Smart Money source is stale. Wait for a successful collector run before publishing.");
   }
+  const rawContent = jsonObject(body.content, "content");
+  const rawHeadline = String(rawContent.headline || "").trim();
+  const normalizedHeadline = rawHeadline.length > 180
+    ? `${rawHeadline.slice(0, 179).trimEnd()}…`
+    : rawHeadline;
+  const contextEvents = Array.isArray(context.events) ? context.events as Record<string, unknown>[] : [];
+  const eventsByKey = new Map(contextEvents.map((event) => [String(event.event_key || ""), event]));
+  const eventsBySource = new Map(contextEvents.map((event) => [String(event.source_id || ""), event]));
+  const inferredSources = new Map<string, Record<string, unknown>>();
+  const normalizedSections: Record<string, unknown> = {};
+  for (const sectionKey of ["open_market_buys", "sales_worth_context", "noise_removed", "watch_next"]) {
+    const items = Array.isArray(rawContent[sectionKey]) ? rawContent[sectionKey] as unknown[] : [];
+    normalizedSections[sectionKey] = items.map((value, index) => {
+      const item = jsonObject(value, `content.${sectionKey}[${index}]`);
+      const eventRefs = Array.isArray(item.event_keys) ? item.event_keys.map(String) : [];
+      const eventKeys = eventRefs.map((eventRef) =>
+        String(eventsByKey.get(eventRef)?.actual_event_key || eventRef));
+      const sourceIds = unique(eventRefs
+        .map((eventRef) => String(eventsByKey.get(eventRef)?.source_id || ""))
+        .filter(Boolean));
+      for (const sourceId of sourceIds) {
+        const event = eventsBySource.get(sourceId);
+        const url = String(event?.sec_url || "");
+        if (!event || !url) continue;
+        const symbol = String(event.symbol || event.company || "Form 4");
+        inferredSources.set(sourceId, {
+          id: sourceId,
+          title: `${symbol} SEC Form 4 filing`,
+          publisher: "SEC",
+          url,
+          published_at: event.filed_at || event.transaction_date || null,
+        });
+      }
+      return { ...item, event_keys: eventKeys, source_ids: sourceIds };
+    });
+  }
+  const suppliedSources = Array.isArray(rawContent.sources)
+    ? rawContent.sources.map((source, index) => jsonObject(source, `content.sources[${index}]`))
+    : [];
+  const sourceMap = new Map<string, Record<string, unknown>>();
+  suppliedSources.forEach((source) => sourceMap.set(String(source.id || ""), source));
+  inferredSources.forEach((source, id) => {
+    if (!sourceMap.has(id)) sourceMap.set(id, source);
+  });
+  const validated = validateSmartMoneyBriefContent({
+    ...rawContent,
+    headline: normalizedHeadline,
+    ...normalizedSections,
+    sources: [...sourceMap.values()].filter((source) => source.id).slice(0, 30),
+  });
   const availableKeys = context.available_event_keys as string[];
   const available = new Set(availableKeys);
   const unavailable = validated.eventKeys.filter((key) => !available.has(key));
@@ -1216,12 +1305,16 @@ async function publishSmartMoneyBrief(
   return await must(service.rpc("api_agent_publish_smart_money_brief", {
     p_user_id: identity.user_id,
     p_agent_id: identity.token_id,
-    p_report_date: dateKey(body.report_date, "report_date"),
+    p_report_date: reportDate,
     p_summary: requiredText(body.summary, "summary"),
     p_content: validated.content,
     p_source_context: sourceContext,
     p_reported_event_keys: availableKeys,
-    p_idempotency_key: requiredText(body.idempotency_key, "idempotency_key", 160),
+    p_idempotency_key: requiredText(
+      body.idempotency_key || `smart-money-brief:${reportDate}`,
+      "idempotency_key",
+      160,
+    ),
   }));
 }
 

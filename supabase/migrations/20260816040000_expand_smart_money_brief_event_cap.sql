@@ -99,7 +99,7 @@ begin
   )
   select
     member.user_id, 'smart_money_brief', 'Smart Money Brief', left(trim(p_summary), 500),
-    'smart-money', 'smart_money_brief', v_brief.id,
+    'smart-money-briefs', 'smart_money_brief', v_brief.id,
     'smart-money-brief:' || p_report_date::text
   from public.pcc_members member
   where member.onboarding_completed_at is not null
@@ -119,7 +119,7 @@ begin
       select count(*) from public.pcc_members member
       where member.onboarding_completed_at is not null
     ),
-    'route', 'smart-money'
+    'route', 'smart-money-briefs'
   );
 end;
 $$;

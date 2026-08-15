@@ -119,10 +119,9 @@ const smartMoneyBriefContentSchema = {
     sales_worth_context: { type: "array", minItems: 0, maxItems: 8, items: smartMoneyNoteSchema },
     noise_removed: { type: "array", minItems: 1, maxItems: 8, items: smartMoneyNoteSchema },
     watch_next: { type: "array", minItems: 1, maxItems: 8, items: smartMoneyNoteSchema },
-    bottom_line: { type: "array", minItems: 1, maxItems: 4, items: smartMoneyNoteSchema },
     sources: { type: "array", minItems: 1, maxItems: 30, items: sourceItemSchema },
   },
-  required: ["headline", "coverage_summary", "open_market_buys", "sales_worth_context", "noise_removed", "watch_next", "bottom_line", "sources"],
+  required: ["headline", "coverage_summary", "open_market_buys", "sales_worth_context", "noise_removed", "watch_next"],
   additionalProperties: false,
 };
 
@@ -361,7 +360,7 @@ const tools = [
   },
   {
     name: "publish_smart_money_brief",
-    description: "Publish at most one shared Smart Money Brief per week. Use only event_keys returned by get_smart_money_briefing_context. The server rejects stale data, prior event keys and empty reports, then notifies every PCC member.",
+    description: "Publish at most one shared Smart Money Brief per week. Use only event_keys returned by get_smart_money_briefing_context. The server derives SEC sources from those keys, rejects stale data, prior event keys and empty reports, then notifies every PCC member.",
     inputSchema: {
       type: "object",
       properties: {
@@ -370,7 +369,7 @@ const tools = [
         content: smartMoneyBriefContentSchema,
         idempotency_key: { type: "string", minLength: 8, maxLength: 160, description: "Use smart-money-brief:YYYY-MM-DD." },
       },
-      required: ["report_date", "summary", "content", "idempotency_key"],
+      required: ["report_date", "summary", "content"],
       additionalProperties: false,
     },
   },

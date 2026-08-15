@@ -52,7 +52,7 @@ alter table public.pcc_notifications
   check (notification_type in ('daily_brief', 'brief_continuation', 'smart_money_brief'));
 alter table public.pcc_notifications
   add constraint pcc_notifications_route
-  check (route in ('briefs', 'smart-money'));
+  check (route in ('briefs', 'smart-money', 'smart-money-briefs'));
 alter table public.pcc_notifications
   add constraint pcc_notifications_entity_type
   check (entity_type in ('market_brief', 'market_brief_update', 'smart_money_brief'));
@@ -200,7 +200,7 @@ begin
   )
   select
     member.user_id, 'smart_money_brief', 'Smart Money Brief', left(trim(p_summary), 500),
-    'smart-money', 'smart_money_brief', v_brief.id,
+    'smart-money-briefs', 'smart_money_brief', v_brief.id,
     'smart-money-brief:' || p_report_date::text
   from public.pcc_members member
   where member.onboarding_completed_at is not null
@@ -220,7 +220,7 @@ begin
       select count(*) from public.pcc_members member
       where member.onboarding_completed_at is not null
     ),
-    'route', 'smart-money'
+    'route', 'smart-money-briefs'
   );
 end;
 $$;

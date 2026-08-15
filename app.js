@@ -46,7 +46,7 @@
     options: "Options"
   };
   const localPreviewParams = new URLSearchParams(location.search);
-  const initialRoute = ["overview", "portfolio", "journal", "watchlist", "smart-money", "research", "earnings", "macro", "briefs"].includes(localPreviewParams.get("route"))
+  const initialRoute = ["overview", "portfolio", "journal", "watchlist", "smart-money", "research", "earnings", "macro", "briefs", "smart-money-briefs"].includes(localPreviewParams.get("route"))
     ? localPreviewParams.get("route") : "overview";
   const localPreviewEnabled = (["127.0.0.1", "localhost"].includes(location.hostname) || location.protocol === "file:")
     && localPreviewParams.get("preview") === "1";
@@ -661,6 +661,7 @@
   async function loadBriefPage({ renderAfter = true } = {}) {
     state.briefBusy = true;
     if (renderAfter && state.route === "briefs") renderBriefs();
+    if (renderAfter && state.route === "smart-money-briefs") renderSmartMoneyBriefs();
     try {
       applyBriefFeed(await fetchBriefFeed());
     } catch (error) {
@@ -670,6 +671,7 @@
       state.briefBusy = false;
       renderNotificationCenter();
       if (renderAfter && state.route === "briefs") renderBriefs();
+      if (renderAfter && state.route === "smart-money-briefs") renderSmartMoneyBriefs();
     }
   }
 
@@ -1220,7 +1222,7 @@
       if (state.route === "research") await loadResearchPage({ renderAfter: false });
       if (state.route === "earnings") await loadEarningsPage({ renderAfter: false });
       if (state.route === "macro") await loadMacroPage({ renderAfter: false });
-      if (state.route === "briefs") await loadBriefPage({ renderAfter: false });
+      if (["briefs", "smart-money-briefs"].includes(state.route)) await loadBriefPage({ renderAfter: false });
       state.lastSync = new Date();
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
@@ -1345,6 +1347,7 @@
     else if (state.route === "earnings") renderEarnings();
     else if (state.route === "macro") renderMacro();
     else if (state.route === "briefs") renderBriefs();
+    else if (state.route === "smart-money-briefs") renderSmartMoneyBriefs();
     else renderOverview();
     viewRoot.focus({ preventScroll: true });
   }
@@ -2535,7 +2538,7 @@
         ${state.notifications.length ? state.notifications.slice(0, 12).map((notice) => `<button type="button" class="notification-item${notice.read_at ? "" : " is-unread"}" data-action="notification-open" data-notification-id="${esc(notice.id)}" data-entity-id="${esc(notice.entity_id)}" data-notice-route="${esc(notice.route || "briefs")}">
           <span>${notice.notification_type === "smart_money_brief" ? "SMART" : notice.notification_type === "brief_continuation" ? "UPDATE" : "BRIEF"}</span><strong>${esc(notice.title)}</strong><p>${esc(notice.preview)}</p><small>${esc(briefPublishedTime(notice.created_at))} BKK</small>
         </button>`).join("") : '<div class="notification-empty"><strong>No intelligence notifications yet.</strong><p>Hermes publications will appear here.</p></div>'}
-      </div><footer><button type="button" data-route="briefs">Briefs</button><button type="button" data-route="smart-money">Smart Money</button></footer>`;
+      </div><footer><button type="button" data-route="briefs">Daily Briefs</button><button type="button" data-route="smart-money-briefs">Smart Money Briefs</button></footer>`;
   }
 
   function selectedBrief() {
@@ -2582,40 +2585,55 @@
       || null;
   }
 
-  function smartMoneyBriefNotes(items, emptyText) {
+  function smartMoneyBriefNotes(items, emptyText, sourceMap) {
     const rows = briefArray(items);
-    if (!rows.length) return `<div class="smart-brief__none">${esc(emptyText)}</div>`;
-    return rows.map((item, index) => `<article class="smart-brief__note smart-brief__note--${briefTone(item.tone)}">
-      <span>${String(index + 1).padStart(2, "0")}</span><div><strong>${esc(item.title || "Update")}</strong><p>${esc(item.detail || "")}</p></div>
-    </article>`).join("");
+    if (!rows.length) return `<p class="smart-report__empty">${esc(emptyText)}</p>`;
+    return rows.map((item) => {
+      const sources = briefArray(item.source_ids).map((id) => sourceMap.get(String(id))).filter(Boolean);
+      return `<article class="smart-report__item smart-report__item--${briefTone(item.tone)}">
+      <strong>${esc(item.title || "Update")}</strong><p>${esc(item.detail || "")}</p>
+      ${sources.length ? `<div class="smart-report__item-sources">${sources.map(briefSourceLink).join("")}</div>` : ""}
+    </article>`;
+    }).join("");
   }
 
-  function smartMoneyBriefMarkup() {
-    const brief = selectedSmartMoneyBrief();
-    if (!brief) return `<section class="smart-brief smart-brief--empty" id="smart-money-brief">
-      <div><span>WEEKLY / HERMES</span><h2>Smart Money Brief</h2></div><p>The first deduplicated 30-day edition has not been published yet.</p>
-    </section>`;
+  function smartMoneyBriefMarkup(brief = selectedSmartMoneyBrief()) {
+    if (!brief) return "";
     const content = brief.content || {};
     const sourceContext = brief.source_context || {};
     const sources = briefArray(content.sources);
-    return `<section class="smart-brief" id="smart-money-brief">
-      <header class="smart-brief__masthead">
-        <div><span>SMART MONEY BRIEF / ${esc(briefDateLabel(brief.report_date).toUpperCase())}</span><h2>${esc(content.headline || brief.title || "Smart Money Brief")}</h2></div>
-        <div class="smart-brief__meta"><span>${esc(String(sourceContext.freshness_status || "unknown").toUpperCase())}</span><strong>${num(sourceContext.new_event_count)} NEW</strong><small>30-DAY WINDOW · NO RERUNS</small></div>
+    const sourceMap = new Map(sources.map((source) => [String(source.id), source]));
+    return `<div class="smart-report" id="smart-money-brief">
+      <header class="smart-report__masthead">
+        <div><span>SMART MONEY BRIEF / ${esc(briefDateLabel(brief.report_date).toUpperCase())}</span><h1>${esc(content.headline || brief.title || "Smart Money Brief")}</h1></div>
+        <div class="smart-report__masthead-meta"><span>${esc(String(sourceContext.freshness_status || "unknown").toUpperCase())}</span><strong>${num(sourceContext.new_event_count)} NEW</strong><small>30 DAYS · NO RERUNS</small></div>
       </header>
-      <div class="smart-brief__coverage"><span>00 / COVERAGE</span><p>${esc(content.coverage_summary || brief.summary)}</p></div>
-      ${state.smartMoneyBriefs.length > 1 ? `<nav class="smart-brief__editions" aria-label="Smart Money Brief editions">${state.smartMoneyBriefs.map((item) => `<button type="button" class="${item.id === brief.id ? "is-active" : ""}" data-action="smart-money-brief-select" data-smart-money-brief-id="${esc(item.id)}">${esc(briefDateLabel(item.report_date, { short: true }))}</button>`).join("")}</nav>` : ""}
-      <div class="smart-brief__signal-grid">
-        <section><header><span>01 / OPEN-MARKET BUYS</span><h3>Money deliberately put to work.</h3></header>${smartMoneyBriefNotes(content.open_market_buys, "No decision-relevant code-P purchase in this edition.")}</section>
-        <section><header><span>02 / SALES IN CONTEXT</span><h3>Sales that deserve a second look.</h3></header>${smartMoneyBriefNotes(content.sales_worth_context, "No decision-relevant code-S sale in this edition.")}</section>
-      </div>
-      <div class="smart-brief__decision-grid">
-        <section><header><span>03 / NOISE REMOVED</span><h3>What was deliberately excluded.</h3></header>${smartMoneyBriefNotes(content.noise_removed, "No mechanical activity was material to explain.")}</section>
-        <section><header><span>04 / WATCH NEXT</span><h3>What would change the read.</h3></header>${smartMoneyBriefNotes(content.watch_next, "Wait for the next filing cycle.")}</section>
-      </div>
-      <section class="smart-brief__bottom"><header><span>05 / BOTTOM LINE</span><h3>The filing signal, without the noise.</h3></header>${smartMoneyBriefNotes(content.bottom_line, brief.summary)}</section>
-      <footer><span>SEC SOURCES / ${sources.length}</span><div>${sources.map((source) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${esc(source.title || source.publisher || "SEC filing")} ↗</a>`).join("")}</div></footer>
-    </section>`;
+      <section class="smart-report__coverage">
+        <div><span>ตรวจ ณ</span><strong>${esc(briefDateLabel(brief.report_date))} · ${esc(briefPublishedTime(brief.published_at))} BKK</strong></div>
+        <div><span>ช่วงข้อมูล</span><strong>${esc(String(sourceContext.window_from || "").slice(0, 10))} ถึง ${esc(brief.report_date)}</strong></div>
+        <p>${esc(content.coverage_summary || brief.summary)}</p>
+      </section>
+      <section class="smart-report__section smart-report__section--buy"><header><span>01 / OPEN-MARKET BUY</span><h2>🟢 ซื้อจริงที่น่าสนใจ</h2></header><div>${smartMoneyBriefNotes(content.open_market_buys, "ไม่มีรายการ", sourceMap)}</div></section>
+      <section class="smart-report__section smart-report__section--sell"><header><span>02 / OPEN-MARKET SELL</span><h2>🔴 ขายจริงที่ต้องรู้</h2></header><div>${smartMoneyBriefNotes(content.sales_worth_context, "ไม่มีรายการ", sourceMap)}</div></section>
+      <section class="smart-report__section smart-report__section--noise"><header><span>03 / SIGNAL HYGIENE</span><h2>⚪ ตัดเสียงรบกวน</h2></header><div>${smartMoneyBriefNotes(content.noise_removed, "ไม่มีรายการ", sourceMap)}</div></section>
+      <section class="smart-report__section smart-report__section--watch"><header><span>04 / WATCH NEXT</span><h2>🚩 Worth watching</h2></header><div>${smartMoneyBriefNotes(content.watch_next, "รอรอบ filing ถัดไป", sourceMap)}</div></section>
+    </div>`;
+  }
+
+  function renderSmartMoneyBriefs() {
+    const brief = selectedSmartMoneyBrief();
+    if (state.briefBusy && !brief) {
+      viewRoot.innerHTML = `${pageHead("Hermes · SEC Form 4 intelligence", "Smart Money Brief", "One weekly 30-day edition. Telegram and PCC carry the same read.")}<div class="brief-empty"><span></span><p>Reading the Smart Money archive…</p></div>`;
+      return;
+    }
+    if (!brief) {
+      viewRoot.innerHTML = `${pageHead("Hermes · SEC Form 4 intelligence", "Smart Money Brief", "One weekly 30-day edition. Telegram and PCC carry the same read.")}<section class="brief-empty"><span>WEEKLY / HERMES</span><h2>The first Smart Money Brief has not been published.</h2><p>The Smart Money page remains the raw Form 4 ledger; full weekly editions appear here.</p></section>`;
+      return;
+    }
+    viewRoot.innerHTML = `<div class="brief-shell smart-report-shell">
+      <aside class="brief-archive" aria-label="Smart Money Brief archive"><header><span>ARCHIVE / ${state.smartMoneyBriefs.length}</span><strong>Weekly editions</strong></header><div>${state.smartMoneyBriefs.map((item) => `<button type="button" class="${item.id === brief.id ? "is-active" : ""}" data-action="smart-money-brief-select" data-smart-money-brief-id="${esc(item.id)}"><span>${esc(briefDateLabel(item.report_date, { short: true }))}</span><strong>${esc(item.summary)}</strong><small>30 days · no reruns</small></button>`).join("")}</div></aside>
+      <article class="brief-document smart-report-document">${smartMoneyBriefMarkup(brief)}</article>
+    </div>`;
   }
 
   function renderSmartMoney() {
@@ -2639,7 +2657,6 @@
       ${pageHead("Watchlist intelligence · SEC Form 4", "Follow the people closest to the company.", "A filing-first tape of insider ownership changes across every name you watch. Transaction codes stay visible so grants, exercises and open-market trades never look the same.", `<span class="smart-status"><i></i>${smartStatus}</span>`) }
       ${!state.smartMoneyReady ? `<div class="warning-box smart-money-setup"><strong>Smart Money schema is not installed yet.</strong> Run <code>014_smart_money.sql</code> in Supabase. The page is ready; live filings begin after the Massive collector is deployed.</div>` : ""}
       ${state.smartMoneyError ? `<div class="warning-box smart-money-setup"><strong>Smart Money could not refresh.</strong> ${esc(state.smartMoneyError)} <button class="button button--small" type="button" data-action="smart-money-retry">Try again</button></div>` : ""}
-      ${smartMoneyBriefMarkup()}
       <section class="smart-ledger" aria-label="Smart Money summary">
         <div class="smart-ledger__lead"><small>NEW FILINGS / 24H</small><strong>${newToday}</strong><span>Across ${state.watchlist.length} watched symbols</span></div>
         <div><small>OPEN-MARKET BUYS</small><strong class="positive">${openBuys}</strong><span>Transaction code P</span></div>
@@ -4124,7 +4141,7 @@
       else if (state.route === "research") await loadResearchPage();
       else if (state.route === "earnings") await loadEarningsPage();
       else if (state.route === "macro") await loadMacroPage();
-      else if (state.route === "briefs") await loadBriefPage();
+      else if (["briefs", "smart-money-briefs"].includes(state.route)) await loadBriefPage();
       else {
         render();
         if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
@@ -4164,12 +4181,14 @@
     else if (action === "notification-open") {
       const entityId = target.dataset.entityId;
       const notice = state.notifications.find((item) => item.id === target.dataset.notificationId);
-      const destination = target.dataset.noticeRoute === "smart-money" ? "smart-money" : "briefs";
+      const destination = notice?.notification_type === "smart_money_brief" || target.dataset.noticeRoute === "smart-money-briefs"
+        ? "smart-money-briefs"
+        : "briefs";
       const brief = destination === "briefs"
         ? state.briefs.find((item) => item.id === entityId || briefArray(item.updates).some((update) => update.id === entityId))
         : null;
       if (brief) state.selectedBriefId = brief.id;
-      if (destination === "smart-money" && state.smartMoneyBriefs.some((item) => item.id === entityId)) {
+      if (destination === "smart-money-briefs" && state.smartMoneyBriefs.some((item) => item.id === entityId)) {
         state.selectedSmartMoneyBriefId = entityId;
       }
       state.route = destination;
@@ -4186,8 +4205,7 @@
       window.scrollTo(0, 0);
       render();
       renderNotificationCenter();
-      if (destination === "smart-money") {
-        if (!state.smartMoneyLoaded) void loadSmartMoneyPage();
+      if (destination === "smart-money-briefs") {
         requestAnimationFrame(() => $("#smart-money-brief")?.scrollIntoView({ block: "start" }));
       } else if (entityId && briefArray(brief?.updates).some((update) => update.id === entityId)) {
         requestAnimationFrame(() => $(`#brief-update-${CSS.escape(entityId)}`)?.scrollIntoView({ block: "start" }));
@@ -4200,7 +4218,7 @@
     }
     else if (action === "smart-money-brief-select") {
       state.selectedSmartMoneyBriefId = target.dataset.smartMoneyBriefId;
-      renderSmartMoney();
+      renderSmartMoneyBriefs();
       requestAnimationFrame(() => $("#smart-money-brief")?.scrollIntoView({ block: "start" }));
     }
     else if (action === "refresh") await loadData();
@@ -4802,14 +4820,11 @@
         watch_next: [
           { title: "Follow-through from the same buyers", detail: "Another discretionary purchase would strengthen the cluster; a one-off filing does not establish a trend.", tone: "neutral", event_keys: [], source_ids: ["sec-preview"] }
         ],
-        bottom_line: [
-          { title: "Signal remains narrow", detail: "The useful read is selective accumulation, not a market-wide insider buying wave.", tone: "neutral", event_keys: ["preview:p1"], source_ids: ["sec-preview"] }
-        ],
         sources: [{ id: "sec-preview", title: "SEC Form 4 filing", publisher: "SEC", url: "https://www.sec.gov/edgar/search/", published_at: new Date().toISOString() }]
       }
     }];
     const notifications = [
-      { id: "notice-smart", notification_type: "smart_money_brief", title: "Smart Money Brief", preview: smartMoneyBriefs[0].summary, route: "smart-money", entity_id: "smart-brief-preview", created_at: new Date().toISOString(), read_at: null },
+      { id: "notice-smart", notification_type: "smart_money_brief", title: "Smart Money Brief", preview: smartMoneyBriefs[0].summary, route: "smart-money-briefs", entity_id: "smart-brief-preview", created_at: new Date().toISOString(), read_at: null },
       { id: "notice-update", notification_type: "brief_continuation", title: "Daily Market Brief · Continuation", preview: "Indexes softened, but the original thesis remains current.", route: "briefs", entity_id: "update-preview", created_at: new Date(Date.now() - 60_000).toISOString(), read_at: null },
       { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, route: "briefs", entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
     ];

@@ -33,12 +33,14 @@ not market-price data, so sub-hour polling only wastes the shared Massive quota.
 
 - Every run overlaps the last four days so fresh, late, and amended filings are caught.
 - Every newly watched instrument also receives a one-time 90-day ticker backfill.
-- To respect the shared API rate limit, requests are spaced by at least 15 seconds
-  and at most one new symbol is backfilled per run. A large imported watchlist
-  therefore fills progressively, while newly added symbols are picked up
-  automatically.
+- To stay below Massive Basic's five-call-per-minute ceiling while preserving
+  room for research news and owner-only option EOD, requests are spaced by at
+  least 20 seconds and at most four new symbols are backfilled per run. A large
+  imported watchlist therefore fills progressively, while newly added symbols
+  are picked up automatically.
 - A rate-limited historical backfill is deferred to the next run. It does not
-  discard fresh market-wide filings that the same run already fetched.
+  discard fresh market-wide filings that the same run already fetched, and the
+  collector stops the remaining backfill batch instead of spending more quota.
 - Backfill completion is stored per instrument in `smart_money_sync_state`,
   including symbols with no matching filings, so empty histories are not fetched
   repeatedly.

@@ -12,9 +12,9 @@ const regularLookbackDays = 4;
 const maxPages = 10;
 // Smart Money, research news and option EOD share one Massive key. Keep this
 // collector deliberately quiet so one feature cannot starve the others.
-const massiveRequestGapMs = 15_000;
+const massiveRequestGapMs = 20_000;
 const massiveRateLimitRetries = 1;
-const maxBackfillSymbolsPerRun = 1;
+const maxBackfillSymbolsPerRun = 4;
 
 type WatchlistRow = {
   user_id: string;
@@ -152,7 +152,7 @@ async function fetchMassiveRows(
     const payload = await result.json().catch(() => null) as { results?: unknown[]; next_url?: string } | null;
     if (!result.ok) {
       const detail = payload ? JSON.stringify(payload).slice(0, 500) : `HTTP ${result.status}`;
-      throw new Error(`Massive Form 4 request failed: ${detail}`);
+      throw new Error(`Massive Form 4 request failed: HTTP ${result.status}: ${detail}`);
     }
     if (Array.isArray(payload?.results)) {
       rows.push(...payload.results.filter((item): item is MassiveForm4 => Boolean(item) && typeof item === "object"));
@@ -254,6 +254,7 @@ Deno.serve(async (request) => {
         const message = error instanceof Error ? error.message : String(error);
         backfillErrors.push(`${symbol}: ${message}`);
         console.warn(`Smart Money backfill deferred for ${symbol}: ${message}`);
+        if (message.includes("HTTP 429")) break;
       }
     }
 

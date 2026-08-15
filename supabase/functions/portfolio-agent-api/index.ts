@@ -185,6 +185,36 @@ function validateContinuationContent(value: unknown) {
   return content;
 }
 
+function validateSmartMoneyBriefContent(value: unknown) {
+  const content = jsonObject(value, "content");
+  requiredText(content.headline, "content.headline", 180);
+  requiredText(content.coverage_summary, "content.coverage_summary", 800);
+  const sourceIds = validateBriefSources(content, 1, 30);
+  const eventKeys = new Set<string>();
+  for (const [key, min, max] of [
+    ["open_market_buys", 0, 8],
+    ["sales_worth_context", 0, 8],
+    ["noise_removed", 1, 8],
+    ["watch_next", 1, 8],
+    ["bottom_line", 1, 4],
+  ] as const) {
+    requireArraySection(content, key, min, max).forEach((value, index) => {
+      const item = jsonObject(value, `content.${key}[${index}]`);
+      requiredText(item.title, `content.${key}[${index}].title`, 180);
+      requiredText(item.detail, `content.${key}[${index}].detail`, 1200);
+      validateBriefTone(item.tone, `content.${key}[${index}].tone`);
+      const itemSources = validateStringItems(item.source_ids, `content.${key}[${index}].source_ids`, 0, 10);
+      itemSources.forEach((id) => {
+        if (!sourceIds.has(id)) throw new Error(`content.${key}[${index}] references unknown source id: ${id}`);
+      });
+      validateStringItems(item.event_keys, `content.${key}[${index}].event_keys`, 0, 100)
+        .forEach((eventKey) => eventKeys.add(eventKey));
+    });
+  }
+  if (!eventKeys.size) throw new Error("content must reference at least one new Smart Money event key");
+  return { content, eventKeys: [...eventKeys] };
+}
+
 function requireScope(identity: AgentIdentity, scope: string) {
   if (!identity.scopes.includes(scope)) throw new Error(`Agent token is missing scope: ${scope}`);
 }
@@ -1019,6 +1049,182 @@ async function publishBriefContinuation(
   }));
 }
 
+function smartMoneyEventKey(row: Record<string, unknown>) {
+  return `${String(row.accession_number || "").trim()}:${String(row.transaction_key || "").trim()}`;
+}
+
+function smartMoneyFootnoteText(rawPayload: unknown) {
+  if (!rawPayload || typeof rawPayload !== "object") return "";
+  try {
+    return JSON.stringify(rawPayload).replace(/\s+/g, " ").slice(0, 2400);
+  } catch {
+    return "";
+  }
+}
+
+async function smartMoneyBriefingContext(
+  service: any,
+  userId: string,
+) {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString();
+  const [rows, previousBriefs, syncStates] = await Promise.all([
+    collectPages((from, to) => service
+      .from("smart_money_events")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("filed_at", cutoff)
+      .order("filed_at", { ascending: false })
+      .order("created_at", { ascending: false })
+      .range(from, to)),
+    must(service
+      .from("smart_money_briefs")
+      .select("reported_event_keys,report_date,published_at")
+      .eq("user_id", userId)
+      .eq("status", "published")
+      .order("published_at", { ascending: false })),
+    must(service
+      .from("smart_money_sync_state")
+      .select("source,last_checked_at,last_success_at,last_filed_at,last_error")
+      .eq("user_id", userId)),
+  ]);
+  const reportedKeys = new Set<string>((previousBriefs as Record<string, unknown>[])
+    .flatMap((brief) => Array.isArray(brief.reported_event_keys) ? brief.reported_event_keys.map(String) : []));
+  const sourceRows = rows as Record<string, unknown>[];
+  const newRows = sourceRows.filter((row) => !reportedKeys.has(smartMoneyEventKey(row)));
+  const instrumentIds = unique(newRows.map((row) => String(row.instrument_id || "")).filter(Boolean));
+  const instruments = instrumentIds.length
+    ? await must(service.from("instruments").select("id,symbol,display_name").in("id", instrumentIds))
+    : [];
+  const instrumentMap = new Map((instruments as Record<string, unknown>[])
+    .map((instrument) => [String(instrument.id), instrument]));
+  const latestState = [...(syncStates as Record<string, unknown>[])].sort((a, b) =>
+    String(b.last_checked_at || "").localeCompare(String(a.last_checked_at || "")))[0] || null;
+  const lastSuccessAt = (syncStates as Record<string, unknown>[])
+    .map((state) => String(state.last_success_at || ""))
+    .filter(Boolean)
+    .sort()
+    .at(-1) || null;
+  const freshnessAgeHours = lastSuccessAt
+    ? (Date.now() - new Date(lastSuccessAt).getTime()) / 3_600_000
+    : null;
+  const freshnessStatus = freshnessAgeHours == null || freshnessAgeHours > 72
+    ? "stale"
+    : latestState?.last_error && String(latestState.last_checked_at || "") > String(lastSuccessAt)
+      ? "partial"
+      : "fresh";
+  const availableRows = newRows.slice(0, 2000);
+  const detailRows = availableRows
+    .filter((row) => ["P", "S"].includes(String(row.transaction_code || "").toUpperCase()))
+    .sort((a, b) => Number(b.transaction_value || 0) - Number(a.transaction_value || 0))
+    .slice(0, 500);
+  const compactEvents = detailRows.map((row) => {
+    const instrument = instrumentMap.get(String(row.instrument_id || ""));
+    const footnoteText = smartMoneyFootnoteText(row.raw_payload);
+    return {
+      event_key: smartMoneyEventKey(row),
+      symbol: String(instrument?.symbol || ""),
+      company: String(instrument?.display_name || ""),
+      filer_name: row.filer_name,
+      filer_title: row.filer_title,
+      relationship: row.relationship,
+      transaction_code: row.transaction_code,
+      side: row.side,
+      transaction_date: row.transaction_date,
+      filed_at: row.filed_at,
+      shares: row.shares,
+      price: row.price,
+      transaction_value: row.transaction_value,
+      ownership_nature: row.ownership_nature,
+      is_derivative: row.is_derivative,
+      sec_url: row.sec_url,
+      source_id: `sec:${String(row.accession_number || row.id)}`,
+      flags: {
+        possible_10b5_1: /10b5-?1/i.test(footnoteText) || Boolean((row.raw_payload as Record<string, unknown> | null)?.aff_10b5_one),
+        possible_drip: /dividend.{0,40}(reinvest|reinvestment)|automatic.{0,40}reinvest/i.test(footnoteText),
+        possible_tax_or_award: /tax|withhold|award|vesting|rsu/i.test(footnoteText),
+        possible_conversion_or_rights: /conversion|convert|rights offering|warrant|exercise/i.test(footnoteText),
+      },
+      filing_notes: footnoteText,
+    };
+  });
+  const sideCount = (side: string) => sourceRows.filter((row) => String(row.side) === side).length;
+  const newSideCount = (side: string) => newRows.filter((row) => String(row.side) === side).length;
+  const transactionCodeCounts = newRows.reduce((counts, row) => {
+    const code = String(row.transaction_code || "UNKNOWN").toUpperCase();
+    counts[code] = (counts[code] || 0) + 1;
+    return counts;
+  }, {} as Record<string, number>);
+  const sourceContext = {
+    generated_at: new Date().toISOString(),
+    window_days: 30,
+    window_from: cutoff,
+    freshness_status: freshnessStatus,
+    freshness_age_hours: freshnessAgeHours == null ? null : Math.round(freshnessAgeHours * 10) / 10,
+    last_checked_at: latestState?.last_checked_at || null,
+    last_success_at: lastSuccessAt,
+    last_error: latestState?.last_error || null,
+    latest_filed_at: sourceRows[0]?.filed_at || null,
+    total_events_in_window: sourceRows.length,
+    previously_reported_in_window: sourceRows.length - newRows.length,
+    new_event_count: newRows.length,
+    consumed_event_count: availableRows.length,
+    detailed_event_count: compactEvents.length,
+    returned_event_count: compactEvents.length,
+    response_truncated: newRows.length > availableRows.length,
+    detail_sampling: "All new code-P/code-S rows ranked by transaction value; up to 500 detailed rows. Every available key is consumed after publication.",
+    transaction_code_counts: transactionCodeCounts,
+    counts: {
+      all: { total: sourceRows.length, new: newRows.length },
+      buy: { total: sideCount("buy"), new: newSideCount("buy") },
+      sell: { total: sideCount("sell"), new: newSideCount("sell") },
+      other: { total: sideCount("other"), new: newSideCount("other") },
+    },
+  };
+  return {
+    source_context: sourceContext,
+    events: compactEvents,
+    available_event_keys: availableRows.map(smartMoneyEventKey),
+    previous_report: (previousBriefs as Record<string, unknown>[])[0] || null,
+    guidance: {
+      cadence: "Publish at most once per week using this rolling 30-day context.",
+      deduplication: "All available_event_keys are consumed on publication, including low-signal rows omitted from prose, so inspected noise never reruns.",
+      no_change: "If new_event_count is zero, do not publish and do not notify.",
+      stale_source: "If freshness_status is stale, do not publish. Never describe stale coverage as no activity.",
+      classification: "Treat only code P/S as purchases/sales. Separate 10b5-1, DRIP, tax, awards, exercises, conversions and rights offerings from conviction signals.",
+      accuracy: "Aggregate transaction_value only when currency and filing footnotes support it. Preserve SEC links and state truncated coverage explicitly.",
+    },
+  };
+}
+
+async function publishSmartMoneyBrief(
+  service: any,
+  identity: AgentIdentity,
+  body: Record<string, unknown>,
+) {
+  const validated = validateSmartMoneyBriefContent(body.content);
+  const context = await smartMoneyBriefingContext(service, identity.user_id);
+  const sourceContext = context.source_context as Record<string, unknown>;
+  if (sourceContext.freshness_status === "stale") {
+    throw new Error("Smart Money source is stale. Wait for a successful collector run before publishing.");
+  }
+  const availableKeys = context.available_event_keys as string[];
+  const available = new Set(availableKeys);
+  const unavailable = validated.eventKeys.filter((key) => !available.has(key));
+  if (unavailable.length) {
+    throw new Error(`Smart Money brief contains already-reported or unavailable event keys: ${unavailable.slice(0, 3).join(", ")}`);
+  }
+  return await must(service.rpc("api_agent_publish_smart_money_brief", {
+    p_user_id: identity.user_id,
+    p_agent_id: identity.token_id,
+    p_report_date: dateKey(body.report_date, "report_date"),
+    p_summary: requiredText(body.summary, "summary"),
+    p_content: validated.content,
+    p_source_context: sourceContext,
+    p_reported_event_keys: availableKeys,
+    p_idempotency_key: requiredText(body.idempotency_key, "idempotency_key", 160),
+  }));
+}
+
 async function overview(service: any, userId: string) {
   const portfolios = await ownedPortfolios(service, userId);
   const ids = portfolios.map((row: Record<string, unknown>) => String(row.id));
@@ -1247,6 +1453,19 @@ Deno.serve(async (request) => {
       }
       const rows = await must(query.order("filed_at", { ascending: false }).limit(limit));
       return response({ action, data: rows });
+    }
+
+    if (action === "smart_money_briefing_context") {
+      return response({ action, data: await smartMoneyBriefingContext(service, identity.user_id) });
+    }
+
+    if (action === "publish_smart_money_brief") {
+      requireScope(identity, "briefings:write");
+      return response({
+        action,
+        data: await publishSmartMoneyBrief(service, identity, body),
+        published: true,
+      });
     }
 
     if (action === "chart") {

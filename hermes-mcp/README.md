@@ -18,6 +18,11 @@ Center without editing dashboard files or receiving Supabase SQL access.
   positions or Watchlist. `personal` is reserved for separate private analysis.
   Hermes reads the canonical edition before publishing a material midnight
   delta. Both publish tools require the `briefings:write` scope.
+- `get_smart_money_briefing_context` is a fixed rolling 30-day, weekly fact
+  pack. Supabase removes Form 4 event keys used by prior editions before Hermes
+  sees them. `publish_smart_money_brief` refuses stale sources, empty reports,
+  duplicate events and more than one edition inside six days; it uses the same
+  narrow `briefings:write` scope.
 - Trade and cash tools create expiring drafts only.
 - Draft confirmation is intentionally absent from MCP. Confirm from
   `Account > Agent drafts` in the dashboard.

@@ -207,3 +207,67 @@ test("routes Daily Market Brief calls to scoped API actions", async () => {
   assert.equal(publish.request.action, "publish_market_brief");
   assert.equal(publish.request.idempotency_key, "daily-market-brief:2026-08-09");
 });
+
+test("exposes deterministic weekly Smart Money Brief tools", async () => {
+  const tools = await listTools();
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const context = byName.get("get_smart_money_briefing_context");
+  const publish = byName.get("publish_smart_money_brief");
+
+  assert.equal(context.inputSchema.additionalProperties, false);
+  assert.deepEqual(publish.inputSchema.required, ["report_date", "summary", "content", "idempotency_key"]);
+  assert.equal(publish.inputSchema.properties.content.properties.open_market_buys.minItems, 0);
+  assert.equal(publish.inputSchema.properties.content.properties.noise_removed.minItems, 1);
+  assert.equal(publish.inputSchema.properties.content.properties.sources.maxItems, 30);
+  assert.deepEqual(
+    publish.inputSchema.properties.content.properties.bottom_line.items.required,
+    ["title", "detail", "tone", "event_keys", "source_ids"],
+  );
+});
+
+test("routes weekly Smart Money context and publication actions", async () => {
+  const context = await callTool("get_smart_money_briefing_context", {});
+  const publish = await callTool("publish_smart_money_brief", {
+    report_date: "2026-08-16",
+    summary: "New open-market activity was limited; mechanical filings were separated from signal.",
+    content: {
+      headline: "New buying was selective, while planned activity dominated the tape.",
+      coverage_summary: "Rolling 30 days; collector fresh; only previously unreported events included.",
+      open_market_buys: [{
+        title: "TSM purchase cluster",
+        detail: "Several code-P rows were filed by company officers.",
+        tone: "positive",
+        event_keys: ["accession:key-1"],
+        source_ids: ["sec:accession"],
+      }],
+      sales_worth_context: [],
+      noise_removed: [{
+        title: "Planned and mechanical rows removed",
+        detail: "10b5-1, tax and conversion rows were not treated as conviction signals.",
+        tone: "neutral",
+        event_keys: [],
+        source_ids: [],
+      }],
+      watch_next: [{
+        title: "Next filing cycle",
+        detail: "Watch for another discretionary purchase from the same cluster.",
+        tone: "neutral",
+        event_keys: [],
+        source_ids: [],
+      }],
+      bottom_line: [{
+        title: "Selective signal",
+        detail: "One new purchase cluster is more useful than the volume of mechanical filings.",
+        tone: "neutral",
+        event_keys: ["accession:key-1"],
+        source_ids: ["sec:accession"],
+      }],
+      sources: [{ id: "sec:accession", title: "SEC Form 4", url: "https://www.sec.gov/example", publisher: "SEC" }],
+    },
+    idempotency_key: "smart-money-brief:2026-08-16",
+  });
+
+  assert.deepEqual(context.request, { action: "smart_money_briefing_context" });
+  assert.equal(publish.request.action, "publish_smart_money_brief");
+  assert.equal(publish.request.idempotency_key, "smart-money-brief:2026-08-16");
+});

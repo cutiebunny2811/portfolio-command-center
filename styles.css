@@ -498,6 +498,54 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .smart-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px var(--green-wash); }
 .smart-money-setup { margin-bottom: 28px; }
+.smart-brief { margin-bottom: clamp(36px, 5vw, 70px); border: 1px solid var(--rule-strong); scroll-margin-top: calc(var(--topbar) + 18px); }
+.smart-brief__masthead { display: grid; grid-template-columns: minmax(0, 1fr) 220px; min-height: 230px; background: #3c0709; }
+.smart-brief__masthead > div { padding: clamp(24px, 4vw, 48px); }
+.smart-brief__masthead > div:first-child { display: grid; align-content: end; border-right: 1px solid rgb(255 255 255 / .15); }
+.smart-brief__masthead span,
+.smart-brief__coverage > span,
+.smart-brief section > header > span,
+.smart-brief > footer > span { color: var(--gold-bright); font: 650 8px/1.2 var(--mono); letter-spacing: .05em; text-transform: uppercase; }
+.smart-brief__masthead h2 { max-width: 18ch; margin: 14px 0 0; font-size: clamp(34px, 4.3vw, 62px); line-height: .94; letter-spacing: 0; }
+.smart-brief__meta { display: grid; align-content: end; gap: 10px; }
+.smart-brief__meta strong { color: var(--paper); font: 600 28px/1 var(--mono); }
+.smart-brief__meta small { color: var(--paper-dim); font: 600 8px/1.4 var(--mono); }
+.smart-brief__coverage { display: grid; grid-template-columns: 180px minmax(0, 1fr); border-bottom: 1px solid var(--rule-strong); }
+.smart-brief__coverage > span { padding: 20px; border-right: 1px solid var(--rule); }
+.smart-brief__coverage p { max-width: 100ch; margin: 0; padding: 20px 24px; color: var(--paper-dim); font-size: 12px; line-height: 1.6; }
+.smart-brief__editions { display: flex; overflow-x: auto; border-bottom: 1px solid var(--rule-strong); }
+.smart-brief__editions button { min-height: 38px; border: 0; border-right: 1px solid var(--rule); background: transparent; color: var(--paper-faint); padding: 0 16px; font: 600 8px/1 var(--mono); cursor: pointer; }
+.smart-brief__editions button.is-active { background: var(--red-wash); color: var(--paper); box-shadow: inset 0 -2px var(--red-bright); }
+.smart-brief__signal-grid,
+.smart-brief__decision-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--rule-strong); }
+.smart-brief__signal-grid > section,
+.smart-brief__decision-grid > section { min-width: 0; }
+.smart-brief__signal-grid > section:first-child,
+.smart-brief__decision-grid > section:first-child { border-right: 1px solid var(--rule-strong); }
+.smart-brief section > header { min-height: 105px; display: grid; align-content: end; gap: 10px; border-bottom: 1px solid var(--rule); padding: 20px 24px; }
+.smart-brief section > header h3 { margin: 0; font-size: clamp(21px, 2vw, 29px); line-height: 1; letter-spacing: 0; }
+.smart-brief__note { display: grid; grid-template-columns: 42px minmax(0, 1fr); min-height: 105px; border-bottom: 1px solid var(--rule); border-left: 2px solid var(--rule-strong); }
+.smart-brief__note:last-child { border-bottom: 0; }
+.smart-brief__note--positive { border-left-color: var(--green); }
+.smart-brief__note--caution { border-left-color: var(--gold); }
+.smart-brief__note--negative { border-left-color: var(--red-bright); }
+.smart-brief__note > span { padding: 20px 10px; color: var(--paper-faint); font: 600 8px/1 var(--mono); }
+.smart-brief__note > div { padding: 18px 20px 20px 0; }
+.smart-brief__note strong { font-size: 13px; line-height: 1.35; }
+.smart-brief__note p { margin: 8px 0 0; color: var(--paper-dim); font-size: 11px; line-height: 1.55; }
+.smart-brief__none { min-height: 105px; display: grid; align-items: center; padding: 20px 24px; color: var(--paper-faint); font-size: 11px; }
+.smart-brief__bottom { background: #111; border-bottom: 1px solid var(--rule-strong); }
+.smart-brief__bottom > header { min-height: 90px !important; }
+.smart-brief > footer { display: grid; grid-template-columns: 180px minmax(0, 1fr); }
+.smart-brief > footer > span { padding: 18px 20px; border-right: 1px solid var(--rule); }
+.smart-brief > footer > div { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 16px 20px; }
+.smart-brief > footer a { color: var(--paper-faint); font: 600 8px/1.4 var(--mono); text-decoration: none; }
+.smart-brief > footer a:hover { color: var(--gold-bright); }
+.smart-brief--empty { min-height: 150px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .7fr); align-items: end; }
+.smart-brief--empty > div,
+.smart-brief--empty > p { margin: 0; padding: 28px; }
+.smart-brief--empty h2 { margin: 8px 0 0; font-size: 32px; }
+.smart-brief--empty p { border-left: 1px solid var(--rule); color: var(--paper-faint); font-size: 11px; }
 .smart-ledger {
   display: grid;
   grid-template-columns: 1.1fr repeat(3, minmax(0, 1fr));
@@ -2563,6 +2611,24 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
 
 @media (max-width: 760px) {
   .notification-panel { position: fixed; top: calc(var(--topbar) + 8px); right: 10px; }
+  .smart-brief__masthead { grid-template-columns: 1fr; min-height: 0; }
+  .smart-brief__masthead > div:first-child { min-height: 205px; border-right: 0; border-bottom: 1px solid rgb(255 255 255 / .15); }
+  .smart-brief__masthead > div { padding: 22px 18px; }
+  .smart-brief__meta { grid-template-columns: auto auto; align-items: end; }
+  .smart-brief__meta small { grid-column: 1 / -1; }
+  .smart-brief__coverage,
+  .smart-brief > footer { grid-template-columns: 1fr; }
+  .smart-brief__coverage > span,
+  .smart-brief > footer > span { border-right: 0; border-bottom: 1px solid var(--rule); padding: 14px 18px; }
+  .smart-brief__coverage p { padding: 16px 18px; }
+  .smart-brief__signal-grid,
+  .smart-brief__decision-grid { grid-template-columns: 1fr; }
+  .smart-brief__signal-grid > section:first-child,
+  .smart-brief__decision-grid > section:first-child { border-right: 0; border-bottom: 1px solid var(--rule-strong); }
+  .smart-brief section > header { min-height: 92px; padding: 18px; }
+  .smart-brief__note { grid-template-columns: 34px minmax(0, 1fr); }
+  .smart-brief--empty { grid-template-columns: 1fr; }
+  .smart-brief--empty > p { border-top: 1px solid var(--rule); border-left: 0; }
   .brief-shell { grid-template-columns: 1fr; border-top: 0; }
   .brief-archive { border-right: 0; border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule-strong); }
   .brief-archive > header { position: static; }

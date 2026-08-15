@@ -3,6 +3,50 @@
 These jobs create one canonical brief in PCC. Telegram is a delivery surface,
 not a second independent analysis.
 
+## Weekly Smart Money Brief
+
+```text
+Create this week's shared PCC SMART MONEY BRIEF.
+
+1. Call get_smart_money_briefing_context exactly once. It already uses the
+   canonical rolling 30-day window and removes every event_key published in an
+   earlier Smart Money Brief. Do not call get_smart_money separately.
+2. If freshness_status is stale, response_truncated is true, or
+   new_event_count is zero, do not publish. Return exactly [SILENT]. A stale
+   collector is not evidence that insiders were inactive.
+3. Write concise Thai for every PCC member. Keep tickers, transaction codes and
+   SEC terms in English when clearer. This is a neutral Form 4 decision-support
+   report, not a personal portfolio opinion and not a trade recommendation.
+4. Classify before interpreting:
+   - P is an open-market/private purchase; S is a sale.
+   - 10b5-1 planned sales, DRIP, RSU vesting, sell-to-cover tax, awards, gifts,
+     exercises, conversions, warrants and rights offerings are noise/context,
+     not fresh conviction buys or discretionary bearish calls.
+   - Never combine foreign and USD values unless the SEC filing explicitly
+     supports the translation. Preserve SEC filing URLs.
+5. Report only genuinely new event_keys from the context. Group related rows by
+   ticker and filer when useful, but include every supporting event_key in the
+   corresponding item. Never add an event from memory or repeat an earlier one.
+6. Match the publish_smart_money_brief schema:
+   - headline: one neutral conclusion about the new weekly activity.
+   - coverage_summary: 30-day range, collector freshness, new count and limits.
+   - open_market_buys: only meaningful new code-P activity.
+   - sales_worth_context: discretionary or otherwise decision-relevant code-S
+     activity, with plan/tax context stated.
+   - noise_removed: explain the important rows deliberately excluded.
+   - watch_next: what filing context or follow-through would change the read.
+   - bottom_line: 1-4 non-repetitive conclusions.
+   - sources: SEC filings actually referenced by source_ids.
+7. Keep the notification summary below 500 characters. Publish with today's
+   Asia/Bangkok report_date and idempotency_key
+   smart-money-brief:YYYY-MM-DD. The server enforces one edition per week,
+   source freshness and event-level deduplication.
+8. Return a short Telegram preview plus:
+   https://cutiebunny2811.github.io/portfolio-command-center/?route=smart-money
+
+Never create a trade draft from this job.
+```
+
 ## 20:00 Asia/Bangkok
 
 ```text

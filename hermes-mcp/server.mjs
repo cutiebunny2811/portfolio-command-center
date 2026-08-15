@@ -97,6 +97,35 @@ const continuationContentSchema = {
   additionalProperties: false,
 };
 
+const smartMoneyNoteSchema = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    detail: { type: "string" },
+    tone: briefToneSchema,
+    event_keys: { type: "array", minItems: 0, maxItems: 100, uniqueItems: true, items: { type: "string" } },
+    source_ids: { type: "array", minItems: 0, maxItems: 10, uniqueItems: true, items: { type: "string" } },
+  },
+  required: ["title", "detail", "tone", "event_keys", "source_ids"],
+  additionalProperties: false,
+};
+
+const smartMoneyBriefContentSchema = {
+  type: "object",
+  properties: {
+    headline: { type: "string", description: "One neutral conclusion about the week's genuinely new Form 4 activity." },
+    coverage_summary: { type: "string", description: "State the 30-day window, source freshness, new-event count and any coverage limit." },
+    open_market_buys: { type: "array", minItems: 0, maxItems: 8, items: smartMoneyNoteSchema },
+    sales_worth_context: { type: "array", minItems: 0, maxItems: 8, items: smartMoneyNoteSchema },
+    noise_removed: { type: "array", minItems: 1, maxItems: 8, items: smartMoneyNoteSchema },
+    watch_next: { type: "array", minItems: 1, maxItems: 8, items: smartMoneyNoteSchema },
+    bottom_line: { type: "array", minItems: 1, maxItems: 4, items: smartMoneyNoteSchema },
+    sources: { type: "array", minItems: 1, maxItems: 30, items: sourceItemSchema },
+  },
+  required: ["headline", "coverage_summary", "open_market_buys", "sales_worth_context", "noise_removed", "watch_next", "bottom_line", "sources"],
+  additionalProperties: false,
+};
+
 const tools = [
   {
     name: "get_overview",
@@ -322,6 +351,30 @@ const tools = [
     },
   },
   {
+    name: "get_smart_money_briefing_context",
+    description: "Read the canonical weekly Smart Money fact pack. It always covers the latest 30 days but excludes every Form 4 event already used in an earlier PCC Smart Money Brief. Check freshness_status and new_event_count; remain silent when stale or when there is nothing new.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "publish_smart_money_brief",
+    description: "Publish at most one shared Smart Money Brief per week. Use only event_keys returned by get_smart_money_briefing_context. The server rejects stale data, prior event keys and empty reports, then notifies every PCC member.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        report_date: { type: "string", description: "Bangkok publication date in YYYY-MM-DD." },
+        summary: { type: "string", maxLength: 1200, description: "Short neutral notification preview." },
+        content: smartMoneyBriefContentSchema,
+        idempotency_key: { type: "string", minLength: 8, maxLength: 160, description: "Use smart-money-brief:YYYY-MM-DD." },
+      },
+      required: ["report_date", "summary", "content", "idempotency_key"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "get_chart_bars",
     description: "Read Webull OHLCV bars for a watched or owned stock/ETF. Supports 1-hour, 4-hour, and daily candles; options are intentionally excluded.",
     inputSchema: {
@@ -474,6 +527,8 @@ const actionByTool = {
   publish_brief_continuation: "publish_brief_continuation",
   get_market_pulse: "market_pulse",
   get_smart_money: "smart_money",
+  get_smart_money_briefing_context: "smart_money_briefing_context",
+  publish_smart_money_brief: "publish_smart_money_brief",
   get_chart_bars: "chart",
   resolve_rule_a_campaign: "resolve_rule_a_campaign",
   get_confirmed_execution_sync: "confirmed_execution_sync",

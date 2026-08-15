@@ -16,12 +16,14 @@ test("weekly Smart Money publications are shared, deduplicated and freshness gua
   assert.match(migration, /create table if not exists public\.smart_money_briefs/);
   assert.match(migration, /prior_key = any\(p_reported_event_keys\)/);
   assert.match(migration, /limited to one edition per week/);
+  assert.match(migration, /between 1 and 5000/);
   assert.match(migration, /Smart Money source is stale; publication refused/);
   assert.match(migration, /'smart_money_brief', 'Smart Money Brief'/);
   assert.match(api, /async function smartMoneyBriefingContext/);
   assert.match(api, /previously_reported_in_window/);
   assert.match(api, /If new_event_count is zero, do not publish and do not notify/);
   assert.match(api, /already-reported or unavailable event keys/);
+  assert.match(api, /newRows\.slice\(0, 5000\)/);
   assert.match(app, /notice\.notification_type === "smart_money_brief" \? "SMART"/);
   assert.match(app, /id="smart-money-brief"/);
   assert.match(app, /30-DAY WINDOW · NO RERUNS/);

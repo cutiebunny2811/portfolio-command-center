@@ -1112,7 +1112,7 @@ async function smartMoneyBriefingContext(
     : latestState?.last_error && String(latestState.last_checked_at || "") > String(lastSuccessAt)
       ? "partial"
       : "fresh";
-  const availableRows = newRows.slice(0, 2000);
+  const availableRows = newRows.slice(0, 5000);
   const detailRows = availableRows
     .filter((row) => ["P", "S"].includes(String(row.transaction_code || "").toUpperCase()))
     .sort((a, b) => Number(b.transaction_value || 0) - Number(a.transaction_value || 0))

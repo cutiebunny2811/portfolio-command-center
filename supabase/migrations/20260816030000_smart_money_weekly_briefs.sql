@@ -22,7 +22,7 @@ create table if not exists public.smart_money_briefs (
   constraint smart_money_briefs_window check (window_days = 30),
   constraint smart_money_briefs_content_object check (jsonb_typeof(content) = 'object'),
   constraint smart_money_briefs_source_context_object check (jsonb_typeof(source_context) = 'object'),
-  constraint smart_money_briefs_reported_events check (cardinality(reported_event_keys) between 1 and 2000),
+  constraint smart_money_briefs_reported_events check (cardinality(reported_event_keys) between 1 and 5000),
   constraint smart_money_briefs_status check (status in ('draft', 'published')),
   constraint smart_money_briefs_audience check (audience in ('private', 'shared')),
   constraint smart_money_briefs_summary_length check (char_length(summary) between 1 and 1200),
@@ -141,7 +141,7 @@ begin
   if coalesce(cardinality(p_reported_event_keys), 0) = 0 then
     raise exception 'No new Smart Money events to publish';
   end if;
-  if cardinality(p_reported_event_keys) > 2000 then raise exception 'Too many reported event keys'; end if;
+  if cardinality(p_reported_event_keys) > 5000 then raise exception 'Too many reported event keys'; end if;
   if nullif(trim(p_idempotency_key), '') is null then raise exception 'idempotency_key is required'; end if;
   if not exists (
     select 1

@@ -557,6 +557,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .smart-report__section > header > span,
 .smart-report__sources > span { color: var(--gold-bright); font: 650 9px/1.3 var(--mono); letter-spacing: 0; text-transform: uppercase; }
 .smart-report__masthead h1 { max-width: 24ch; margin: 16px 0 0; font-size: clamp(38px, 4vw, 58px); line-height: 1; letter-spacing: 0; }
+.smart-report__masthead-deck { max-width: 62ch; margin: 22px 0 0; color: var(--paper-dim); font-size: 15px; font-weight: 500; line-height: 1.65; letter-spacing: 0; }
 .smart-report__masthead-meta { display: grid; align-content: end; gap: 10px; }
 .smart-report__masthead-meta strong { font: 600 30px/1 var(--mono); }
 .smart-report__masthead-meta small { color: var(--paper-dim); font: 600 9px/1.4 var(--mono); }
@@ -2671,6 +2672,7 @@ body:has(#app-shell:not([hidden])) #auth-shell { display: none !important; }
   .smart-report__masthead > div { padding: 28px 18px; }
   .smart-report__masthead > div:first-child { min-height: 230px; display: grid; align-content: end; border-right: 0; border-bottom: 1px solid rgb(255 255 255 / .15); }
   .smart-report__masthead h1 { font-size: 38px; }
+  .smart-report__masthead-deck { margin-top: 18px; font-size: 14px; line-height: 1.7; }
   .smart-report__masthead-meta { grid-template-columns: auto auto; align-items: end; }
   .smart-report__masthead-meta small { grid-column: 1 / -1; }
   .smart-report__coverage { grid-template-columns: 1fr; }

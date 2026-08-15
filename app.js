@@ -2605,7 +2605,7 @@
     const sourceMap = new Map(sources.map((source) => [String(source.id), source]));
     return `<div class="smart-report" id="smart-money-brief">
       <header class="smart-report__masthead">
-        <div><span>SMART MONEY BRIEF / ${esc(briefDateLabel(brief.report_date).toUpperCase())}</span><h1>${esc(content.headline || brief.title || "Smart Money Brief")}</h1></div>
+        <div><span>SMART MONEY BRIEF / ${esc(briefDateLabel(brief.report_date).toUpperCase())}</span><h1>The filings,<br>without the noise.</h1><p class="smart-report__masthead-deck">${esc(content.headline || brief.title || "Smart Money Brief")}</p></div>
         <div class="smart-report__masthead-meta"><span>${esc(String(sourceContext.freshness_status || "unknown").toUpperCase())}</span><strong>${num(sourceContext.new_event_count)} NEW</strong><small>30 DAYS · NO RERUNS</small></div>
       </header>
       <section class="smart-report__coverage">

@@ -54,11 +54,14 @@ test("weekly Smart Money publications are shared, deduplicated and freshness gua
   assert.match(prompt, /ห้ามตอบเพียงว่า\s*publish สำเร็จ/);
   assert.match(app, /notice\.notification_type === "smart_money_brief" \? "SMART"/);
   assert.match(app, /id="smart-money-brief"/);
+  assert.match(app, /The filings,<br>without the noise\./);
+  assert.match(app, /class="smart-report__masthead-deck"/);
   assert.match(app, /30 DAYS · NO RERUNS/);
   assert.match(app, /🟢 ซื้อจริงที่น่าสนใจ/);
   assert.match(app, /🔴 ขายจริงที่ต้องรู้/);
   assert.match(app, /⚪ ตัดเสียงรบกวน/);
   assert.match(app, /🚩 Worth watching/);
   assert.doesNotMatch(app, /🧭 Stella take/);
+  assert.match(styles, /\.smart-report__masthead-deck .*line-height: 1\.65/);
   assert.match(styles, /\.smart-report__item p .*font-size: 16px/);
 });

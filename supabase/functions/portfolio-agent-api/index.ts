@@ -464,7 +464,7 @@ async function researchNews(
       .range(from, to)),
     collectPages((from, to) => service
       .from("research_article_state")
-      .select("article_id,is_read,is_saved,is_hidden")
+      .select("article_id,is_read,is_saved,is_hidden,alert_processed_at")
       .eq("user_id", userId)
       .range(from, to)),
   ]);
@@ -503,6 +503,7 @@ async function researchNews(
         is_read: Boolean(state?.is_read),
         is_saved: Boolean(state?.is_saved),
         is_hidden: Boolean(state?.is_hidden),
+        is_alert_processed: Boolean(state?.alert_processed_at),
       };
     })
     .filter((entry) => entry.source !== "x" || (
@@ -517,7 +518,7 @@ async function researchNews(
     .filter((entry) => !entry.is_hidden)
     .filter((entry) => filter !== "unread" || !entry.is_read)
     .filter((entry) => filter !== "alerts" || (
-      !entry.is_read && ["HIGH", "MEDIUM"].includes(String(entry.alert_level))
+      !entry.is_alert_processed && ["HIGH", "MEDIUM"].includes(String(entry.alert_level))
     ))
     .filter((entry) => filter !== "portfolio" || entry.is_portfolio)
     .filter((entry) => filter !== "saved" || entry.is_saved)
@@ -566,10 +567,14 @@ async function acknowledgeNews(
     updated_at: now,
   })), { onConflict: "user_id,article_id", ignoreDuplicates: true }));
   await must(service.from("research_article_state")
-    .update({ is_read: true, read_at: now, updated_at: now })
+    .update({ alert_processed_at: now, updated_at: now })
     .eq("user_id", userId)
     .in("article_id", allowedIds));
-  return { acknowledged: allowedIds.length, article_ids: allowedIds };
+  return {
+    acknowledged: allowedIds.length,
+    article_ids: allowedIds,
+    user_read_state_changed: false,
+  };
 }
 
 async function sharedMarketNews(service: any, lookbackHours: number) {

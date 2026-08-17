@@ -181,7 +181,7 @@ const tools = [
   },
   {
     name: "get_news",
-    description: "Read the user's cached PCC Research News feed. Use filter=alerts for unread HIGH/MEDIUM monitor candidates; stay silent when none exist. Each entry includes alert_level (HIGH, MEDIUM or LOW). Never triggers an external sync.",
+    description: "Read the user's cached PCC Research News feed. Use filter=alerts for unprocessed HIGH/MEDIUM monitor candidates; stay silent when none exist. Each entry includes alert_level (HIGH, MEDIUM or LOW). Never triggers an external sync.",
     inputSchema: {
       type: "object",
       properties: {
@@ -195,7 +195,7 @@ const tools = [
   },
   {
     name: "acknowledge_news",
-    description: "Mark News entries read only after their HIGH/MEDIUM Telegram alert was delivered successfully. This changes reading state only; it cannot change a portfolio, watchlist or broker data.",
+    description: "Close inspected News entries for the automated alert monitor without changing the member's read/unread state. Call once after editorial classification so rejected and merged entries do not repeat.",
     inputSchema: {
       type: "object",
       properties: {

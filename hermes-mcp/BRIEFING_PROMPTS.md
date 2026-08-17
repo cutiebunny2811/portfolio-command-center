@@ -259,9 +259,9 @@ Never publish a Continuation or use a user's holdings in this recovery job.
 
 ```text
 Read PCC News once with filter=alerts and page_size=12. Do not call browser,
-web search, Market Pulse or another PCC News read in the same run. Treat every
-article ID returned by this read as consumed by this alert cycle, whether it is
-sent or rejected by the materiality gate.
+web search, Market Pulse or another PCC News read in the same run. First finish
+editorial classification and deduplication for the complete batch. Keep the
+qualifying and rejected article IDs separate while composing the alert.
 
 Notify only entries whose alert_level is HIGH or MEDIUM. Reuters is the market
 desk: prefer US indices, Fed/rates, inflation/labor, Treasury yields, oil and
@@ -274,12 +274,12 @@ Deduplicate the same event and ticker. Keep each Telegram item concise and
 include publisher, ticker(s), what changed and why it matters. X posts are
 source leads; say "ตรวจซ้ำ" when no primary filing or article is attached.
 
-Before returning any Telegram text, call acknowledge_news exactly once with
-all article IDs returned by the single get_news call. This is the durable
-processed-state guard: an ID that has been inspected must never be considered
-again, even when it was stale, low-value or merged into another story. If the
-acknowledgement fails, return [SILENT] so an unclaimed story is never delivered
-twice. If no HIGH/MEDIUM item remains after filtering, acknowledge the inspected
-IDs and return [SILENT]. If get_news returns no entries, do not acknowledge and
-return [SILENT].
+Only after the complete batch has been classified and the final alert text has
+been composed, call acknowledge_news exactly once with every article ID from
+the single get_news call. This closes the IDs for this automated monitor only;
+it must not change the member's read/unread state in PCC. Rejected, stale and
+merged entries are closed too so they cannot consume tokens again. If the
+acknowledgement fails, return [SILENT]. If no item remains after filtering,
+acknowledge the inspected IDs and return [SILENT]. If get_news returns no
+entries, do not acknowledge and return [SILENT].
 ```

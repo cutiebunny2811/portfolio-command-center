@@ -109,7 +109,7 @@ test("exposes read-only News and Earnings tools", async () => {
   assert.equal(byName.get("acknowledge_news").inputSchema.properties.article_ids.maxItems, 50);
 });
 
-test("routes News acknowledgement after successful delivery", async () => {
+test("routes News monitor acknowledgement without changing user read state", async () => {
   const articleId = "11111111-1111-4111-8111-111111111111";
   const result = await callTool("acknowledge_news", { article_ids: [articleId] });
   assert.equal(result.response.result.isError, false);

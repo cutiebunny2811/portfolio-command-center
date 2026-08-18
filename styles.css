@@ -1655,9 +1655,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .market-chart-quote span { display: block; margin-top: 9px; font: 600 11px/1 var(--mono); }
 .market-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 58px; border-bottom: 1px solid var(--rule); }
 .chart-toolbar-meta { display: flex; align-items: center; gap: 18px; }
-.chart-fixed-range { display: flex; align-items: center; gap: 12px; }
-.chart-fixed-range strong { display: grid; width: 38px; height: 30px; place-items: center; border: 1px solid var(--red-bright); background: var(--red-wash); font: 700 9px/1 var(--mono); }
-.chart-fixed-range span,
+.chart-range-label,
 .chart-cache-status { color: var(--paper-faint); font: 600 8px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .chart-cache-status.is-refreshing { color: var(--gold-bright); }
 .chart-interaction-hint { color: var(--paper-faint); font: 500 8px/1 var(--mono); letter-spacing: .03em; text-transform: uppercase; }
@@ -1689,6 +1687,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .chart-level span { color: var(--paper-faint); font: 8px/1.2 var(--mono); }
 .chart-level--resistance small, .chart-level--resistance strong { color: var(--red-bright); }
 .chart-level--support small, .chart-level--support strong { color: var(--green); }
+.chart-level.is-empty strong { color: var(--paper-faint); }
+.chart-level.is-empty span { color: var(--paper-faint); opacity: .55; }
 .chart-levels > p { grid-column: 1 / -1; margin: 0; border-top: 1px solid var(--rule); padding: 9px 16px; color: var(--paper-faint); font: 8px/1.4 var(--mono); }
 .market-chart-foot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: center; gap: 16px; min-height: 78px; border-top: 1px solid var(--rule); }
 .market-chart-foot small { display: block; color: var(--paper-faint); font: 8px/1 var(--mono); letter-spacing: .06em; }

@@ -14,8 +14,11 @@ const webullLogoCdn = "https://quotes-static.webullfintech.com/ticker-icon";
 const refreshWindowMs = 15 * 60_000;
 const optionEodRefreshWindowMs = 8 * 60 * 60_000;
 const optionEodRequestLimit = 4;
-const chartBarCount = 320;
-const chartCacheWindowMs = 20 * 60 * 60_000;
+const chartConfigs = {
+  D: { count: 320, cacheWindowMs: 20 * 60 * 60_000 },
+  M240: { count: 260, cacheWindowMs: 4 * 60 * 60_000 },
+  M60: { count: 260, cacheWindowMs: 45 * 60_000 },
+} as const;
 const marketPulseBenchmarks = [
   { symbol: "SPY", displayName: "S&P 500 proxy" },
   { symbol: "QQQ", displayName: "Nasdaq-100 proxy" },
@@ -130,6 +133,14 @@ type ChartBar = {
 };
 
 type ChartTimespan = "D" | "M60" | "M240";
+
+function chartTimespan(value: unknown): ChartTimespan {
+  const normalized = String(value || "D").trim().toUpperCase();
+  if (normalized === "D" || normalized === "1D") return "D";
+  if (normalized === "M60" || normalized === "1H") return "M60";
+  if (normalized === "M240" || normalized === "4H") return "M240";
+  throw new Error("Unsupported chart timespan");
+}
 
 function timestampUtc(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -727,6 +738,8 @@ Deno.serve(async (request) => {
     if (body?.action === "chart") {
       const instrumentId = String(body?.instrument_id || "");
       if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });
+      const timespan = chartTimespan(body?.timespan);
+      const chartConfig = chartConfigs[timespan];
       const { data: instrument, error: instrumentError } = await supabase
         .from("instruments")
         .select("id,symbol,asset_type")
@@ -740,12 +753,13 @@ Deno.serve(async (request) => {
         .from("market_chart_cache")
         .select("instrument_id,symbol,bars,source,fetched_at,refresh_started_at,last_error")
         .eq("instrument_id", instrumentId)
+        .eq("timespan", timespan)
         .maybeSingle();
       if (cacheError) throw cacheError;
 
       const cachedBars = Array.isArray(cached?.bars) ? cached.bars : [];
       const cacheAge = cached?.fetched_at ? Date.now() - new Date(cached.fetched_at).getTime() : Number.POSITIVE_INFINITY;
-      const stale = !cachedBars.length || !Number.isFinite(cacheAge) || cacheAge >= chartCacheWindowMs;
+      const stale = !cachedBars.length || !Number.isFinite(cacheAge) || cacheAge >= chartConfig.cacheWindowMs;
       const refreshRequested = body?.refresh === true;
 
       // Normal reads never wait on Webull when a usable shared cache exists.
@@ -753,7 +767,7 @@ Deno.serve(async (request) => {
         return new Response(JSON.stringify({
           symbol: instrument.symbol,
           source: cached.source || "webull",
-          timespan: "D",
+          timespan,
           fetched_at: cached.fetched_at,
           cached: true,
           stale,
@@ -765,6 +779,7 @@ Deno.serve(async (request) => {
         p_instrument_id: instrumentId,
         p_symbol: instrument.symbol,
         p_asset_type: instrument.asset_type,
+        p_timespan: timespan,
         p_lease_seconds: 90,
       });
       if (claimError) throw claimError;
@@ -772,7 +787,7 @@ Deno.serve(async (request) => {
         return new Response(JSON.stringify({
           symbol: instrument.symbol,
           source: cached.source || "webull",
-          timespan: "D",
+          timespan,
           fetched_at: cached.fetched_at,
           cached: true,
           stale: true,
@@ -785,25 +800,25 @@ Deno.serve(async (request) => {
       }
 
       try {
-        const bars = await fetchHistoricalBars(chartInstrument, chartBarCount, "D");
+        const bars = await fetchHistoricalBars(chartInstrument, chartConfig.count, timespan);
         const fetchedAt = new Date().toISOString();
         const { error: writeError } = await admin.from("market_chart_cache").upsert({
           instrument_id: instrumentId,
           symbol: instrument.symbol.trim().toUpperCase(),
           asset_type: instrument.asset_type,
-          timespan: "D",
+          timespan,
           bars,
           source: "webull",
           fetched_at: fetchedAt,
           refresh_started_at: null,
           last_error: null,
           updated_at: fetchedAt,
-        }, { onConflict: "instrument_id" });
+        }, { onConflict: "instrument_id,timespan" });
         if (writeError) throw writeError;
         return new Response(JSON.stringify({
           symbol: instrument.symbol,
           source: "webull",
-          timespan: "D",
+          timespan,
           fetched_at: fetchedAt,
           cached: false,
           stale: false,
@@ -815,12 +830,12 @@ Deno.serve(async (request) => {
           refresh_started_at: null,
           last_error: detail.slice(0, 500),
           updated_at: new Date().toISOString(),
-        }).eq("instrument_id", instrumentId);
+        }).eq("instrument_id", instrumentId).eq("timespan", timespan);
         if (cachedBars.length) {
           return new Response(JSON.stringify({
             symbol: instrument.symbol,
             source: cached.source || "webull",
-            timespan: "D",
+            timespan,
             fetched_at: cached.fetched_at,
             cached: true,
             stale: true,

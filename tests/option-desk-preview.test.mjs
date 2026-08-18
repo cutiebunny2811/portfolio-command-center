@@ -20,6 +20,15 @@ test("option desk sample workflow is visibly disconnected from the ledger", () =
   assert.doesNotMatch(app, /option-draft-preview[\s\S]{0,600}api_/);
 });
 
+test("income strategies replace spreads and enforce portfolio collateral", () => {
+  assert.match(app, /covered_call:\s*\{ label: "Covered Call"/);
+  assert.match(app, /cash_secured_put:\s*\{ label: "Cash-Secured Put"/);
+  assert.doesNotMatch(app, /Call Spread|Put Spread|call_spread|put_spread/);
+  assert.match(app, /sharesHeld >= 100/);
+  assert.match(app, /cashAvailable >= cashRequired/);
+  assert.match(app, /data-action="option-draft-preview" \$\{selection\.eligible \? "" : "disabled"\}/);
+});
+
 test("option desk exposes contract evidence and a mobile reflow", () => {
   for (const label of ["BID", "ASK", "DELTA", "IV", "VOL / OI", "MAXIMUM LOSS", "BREAK-EVEN AT EXPIRY"]) {
     assert.match(app, new RegExp(label.replace("/", "\\/")));

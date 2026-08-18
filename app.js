@@ -1372,8 +1372,8 @@
   const optionDeskStrategies = {
     long_call: { label: "Long Call", side: "call", mode: "single", note: "Bullish · loss limited to premium" },
     long_put: { label: "Long Put", side: "put", mode: "single", note: "Bearish · loss limited to premium" },
-    call_spread: { label: "Call Spread", side: "call", mode: "spread", note: "Bullish · defined reward and risk" },
-    put_spread: { label: "Put Spread", side: "put", mode: "spread", note: "Bearish · defined reward and risk" }
+    covered_call: { label: "Covered Call", side: "call", mode: "income", note: "Income · requires 100 shares" },
+    cash_secured_put: { label: "Cash-Secured Put", side: "put", mode: "income", note: "Income · cash reserved for assignment" }
   };
 
   function optionDeskChain() {
@@ -1408,24 +1408,55 @@
     const strategy = optionDeskStrategies[state.optionDeskStrategy] || optionDeskStrategies.long_call;
     const chain = optionDeskChain();
     const selected = chain.find((row) => row.strike === num(state.optionDeskStrike)) || chain[Math.floor(chain.length / 2)];
-    const selectedIndex = chain.indexOf(selected);
-    const shortIndex = strategy.side === "call" ? Math.min(selectedIndex + 2, chain.length - 1) : Math.max(selectedIndex - 2, 0);
-    const short = chain[shortIndex];
     const quote = selected[strategy.side];
-    const shortQuote = short[strategy.side];
-    const debit = strategy.mode === "spread" ? Math.max(.01, quote.ask - shortQuote.bid) : quote.ask;
-    const maxLoss = debit * 100;
-    const width = Math.abs(short.strike - selected.strike);
-    const maxProfit = strategy.mode === "spread" ? Math.max(0, width * 100 - maxLoss) : null;
-    const breakEven = strategy.side === "call" ? selected.strike + debit : selected.strike - debit;
+    const isIncome = strategy.mode === "income";
+    const premium = isIncome ? quote.bid : quote.ask;
+    const premiumTotal = premium * 100;
+    const portfolio = currentPortfolio();
+    const instruments = instrumentMap();
+    const stockPosition = state.positions.find((position) => {
+      if (position.portfolio_id !== portfolio?.id || num(position.quantity) <= 0) return false;
+      const instrument = instruments.get(position.instrument_id);
+      return ["stock", "etf"].includes(String(instrument?.asset_type || "").toLowerCase())
+        && String(instrument?.symbol || "").toUpperCase() === state.optionDeskUnderlying;
+    }) || null;
+    const sharesHeld = num(stockPosition?.quantity);
+    const shareCost = num(stockPosition?.average_cost);
+    const cashAvailable = num(state.cash.find((item) => item.portfolio_id === portfolio?.id)?.cash_balance);
+    const cashRequired = selected.strike * 100;
+    const coveredCall = state.optionDeskStrategy === "covered_call";
+    const cashSecuredPut = state.optionDeskStrategy === "cash_secured_put";
+    const eligible = coveredCall ? sharesHeld >= 100 : cashSecuredPut ? cashAvailable >= cashRequired : true;
+    const basis = shareCost > 0 ? shareCost : (optionDeskSamples[state.optionDeskUnderlying]?.spot || selected.strike);
+    const maxLoss = coveredCall ? Math.max(0, basis * 100 - premiumTotal)
+      : cashSecuredPut ? Math.max(0, cashRequired - premiumTotal)
+        : premiumTotal;
+    const maxProfit = coveredCall ? Math.max(0, (selected.strike - basis) * 100 + premiumTotal)
+      : cashSecuredPut ? premiumTotal
+        : null;
+    const breakEven = coveredCall ? basis - premium
+      : cashSecuredPut ? selected.strike - premium
+        : strategy.side === "call" ? selected.strike + premium : selected.strike - premium;
     const spreadPercent = quote.mid ? ((quote.ask - quote.bid) / quote.mid) * 100 : 0;
-    return { strategy, chain, selected, short, quote, debit, maxLoss, maxProfit, breakEven, spreadPercent };
+    return {
+      strategy, chain, selected, quote, premium, premiumTotal, maxLoss, maxProfit, breakEven, spreadPercent,
+      isIncome, eligible, sharesHeld, shareCost, cashAvailable, cashRequired,
+      collateralLabel: coveredCall ? "SHARES READY" : cashSecuredPut ? "CASH TO RESERVE" : "ESTIMATED DEBIT",
+      collateralValue: coveredCall ? `${formatTradeQuantity(sharesHeld)} / 100` : cashSecuredPut ? money(cashRequired) : money(premiumTotal),
+      collateralDetail: coveredCall ? (sharesHeld >= 100 ? `${Math.floor(sharesHeld / 100)} contract${Math.floor(sharesHeld / 100) === 1 ? "" : "s"} covered` : `${formatTradeQuantity(Math.max(0, 100 - sharesHeld))} shares short`)
+        : cashSecuredPut ? `${money(cashAvailable)} available` : `${money(premium)} × 100`,
+      eligibilityTitle: coveredCall ? (eligible ? "100 shares are covered." : `Need ${formatTradeQuantity(Math.max(0, 100 - sharesHeld))} more shares.`)
+        : cashSecuredPut ? (eligible ? "Assignment cash is covered." : `${money(cashRequired - cashAvailable)} more cash required.`)
+          : "Premium defines the maximum loss.",
+      eligibilityDetail: coveredCall ? `PCC found ${formatTradeQuantity(sharesHeld)} ${state.optionDeskUnderlying} shares in ${portfolio?.name || "this portfolio"}.`
+        : cashSecuredPut ? `${money(cashRequired)} must remain available to buy 100 shares at ${money(selected.strike)}.`
+          : "The estimate uses the displayed ask; the broker fill can differ."
+    };
   }
 
   function optionDeskContractLabel(selection) {
     const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry);
     const type = selection.strategy.side.toUpperCase();
-    if (selection.strategy.mode === "spread") return `${state.optionDeskUnderlying} ${expiry?.label} ${selection.selected.strike}/${selection.short.strike} ${type} SPREAD`;
     return `${state.optionDeskUnderlying} ${expiry?.label} ${selection.selected.strike} ${type}`;
   }
 
@@ -1436,6 +1467,18 @@
     const liquidity = selection.spreadPercent <= 7 ? "CLEAN" : selection.spreadPercent <= 12 ? "WATCH" : "WIDE";
     const delta = Math.abs(selection.selected[selection.strategy.side].delta);
     const deltaLabel = delta >= .6 ? "moves strongly with shares" : delta >= .35 ? "balanced price sensitivity" : "needs a larger share move";
+    const referenceLabel = selection.isIncome ? "BID / SELL REF" : "ASK / BUY REF";
+    const referencePrice = selection.isIncome ? selection.quote.bid : selection.quote.ask;
+    const thetaRead = selection.isIncome
+      ? `Daily decay works in the seller's favor by about ${money(Math.abs(selection.selected.theta) * 100)} per contract, all else equal.`
+      : `About ${money(Math.abs(selection.selected.theta) * 100)} of theoretical value decays per day for one contract, all else equal.`;
+    const payoffLead = selection.isIncome ? "Know the collateral and the assignment price." : "Know the bill and the break-even.";
+    const firstMetricLabel = selection.isIncome ? "ESTIMATED PREMIUM" : "ESTIMATED DEBIT";
+    const maxProfitValue = selection.maxProfit === null ? "OPEN" : money(selection.maxProfit);
+    const maxProfitDetail = selection.maxProfit === null ? "Not capped"
+      : state.optionDeskStrategy === "covered_call" ? "Called-away gain + premium"
+        : state.optionDeskStrategy === "cash_secured_put" ? "Premium received"
+          : "Defined at entry";
     viewRoot.innerHTML = `
       <header class="option-desk-head">
         <div><p class="eyebrow">OPTIONS / DECISION SHEET</p><h1>Price the contract<br>before the story.</h1><p>Compare contract cost, liquidity and decay before preparing a portfolio draft. This desk never places an order.</p></div>
@@ -1464,17 +1507,18 @@
         </div>
         <aside class="option-contract" aria-label="Selected contract analysis">
           <div class="option-contract__title"><span>SELECTED CONTRACT</span><h2>${esc(optionDeskContractLabel(selection))}</h2><p>${expiry.dte} days to expiry · 1 contract = 100 shares</p></div>
-          <div class="option-quote"><div><small>MID</small><strong>${money(selection.quote.mid)}</strong></div><div><small>ASK</small><strong>${money(selection.quote.ask)}</strong></div><div><small>SPREAD</small><strong class="${liquidity === "CLEAN" ? "positive" : liquidity === "WIDE" ? "negative" : "gold"}">${percent(selection.spreadPercent, 1)}</strong></div><div><small>LIQUIDITY</small><strong>${liquidity}</strong></div></div>
+          <div class="option-quote"><div><small>MID</small><strong>${money(selection.quote.mid)}</strong></div><div><small>${referenceLabel}</small><strong>${money(referencePrice)}</strong></div><div><small>SPREAD</small><strong class="${liquidity === "CLEAN" ? "positive" : liquidity === "WIDE" ? "negative" : "gold"}">${percent(selection.spreadPercent, 1)}</strong></div><div><small>LIQUIDITY</small><strong>${liquidity}</strong></div></div>
           <div class="option-greeks"><span>GREEKS / PER SHARE</span><dl><div><dt>Delta</dt><dd>${selection.selected[selection.strategy.side].delta.toFixed(3)}</dd></div><div><dt>Gamma</dt><dd>${selection.selected.gamma.toFixed(3)}</dd></div><div><dt>Theta</dt><dd>${selection.selected.theta.toFixed(3)}</dd></div><div><dt>Vega</dt><dd>${selection.selected.vega.toFixed(3)}</dd></div></dl></div>
-          <div class="option-plain-read"><span>PLAIN-LANGUAGE READ</span><p><strong>Delta:</strong> ${deltaLabel}. <strong>Theta:</strong> about ${money(Math.abs(selection.selected.theta) * 100)} of theoretical value decays per day for one contract, all else equal.</p></div>
+          <div class="option-plain-read"><span>PLAIN-LANGUAGE READ</span><p><strong>Delta:</strong> ${deltaLabel}. <strong>Theta:</strong> ${thetaRead}</p></div>
         </aside>
       </section>
       <section class="option-risk-sheet">
-        <div class="option-risk-sheet__intro"><span>05 / PAYOFF BEFORE ENTRY</span><h2>Know the bill and the break-even.</h2><p>Estimates use the displayed ask for the long leg${selection.strategy.mode === "spread" ? " and bid for the short leg" : ""}. Your broker fill can differ.</p></div>
-        <div class="option-risk-metrics"><div><small>ESTIMATED DEBIT</small><strong>${money(selection.debit * 100)}</strong><span>${money(selection.debit)} × 100</span></div><div><small>MAXIMUM LOSS</small><strong class="negative">${money(selection.maxLoss)}</strong><span>Defined at entry</span></div><div><small>BREAK-EVEN AT EXPIRY</small><strong>${money(selection.breakEven)}</strong><span>Underlying price</span></div><div><small>MAXIMUM PROFIT</small><strong>${selection.maxProfit === null ? "OPEN" : money(selection.maxProfit)}</strong><span>${selection.maxProfit === null ? "Not capped" : "Defined spread"}</span></div></div>
-        <div class="option-risk-actions"><p><strong>Market estimate, not a fill.</strong> Verify the live chain in Webull before sending any order.</p><button class="button button--primary" type="button" data-action="option-draft-preview">${state.optionDeskDraftOpen ? "Hide draft" : "Preview draft"}</button></div>
+        <div class="option-risk-sheet__intro"><span>05 / PAYOFF BEFORE ENTRY</span><h2>${payoffLead}</h2><p>Estimates use the displayed ${selection.isIncome ? "bid because this strategy sells the option" : "ask because this strategy buys the option"}. Your broker fill can differ.</p></div>
+        <div class="option-risk-metrics"><div><small>${firstMetricLabel}</small><strong class="${selection.isIncome ? "positive" : ""}">${money(selection.premiumTotal)}</strong><span>${money(selection.premium)} × 100</span></div><div><small>${selection.collateralLabel}</small><strong class="${selection.eligible ? "" : "negative"}">${selection.collateralValue}</strong><span>${selection.collateralDetail}</span></div><div><small>MAXIMUM LOSS</small><strong class="negative">${money(selection.maxLoss)}</strong><span>Worst case at expiry</span></div><div><small>BREAK-EVEN AT EXPIRY</small><strong>${money(selection.breakEven)}</strong><span>Underlying price</span></div><div><small>MAXIMUM PROFIT</small><strong>${maxProfitValue}</strong><span>${maxProfitDetail}</span></div></div>
+        <div class="option-eligibility ${selection.eligible ? "is-ready" : "is-blocked"}"><span>${selection.eligible ? "READY" : "COLLATERAL CHECK"}</span><div><strong>${esc(selection.eligibilityTitle)}</strong><p>${esc(selection.eligibilityDetail)}</p></div></div>
+        <div class="option-risk-actions"><p><strong>Market estimate, not a fill.</strong> Verify the live chain in Webull before sending any order.</p><button class="button button--primary" type="button" data-action="option-draft-preview" ${selection.eligible ? "" : "disabled"}>${state.optionDeskDraftOpen ? "Hide draft" : "Preview draft"}</button></div>
       </section>
-      ${state.optionDeskDraftOpen ? `<section id="option-draft" class="option-draft-preview"><div><span>06 / SAMPLE DRAFT</span><h2>Ready for a human check.</h2><p>This preview is intentionally disconnected from Supabase until live OPRA mapping and server validation are ready.</p></div><dl><div><dt>Portfolio</dt><dd>${esc(currentPortfolio()?.name || "Options")}</dd></div><div><dt>Strategy</dt><dd>${esc(selection.strategy.label)}</dd></div><div><dt>Contract</dt><dd>${esc(optionDeskContractLabel(selection))}</dd></div><div><dt>Quantity</dt><dd>1 contract</dd></div><div><dt>Limit reference</dt><dd>${money(selection.debit)} debit</dd></div><div><dt>Maximum loss</dt><dd>${money(selection.maxLoss)}</dd></div></dl><footer><span>NOT SAVED · NO ORDER SENT</span><button class="button" type="button" disabled>Send to trade review after OPRA</button></footer></section>` : ""}
+      ${state.optionDeskDraftOpen ? `<section id="option-draft" class="option-draft-preview"><div><span>06 / SAMPLE DRAFT</span><h2>Ready for a human check.</h2><p>This preview is intentionally disconnected from Supabase until live OPRA mapping and server validation are ready.</p></div><dl><div><dt>Portfolio</dt><dd>${esc(currentPortfolio()?.name || "Options")}</dd></div><div><dt>Strategy</dt><dd>${esc(selection.strategy.label)}</dd></div><div><dt>Contract</dt><dd>${esc(optionDeskContractLabel(selection))}</dd></div><div><dt>Quantity</dt><dd>1 contract</dd></div><div><dt>${selection.isIncome ? "Credit reference" : "Debit reference"}</dt><dd>${money(selection.premium)} ${selection.isIncome ? "credit" : "debit"}</dd></div><div><dt>${selection.collateralLabel}</dt><dd>${selection.collateralValue}</dd></div></dl><footer><span>NOT SAVED · NO ORDER SENT</span><button class="button" type="button" disabled>Send to trade review after OPRA</button></footer></section>` : ""}
     `;
     refreshIcons();
   }

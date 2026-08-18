@@ -180,8 +180,9 @@ Do not draft trades, edit a portfolio or publish a Continuation in this job.
 ## 00:00 Asia/Bangkok
 
 ```text
-Check whether the preceding 20:00 Asia/Bangkok DAILY MARKET BRIEF needs a
-CONTINUATION.
+Run the 00:00 MARKET CHECK against the preceding 20:00 Asia/Bangkok DAILY
+MARKET BRIEF. Every useful completed-session read must be retained in PCC, but
+only a material change may create a Continuation notification.
 
 1. The canonical brief_date is yesterday's Asia/Bangkok date. Call
    get_daily_market_brief for that date, then call refresh_brief_sources once,
@@ -205,9 +206,25 @@ CONTINUATION.
    industry developments before deciding that the thesis is unchanged. If a
    domain blocks access, move to another source or rely on fresh structured PCC
    facts. A blocked domain by itself is not a material market change.
-4. If there is no material change, do not call publish_brief_continuation.
-   Return one short Telegram line saying the canonical thesis is unchanged.
-5. If there is a material change, publish only the delta. Set material_change
+4. If there is no material change, call publish_midnight_market_check exactly
+   once. Use the latest completed US session, never an unfinished intraday
+   snapshot. The content must include:
+   - session_date and an explicit completed-session session_label;
+   - a neutral market_tone with label, tone and summary;
+   - 2-8 verified market_snapshot rows;
+   - 1-8 rotation_leaders and 1-8 rotation_laggards from PCC Market Pulse,
+     each with symbol, neutral label and signed completed-session change;
+   - data_note stating that Rotation Board is price-based relative rotation,
+     not verified ETF fund flow;
+   - one non-repetitive market-wide read_through explaining why the canonical
+     thesis remains current;
+   - 1-4 watch_next items and 1-12 sources.
+   Use idempotency_key
+   daily-market-brief:YYYY-MM-DD:market-check:0000. This publication is stored
+   silently in PCC and must not be described as a Continuation.
+5. If there is a material change, do not publish a routine Market Check.
+   Call publish_brief_continuation exactly once and publish only the delta.
+   Set material_change
    true, thesis_status to unchanged or updated. Every changes,
    portfolio_impact and watch_next item must contain title, detail and tone.
    Treat portfolio_impact as the broad MARKET IMPACT field for schema
@@ -215,9 +232,11 @@ CONTINUATION.
    never personal holdings. Explain what changed, why it matters to the
    existing thesis, and what would confirm or reverse it. Do not repeat the
    canonical brief.
-6. Use idempotency_key
+6. For a material change use idempotency_key
    daily-market-brief:YYYY-MM-DD:continuation:0000 and return a concise Telegram
-   preview plus:
+   preview. For an unchanged thesis, return the complete useful Market Check
+   preview with Market tone, Rotation leaders, Rotation laggards, Read-through
+   and the next Catalyst. Both previews end with:
    https://cutiebunny2811.github.io/portfolio-command-center/?route=briefs
 
 Never invent missing data or create trade drafts from a market brief.

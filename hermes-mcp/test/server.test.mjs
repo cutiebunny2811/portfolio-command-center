@@ -163,6 +163,10 @@ test("exposes canonical Daily Market Brief read and publish tools", async () => 
   assert.deepEqual(briefContent.properties.top_stories.items.required, ["title", "facts", "interpretation", "source_ids"]);
   assert.deepEqual(briefContent.properties.investment_implications.items.required, ["title", "detail", "tone"]);
   assert.equal(briefContent.properties.bottom_line.items.additionalProperties, false);
+  const marketCheckContent = byName.get("publish_midnight_market_check").inputSchema.properties.content;
+  assert.equal(marketCheckContent.properties.rotation_leaders.minItems, 1);
+  assert.equal(marketCheckContent.properties.rotation_laggards.maxItems, 8);
+  assert.match(marketCheckContent.properties.data_note.description, /price-based relative rotation/);
   assert.deepEqual(byName.get("publish_brief_continuation").inputSchema.properties.thesis_status.enum, ["unchanged", "updated"]);
 });
 
@@ -199,6 +203,26 @@ test("routes Daily Market Brief calls to scoped API actions", async () => {
     },
     idempotency_key: "daily-market-brief:2026-08-09",
   });
+  const marketCheck = await callTool("publish_midnight_market_check", {
+    brief_date: "2026-08-09",
+    summary: "Cautious rotation without a material thesis change.",
+    content: {
+      session_date: "2026-08-09",
+      session_label: "Latest completed US session · 2026-08-09",
+      market_tone: { label: "Cautious rotation", tone: "caution", summary: "Tech lagged while defensive sectors held up." },
+      market_snapshot: [
+        { label: "SPY", value: "-0.5%", change: "Completed session", tone: "negative" },
+        { label: "VIX", value: "15.4", change: "Contained", tone: "neutral" },
+      ],
+      rotation_leaders: [{ symbol: "XLV", label: "Health Care", change: "+1.7%" }],
+      rotation_laggards: [{ symbol: "SMH", label: "Semiconductors", change: "-4.4%" }],
+      data_note: "Price-based relative rotation; not verified ETF fund flow.",
+      read_through: "The completed session still looks like rotation rather than broad financial stress.",
+      watch_next: [{ title: "FOMC Minutes", detail: "Tests the rates pressure on growth.", tone: "caution" }],
+      sources: [{ id: "src-1", title: "Source", url: "https://example.com/source", publisher: "Example" }],
+    },
+    idempotency_key: "daily-market-brief:2026-08-09:market-check:0000",
+  });
 
   assert.equal(refresh.response.result.isError, false);
   assert.deepEqual(refresh.request, { action: "refresh_brief_sources" });
@@ -206,6 +230,8 @@ test("routes Daily Market Brief calls to scoped API actions", async () => {
   assert.deepEqual(brief.request, { action: "daily_market_brief", brief_date: "2026-08-09" });
   assert.equal(publish.request.action, "publish_market_brief");
   assert.equal(publish.request.idempotency_key, "daily-market-brief:2026-08-09");
+  assert.equal(marketCheck.request.action, "publish_midnight_market_check");
+  assert.equal(marketCheck.request.idempotency_key, "daily-market-brief:2026-08-09:market-check:0000");
 });
 
 test("exposes deterministic weekly Smart Money Brief tools", async () => {

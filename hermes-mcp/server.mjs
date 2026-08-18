@@ -97,6 +97,44 @@ const continuationContentSchema = {
   additionalProperties: false,
 };
 
+const marketCheckRotationItemSchema = {
+  type: "object",
+  properties: {
+    symbol: { type: "string", description: "ETF or benchmark symbol from the completed-session PCC Market Pulse." },
+    label: { type: "string", description: "Neutral sector, theme or benchmark label." },
+    change: { type: "string", description: "Verified completed-session price change, including its sign and percent symbol." },
+  },
+  required: ["symbol", "label", "change"],
+  additionalProperties: false,
+};
+
+const marketCheckContentSchema = {
+  type: "object",
+  properties: {
+    session_date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Latest completed US session in YYYY-MM-DD." },
+    session_label: { type: "string", description: "Explicit completed-session label, never an intraday implication." },
+    market_tone: {
+      type: "object",
+      properties: {
+        label: { type: "string" },
+        tone: briefToneSchema,
+        summary: { type: "string" },
+      },
+      required: ["label", "tone", "summary"],
+      additionalProperties: false,
+    },
+    market_snapshot: { type: "array", minItems: 2, maxItems: 8, items: briefSnapshotItemSchema },
+    rotation_leaders: { type: "array", minItems: 1, maxItems: 8, items: marketCheckRotationItemSchema },
+    rotation_laggards: { type: "array", minItems: 1, maxItems: 8, items: marketCheckRotationItemSchema },
+    data_note: { type: "string", description: "State that the board is price-based relative rotation, not verified ETF fund flow." },
+    read_through: { type: "string", description: "Concise market-wide interpretation explaining why the canonical thesis remains current." },
+    watch_next: { type: "array", minItems: 1, maxItems: 4, items: briefNoteSchema },
+    sources: { type: "array", minItems: 1, maxItems: 12, items: sourceItemSchema },
+  },
+  required: ["session_date", "session_label", "market_tone", "market_snapshot", "rotation_leaders", "rotation_laggards", "data_note", "read_through", "watch_next", "sources"],
+  additionalProperties: false,
+};
+
 const smartMoneyNoteSchema = {
   type: "object",
   properties: {
@@ -280,7 +318,7 @@ const tools = [
   },
   {
     name: "get_daily_market_brief",
-    description: "Read the latest canonical Daily Market Brief and its Continuations. Pass brief_date when comparing a midnight update with the preceding 20:00 Bangkok edition.",
+    description: "Read the latest canonical Daily Market Brief, routine Midnight Market Checks and material Continuations. Pass brief_date when comparing a midnight update with the preceding 20:00 Bangkok edition.",
     inputSchema: {
       type: "object",
       properties: {
@@ -300,6 +338,22 @@ const tools = [
         content: dailyBriefContentSchema,
         source_context: { type: "object", description: "Optional generation metadata such as context generated_at and source freshness." },
         idempotency_key: { type: "string", minLength: 8, maxLength: 160, description: "Use daily-market-brief:YYYY-MM-DD." },
+      },
+      required: ["brief_date", "summary", "content", "idempotency_key"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "publish_midnight_market_check",
+    description: "Silently retain one neutral completed-session Market Check when the preceding Daily Market Brief thesis is unchanged. This writes no PCC notification. Do not call when a material Continuation is warranted.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brief_date: { type: "string", description: "Date of the preceding 20:00 Bangkok canonical brief in YYYY-MM-DD." },
+        summary: { type: "string", maxLength: 1200, description: "Concise routine-check archive summary." },
+        content: marketCheckContentSchema,
+        source_context: { type: "object" },
+        idempotency_key: { type: "string", minLength: 8, maxLength: 160, description: "Use daily-market-brief:YYYY-MM-DD:market-check:0000." },
       },
       required: ["brief_date", "summary", "content", "idempotency_key"],
       additionalProperties: false,
@@ -523,6 +577,7 @@ const actionByTool = {
   get_macro_risk_monitor: "macro_risk_monitor",
   get_daily_market_brief: "daily_market_brief",
   publish_daily_market_brief: "publish_market_brief",
+  publish_midnight_market_check: "publish_midnight_market_check",
   publish_brief_continuation: "publish_brief_continuation",
   get_market_pulse: "market_pulse",
   get_smart_money: "smart_money",

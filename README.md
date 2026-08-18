@@ -123,9 +123,11 @@ Hermes drafts from `Account > Agent drafts`.
 
 Run [`supabase/036_daily_market_briefs.sql`](supabase/036_daily_market_briefs.sql)
 and deploy `portfolio-agent-api`. Hermes receives a narrow
-`briefings:write` scope for the canonical 20:00 Asia/Bangkok Brief and material
-00:00 Continuations. Supabase stores the full publication and notification
-state; Telegram carries a concise preview and a link to `?route=briefs`.
+`briefings:write` scope for the canonical 20:00 Asia/Bangkok Brief, silent 00:00
+completed-session Market Checks, and material 00:00 Continuations. Supabase
+stores every useful midnight read but creates member notifications only for
+canonical editions and material Continuations. Telegram carries the preview
+and a link to `?route=briefs`.
 The shared fact pack includes a compact cache of current external reporting so
 a blocked article page is not a single point of failure. Hermes still researches
 multiple current domains and must synthesize market-wide drivers; Market Pulse,

@@ -2523,6 +2523,56 @@
     </section>`;
   }
 
+  function briefRotationRows(items, tone) {
+    return briefArray(items).map((item, index) => `<li>
+      <span>${String(index + 1).padStart(2, "0")}</span>
+      <div><strong>${esc(item?.label || item?.symbol || "Market group")}</strong><small>${esc(item?.symbol || "")}</small></div>
+      <b class="brief-change--${tone}">${esc(item?.change || "—")}</b>
+    </li>`).join("");
+  }
+
+  function briefMarketCheckMarkup(update) {
+    const content = update?.content || {};
+    const tone = content.market_tone || {};
+    const sessionLabel = content.session_label || `Completed US session · ${content.session_date || "—"}`;
+    return `<section class="brief-market-check" id="brief-update-${esc(update.id)}">
+      <header>
+        <div><span class="section-index">MIDNIGHT MARKET CHECK / ${esc(briefPublishedTime(update.published_at))} BKK</span><h2>${esc(tone.label || "Thesis unchanged")}</h2></div>
+        <strong class="brief-thesis">NO MATERIAL CHANGE</strong>
+      </header>
+      <div class="brief-market-check__context">
+        <div><span>COMPLETED SESSION</span><strong>${esc(sessionLabel)}</strong></div>
+        <div><span>MARKET TONE</span><strong class="brief-change--${briefTone(tone.tone)}">${esc(tone.label || "Neutral")}</strong></div>
+        <p>${esc(tone.summary || update.summary || "")}</p>
+      </div>
+      ${briefArray(content.market_snapshot).length ? `<div class="brief-market-check__snapshot">${briefArray(content.market_snapshot).map((item) => `<div><span>${esc(item.label || "MARKET")}</span><strong>${esc(item.value ?? "—")}</strong><small class="brief-change--${briefTone(item.tone)}">${esc(item.change || "")}</small></div>`).join("")}</div>` : ""}
+      <div class="brief-market-check__rotation">
+        <section><header><span>01 / ROTATION LEADERS</span><strong>Holding the tape.</strong></header><ol>${briefRotationRows(content.rotation_leaders, "positive")}</ol></section>
+        <section><header><span>02 / ROTATION LAGGARDS</span><strong>Losing relative strength.</strong></header><ol>${briefRotationRows(content.rotation_laggards, "negative")}</ol></section>
+      </div>
+      <p class="brief-market-check__note">${esc(content.data_note || "Price-based relative rotation; not verified ETF fund flow.")}</p>
+      <div class="brief-market-check__read">
+        <section><span>03 / READ-THROUGH</span><h3>Why the thesis still holds.</h3><p>${esc(content.read_through || update.summary || "")}</p></section>
+        <section><span>04 / NEXT CATALYST</span><h3>What can change the read.</h3><ul>${briefTextItems(content.watch_next)}</ul></section>
+      </div>
+      ${briefArray(content.sources).length ? `<div class="brief-update-sources">${briefArray(content.sources).map(briefSourceLink).join("")}</div>` : ""}
+    </section>`;
+  }
+
+  function briefUpdateMarkup(update) {
+    return update?.update_kind === "market_check"
+      ? briefMarketCheckMarkup(update)
+      : briefContinuationMarkup(update);
+  }
+
+  function briefUpdateCountLabel(brief) {
+    const updates = briefArray(brief?.updates);
+    const checks = updates.filter((update) => update?.update_kind === "market_check").length;
+    const continuations = updates.length - checks;
+    return [checks ? `${checks} check${checks === 1 ? "" : "s"}` : "", continuations ? `${continuations} continuation${continuations === 1 ? "" : "s"}` : ""]
+      .filter(Boolean).join(" · ") || "Canonical";
+  }
+
   function renderNotificationCenter() {
     const panel = $("#notification-panel");
     const badge = $("#notification-badge");
@@ -2565,7 +2615,7 @@
     const sourceMap = new Map(sources.map((source) => [String(source.id), source]));
     const updates = briefArray(brief.updates);
     viewRoot.innerHTML = `<div class="brief-shell">
-      <aside class="brief-archive" aria-label="Brief archive"><header><span>ARCHIVE / ${state.briefs.length}</span><strong>Daily editions</strong></header><div>${state.briefs.map((item) => `<button type="button" class="${item.id === brief.id ? "is-active" : ""}" data-action="brief-select" data-brief-id="${esc(item.id)}"><span>${esc(briefDateLabel(item.brief_date, { short: true }))}</span><strong>${esc(item.summary)}</strong><small>${briefArray(item.updates).length ? `${briefArray(item.updates).length} continuation` : "Canonical"}</small></button>`).join("")}</div></aside>
+      <aside class="brief-archive" aria-label="Brief archive"><header><span>ARCHIVE / ${state.briefs.length}</span><strong>Daily editions</strong></header><div>${state.briefs.map((item) => `<button type="button" class="${item.id === brief.id ? "is-active" : ""}" data-action="brief-select" data-brief-id="${esc(item.id)}"><span>${esc(briefDateLabel(item.brief_date, { short: true }))}</span><strong>${esc(item.summary)}</strong><small>${esc(briefUpdateCountLabel(item))}</small></button>`).join("")}</div></aside>
       <article class="brief-document">
         <header class="brief-masthead"><div><span>DAILY MARKET BRIEF / ${esc(briefDateLabel(brief.brief_date).toUpperCase())}</span><h1>The market,<br>without the reruns.</h1></div><div class="brief-masthead__meta"><span>PUBLISHED</span><strong>${esc(briefPublishedTime(brief.published_at))} BKK</strong><small>HERMES → SUPABASE</small></div></header>
         <section class="brief-mood brief-mood--${briefTone(mood.tone)}"><span>01 / MARKET MOOD</span><h2>${esc(mood.label || "Market read")}</h2><p>${esc(mood.summary || brief.summary)}</p></section>
@@ -2573,7 +2623,7 @@
         <section class="brief-section brief-stories"><header><span>03 / MARKET DRIVERS</span><h2>The forces moving the tape.</h2></header><div>${briefArray(content.top_stories).map((story, index) => briefStoryMarkup(story, index, sourceMap)).join("")}</div></section>
         <section class="brief-section brief-decision-grid"><div><header><span>04 / INVESTMENT IMPLICATIONS</span><h2>What changes for investors.</h2></header><ul>${briefTextItems(content.investment_implications)}</ul></div><div><header><span>05 / WATCH NEXT</span><h2>Events that can change the thesis.</h2></header><ul>${briefTextItems(content.watch_next)}</ul></div></section>
         <section class="brief-bottom-line"><span>06 / DECISION FRAME</span><h2>The setup, the trigger, the risk.</h2><ul>${briefTextItems(content.bottom_line)}</ul></section>
-        ${updates.map(briefContinuationMarkup).join("")}
+        ${updates.map(briefUpdateMarkup).join("")}
         <section class="brief-sources"><header><span>07 / SOURCES</span><h2>Open the evidence.</h2></header><div>${sources.map(briefSourceLink).join("")}</div></section>
       </article>
     </div>`;
@@ -4792,10 +4842,29 @@
         sources: previewSources
       },
       updates: [{
-        id: "update-preview", thesis_status: "unchanged", summary: "Indexes softened after the open, but yields and volatility did not confirm a broader risk-off move.", published_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString(), content: {
-          changes: [{ title: "Selective rotation", detail: "Semiconductors held up better than software and financials.", tone: "neutral" }],
-          portfolio_impact: [{ title: "No regime change", detail: "The broad-market thesis remains current.", tone: "neutral" }],
-          watch_next: [{ title: "Closing breadth", detail: "Watch whether weakness broadens into the final hour.", tone: "caution" }],
+        id: "update-preview", update_kind: "market_check", thesis_status: "unchanged", summary: "Cautious rotation: Tech and semiconductors weakened while Energy and defensive groups held the tape.", published_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString(), content: {
+          session_date: previewBriefDate,
+          session_label: `Latest completed US session · ${previewBriefDate}`,
+          market_tone: { label: "Cautious rotation", tone: "caution", summary: "Growth leadership softened, but volatility and credit did not confirm a market-wide stress event." },
+          market_snapshot: [
+            { label: "SPY", value: "-0.53%", change: "Latest completed session", tone: "negative" },
+            { label: "QQQ", value: "-1.48%", change: "Growth lagged", tone: "negative" },
+            { label: "VIX", value: "15.4", change: "Stress not confirmed", tone: "neutral" },
+            { label: "US 10Y", value: "4.64%", change: "Still the next pressure point", tone: "caution" }
+          ],
+          rotation_leaders: [
+            { symbol: "XLV", label: "Health Care", change: "+1.71%" },
+            { symbol: "XLP", label: "Consumer Staples", change: "+1.40%" },
+            { symbol: "XLE", label: "Energy", change: "+1.35%" }
+          ],
+          rotation_laggards: [
+            { symbol: "SMH", label: "Semiconductors", change: "-4.43%" },
+            { symbol: "NLR", label: "Nuclear Energy", change: "-3.07%" },
+            { symbol: "XLK", label: "Technology", change: "-2.57%" }
+          ],
+          data_note: "Price-based relative rotation; not verified ETF fund flow.",
+          read_through: "Selling remained concentrated in duration-sensitive Tech and semiconductors while Energy and defensive sectors strengthened. The evidence still fits rotation more than confirmed financial stress.",
+          watch_next: [{ title: "FOMC Minutes · 01:00 BKK", detail: "Tests whether rates can extend the pressure on growth leadership.", tone: "caution" }],
           sources: [previewSources[0]]
         }
       }]
@@ -4825,7 +4894,6 @@
     }];
     const notifications = [
       { id: "notice-smart", notification_type: "smart_money_brief", title: "Smart Money Brief", preview: smartMoneyBriefs[0].summary, route: "smart-money-briefs", entity_id: "smart-brief-preview", created_at: new Date().toISOString(), read_at: null },
-      { id: "notice-update", notification_type: "brief_continuation", title: "Daily Market Brief · Continuation", preview: "Indexes softened, but the original thesis remains current.", route: "briefs", entity_id: "update-preview", created_at: new Date(Date.now() - 60_000).toISOString(), read_at: null },
       { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, route: "briefs", entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
     ];
     Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, executions, cashMovements, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, smartMoneyBriefs, notifications, selectedBriefId: "brief-preview", selectedSmartMoneyBriefId: "smart-brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });

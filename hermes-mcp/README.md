@@ -16,8 +16,10 @@ Center without editing dashboard files or receiving Supabase SQL access.
   benchmarks, sectors, and high-impact Macro only. The canonical 20:00 brief
   combines that pack with current external research and never uses an owner's
   positions or Watchlist. `personal` is reserved for separate private analysis.
-  Hermes reads the canonical edition before publishing a material midnight
-  delta. Both publish tools require the `briefings:write` scope.
+  Hermes reads the canonical edition before publishing exactly one midnight
+  result: a silent completed-session Market Check when the thesis is unchanged,
+  or a notified material Continuation when it changes. All publication tools
+  require the `briefings:write` scope.
 - `get_smart_money_briefing_context` is a fixed rolling 30-day, weekly fact
   pack. Supabase removes Form 4 event keys used by prior editions before Hermes
   sees them. `publish_smart_money_brief` refuses stale sources, empty reports,

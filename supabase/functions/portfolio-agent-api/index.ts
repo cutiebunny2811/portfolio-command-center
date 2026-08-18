@@ -185,6 +185,42 @@ function validateContinuationContent(value: unknown) {
   return content;
 }
 
+function validateMarketCheckContent(value: unknown) {
+  const content = jsonObject(value, "content");
+  dateKey(content.session_date, "content.session_date");
+  requiredText(content.session_label, "content.session_label", 160);
+  requiredText(content.data_note, "content.data_note", 500);
+  requiredText(content.read_through, "content.read_through", 1800);
+
+  const tone = jsonObject(content.market_tone, "content.market_tone");
+  requiredText(tone.label, "content.market_tone.label", 120);
+  requiredText(tone.summary, "content.market_tone.summary", 800);
+  validateBriefTone(tone.tone, "content.market_tone.tone");
+
+  requireArraySection(content, "market_snapshot", 2, 8).forEach((value, index) => {
+    const item = jsonObject(value, `content.market_snapshot[${index}]`);
+    requiredText(item.label, `content.market_snapshot[${index}].label`, 120);
+    if (!["string", "number"].includes(typeof item.value) || String(item.value).trim() === "") {
+      throw new Error(`content.market_snapshot[${index}].value is required`);
+    }
+    requiredText(item.change, `content.market_snapshot[${index}].change`, 500);
+    validateBriefTone(item.tone, `content.market_snapshot[${index}].tone`);
+  });
+
+  for (const key of ["rotation_leaders", "rotation_laggards"] as const) {
+    requireArraySection(content, key, 1, 8).forEach((value, index) => {
+      const item = jsonObject(value, `content.${key}[${index}]`);
+      requiredText(item.symbol, `content.${key}[${index}].symbol`, 24);
+      requiredText(item.label, `content.${key}[${index}].label`, 120);
+      requiredText(item.change, `content.${key}[${index}].change`, 80);
+    });
+  }
+
+  validateBriefNotes(content, "watch_next", 1, 4);
+  validateBriefSources(content, 1, 12);
+  return content;
+}
+
 function validateSmartMoneyBriefContent(value: unknown) {
   const content = jsonObject(value, "content");
   requiredText(content.headline, "content.headline", 180);
@@ -923,6 +959,7 @@ async function briefingContext(
         source_resilience: "Use cached_market_news when a live page blocks access, then cross-check with another cached publisher, an official source or web search. FRED supports macro facts but must never be used as filler for a market-news story.",
         unavailable_data: "Use null or omit the item. Never invent prices, consensus estimates, quotes or URLs.",
         continuation: "Compare against the published brief and write only material market-wide changes, not a second full brief.",
+        midnight_market_check: "When the thesis is unchanged, retain one neutral completed-session Market Check with rotation leaders, laggards, read-through and the next catalyst. This routine check is saved silently and never creates a PCC notification.",
       },
       market_pulse: market,
       cached_market_news: marketNews,
@@ -971,6 +1008,7 @@ async function briefingContext(
       canonical_brief: "Use verified cached facts only. Separate facts from interpretation and cite every story with source ids.",
       unavailable_data: "Use null or omit the item. Never invent prices, consensus estimates, quotes or URLs.",
       continuation: "Compare against the published brief and write only material changes, not a second full brief.",
+      midnight_market_check: "When the thesis is unchanged, retain one completed-session Market Check instead of discarding the useful rotation read.",
     },
     dashboard,
     market_pulse: market,
@@ -1049,6 +1087,22 @@ async function publishBriefContinuation(
     p_content: validateContinuationContent(body.content),
     p_source_context: body.source_context == null ? {} : jsonObject(body.source_context, "source_context"),
     p_material_score: materialScore,
+    p_idempotency_key: requiredText(body.idempotency_key, "idempotency_key", 160),
+  }));
+}
+
+async function publishMidnightMarketCheck(
+  service: any,
+  identity: AgentIdentity,
+  body: Record<string, unknown>,
+) {
+  return await must(service.rpc("api_agent_publish_midnight_market_check", {
+    p_user_id: identity.user_id,
+    p_agent_id: identity.token_id,
+    p_brief_date: dateKey(body.brief_date, "brief_date"),
+    p_summary: requiredText(body.summary, "summary"),
+    p_content: validateMarketCheckContent(body.content),
+    p_source_context: body.source_context == null ? {} : jsonObject(body.source_context, "source_context"),
     p_idempotency_key: requiredText(body.idempotency_key, "idempotency_key", 160),
   }));
 }
@@ -1525,6 +1579,16 @@ Deno.serve(async (request) => {
       requireScope(identity, "briefings:write");
       const data = await publishBriefContinuation(service, identity, body);
       return response({ action, data, published: (data as Record<string, unknown>)?.published !== false });
+    }
+
+    if (action === "publish_midnight_market_check") {
+      requireScope(identity, "briefings:write");
+      return response({
+        action,
+        data: await publishMidnightMarketCheck(service, identity, body),
+        published: true,
+        notified: false,
+      });
     }
 
     if (action === "market_pulse") {

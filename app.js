@@ -46,7 +46,7 @@
     options: "Options"
   };
   const localPreviewParams = new URLSearchParams(location.search);
-  const initialRoute = ["overview", "portfolio", "journal", "watchlist", "smart-money", "research", "earnings", "macro", "briefs", "smart-money-briefs"].includes(localPreviewParams.get("route"))
+  const initialRoute = ["overview", "portfolio", "option-desk", "journal", "watchlist", "smart-money", "research", "earnings", "macro", "briefs", "smart-money-briefs"].includes(localPreviewParams.get("route"))
     ? localPreviewParams.get("route") : "overview";
   const localPreviewEnabled = (["127.0.0.1", "localhost"].includes(location.hostname) || location.protocol === "file:")
     && localPreviewParams.get("preview") === "1";
@@ -79,6 +79,8 @@
     selectedBriefId: null, selectedSmartMoneyBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
     agentTokens: [], agentDrafts: [],
     route: initialRoute, selectedPortfolioId: null,
+    optionDeskUnderlying: "NVDA", optionDeskStrategy: "long_call", optionDeskExpiry: "2026-09-18",
+    optionDeskStrike: 185, optionDeskDraftOpen: false,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, expandedHoldingId: null,
     tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "", tradeHistoryView: "trades",
     loading: false, lastSync: null
@@ -1340,6 +1342,7 @@
       return;
     }
     if (state.route === "portfolio") renderPortfolio();
+    else if (state.route === "option-desk") renderOptionDesk();
     else if (state.route === "journal") renderJournalPaged();
     else if (state.route === "watchlist") renderWatchlist();
     else if (state.route === "smart-money") renderSmartMoney();
@@ -1354,6 +1357,126 @@
 
   function pageHead(kicker, title, copy, actions = "") {
     return `<header class="page-head"><div><p class="eyebrow">${esc(kicker)}</p><h1>${esc(title)}</h1><p>${esc(copy)}</p></div><div class="page-actions">${actions}</div></header>`;
+  }
+
+  const optionDeskSamples = {
+    NVDA: { name: "NVIDIA", spot: 181.74, change: -1.84, iv: 38, strikes: [165, 170, 175, 180, 185, 190, 195, 200] },
+    AMD: { name: "Advanced Micro Devices", spot: 205.38, change: 0.92, iv: 42, strikes: [185, 190, 195, 200, 205, 210, 215, 220] },
+    TSLA: { name: "Tesla", spot: 335.62, change: -0.48, iv: 51, strikes: [300, 310, 320, 330, 340, 350, 360, 370] }
+  };
+  const optionDeskExpiries = [
+    { value: "2026-08-28", label: "AUG 28", dte: 9 },
+    { value: "2026-09-18", label: "SEP 18", dte: 30 },
+    { value: "2026-10-16", label: "OCT 16", dte: 58 }
+  ];
+  const optionDeskStrategies = {
+    long_call: { label: "Long Call", side: "call", mode: "single", note: "Bullish · loss limited to premium" },
+    long_put: { label: "Long Put", side: "put", mode: "single", note: "Bearish · loss limited to premium" },
+    call_spread: { label: "Call Spread", side: "call", mode: "spread", note: "Bullish · defined reward and risk" },
+    put_spread: { label: "Put Spread", side: "put", mode: "spread", note: "Bearish · defined reward and risk" }
+  };
+
+  function optionDeskChain() {
+    const sample = optionDeskSamples[state.optionDeskUnderlying] || optionDeskSamples.NVDA;
+    const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry) || optionDeskExpiries[1];
+    const timeFactor = Math.sqrt(expiry.dte / 30);
+    return sample.strikes.map((strike, index) => {
+      const distance = Math.abs(sample.spot - strike);
+      const extrinsic = Math.max(.48, sample.spot * (.045 + sample.iv / 4200) * timeFactor - distance * .31);
+      const callMid = Math.max(sample.spot - strike, 0) + extrinsic;
+      const putMid = Math.max(strike - sample.spot, 0) + extrinsic;
+      const quote = (mid, offset = 0) => {
+        const width = Math.max(.08, mid * (.045 + offset));
+        return { bid: Math.max(.01, mid - width / 2), ask: mid + width / 2, mid };
+      };
+      const callDelta = clamp(.5 + (sample.spot - strike) / (sample.spot * .22), .08, .92);
+      return {
+        strike,
+        call: { ...quote(callMid, index % 3 === 0 ? .012 : 0), delta: callDelta },
+        put: { ...quote(putMid, index % 3 === 1 ? .012 : 0), delta: callDelta - 1 },
+        gamma: .008 + Math.max(0, 1 - distance / (sample.spot * .14)) * .013,
+        theta: -(0.035 + extrinsic / Math.max(expiry.dte, 1) * 1.8),
+        vega: .07 + Math.max(0, 1 - distance / (sample.spot * .18)) * .11,
+        iv: sample.iv + Math.round(distance / sample.spot * 45),
+        volume: 420 + ((index * 617 + expiry.dte * 13) % 4200),
+        oi: 2100 + ((index * 1297 + expiry.dte * 71) % 18000)
+      };
+    });
+  }
+
+  function optionDeskSelection() {
+    const strategy = optionDeskStrategies[state.optionDeskStrategy] || optionDeskStrategies.long_call;
+    const chain = optionDeskChain();
+    const selected = chain.find((row) => row.strike === num(state.optionDeskStrike)) || chain[Math.floor(chain.length / 2)];
+    const selectedIndex = chain.indexOf(selected);
+    const shortIndex = strategy.side === "call" ? Math.min(selectedIndex + 2, chain.length - 1) : Math.max(selectedIndex - 2, 0);
+    const short = chain[shortIndex];
+    const quote = selected[strategy.side];
+    const shortQuote = short[strategy.side];
+    const debit = strategy.mode === "spread" ? Math.max(.01, quote.ask - shortQuote.bid) : quote.ask;
+    const maxLoss = debit * 100;
+    const width = Math.abs(short.strike - selected.strike);
+    const maxProfit = strategy.mode === "spread" ? Math.max(0, width * 100 - maxLoss) : null;
+    const breakEven = strategy.side === "call" ? selected.strike + debit : selected.strike - debit;
+    const spreadPercent = quote.mid ? ((quote.ask - quote.bid) / quote.mid) * 100 : 0;
+    return { strategy, chain, selected, short, quote, debit, maxLoss, maxProfit, breakEven, spreadPercent };
+  }
+
+  function optionDeskContractLabel(selection) {
+    const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry);
+    const type = selection.strategy.side.toUpperCase();
+    if (selection.strategy.mode === "spread") return `${state.optionDeskUnderlying} ${expiry?.label} ${selection.selected.strike}/${selection.short.strike} ${type} SPREAD`;
+    return `${state.optionDeskUnderlying} ${expiry?.label} ${selection.selected.strike} ${type}`;
+  }
+
+  function renderOptionDesk() {
+    const sample = optionDeskSamples[state.optionDeskUnderlying] || optionDeskSamples.NVDA;
+    const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry) || optionDeskExpiries[1];
+    const selection = optionDeskSelection();
+    const liquidity = selection.spreadPercent <= 7 ? "CLEAN" : selection.spreadPercent <= 12 ? "WATCH" : "WIDE";
+    const delta = Math.abs(selection.selected[selection.strategy.side].delta);
+    const deltaLabel = delta >= .6 ? "moves strongly with shares" : delta >= .35 ? "balanced price sensitivity" : "needs a larger share move";
+    viewRoot.innerHTML = `
+      <header class="option-desk-head">
+        <div><p class="eyebrow">OPTIONS / DECISION SHEET</p><h1>Price the contract<br>before the story.</h1><p>Compare contract cost, liquidity and decay before preparing a portfolio draft. This desk never places an order.</p></div>
+        <div class="option-desk-head__actions"><button class="button button--ghost" type="button" data-action="option-desk-back">Back to portfolio</button><span>SAMPLE MARKET DATA</span><small>OPRA NOT CONNECTED</small></div>
+      </header>
+      <section class="option-status" aria-label="Sample quote status">
+        <div><small>UNDERLYING</small><strong>${esc(state.optionDeskUnderlying)} <em>${money(sample.spot)}</em></strong></div>
+        <div><small>SESSION MOVE</small><strong class="${sample.change >= 0 ? "positive" : "negative"}">${sample.change >= 0 ? "+" : ""}${percent(sample.change, 2)}</strong></div>
+        <div><small>QUOTE MODE</small><strong>DELAYED SAMPLE</strong></div>
+        <div><small>CONTRACTS</small><strong>${selection.chain.length} NEAR MONEY</strong></div>
+      </section>
+      <section class="option-workbench">
+        <aside class="option-controls" aria-label="Option setup">
+          <div class="option-control-block"><span>01 / UNDERLYING</span><div class="option-choice-grid">${Object.entries(optionDeskSamples).map(([symbol, item]) => `<button type="button" class="${symbol === state.optionDeskUnderlying ? "is-active" : ""}" data-action="option-underlying" data-symbol="${symbol}"><strong>${symbol}</strong><small>${money(item.spot)}</small></button>`).join("")}</div></div>
+          <div class="option-control-block"><span>02 / STRATEGY</span><div class="option-strategies">${Object.entries(optionDeskStrategies).map(([key, item]) => `<button type="button" class="${key === state.optionDeskStrategy ? "is-active" : ""}" data-action="option-strategy" data-strategy="${key}"><strong>${item.label}</strong><small>${item.note}</small></button>`).join("")}</div></div>
+          <div class="option-control-block"><span>03 / EXPIRY</span><div class="option-expiries">${optionDeskExpiries.map((item) => `<button type="button" class="${item.value === state.optionDeskExpiry ? "is-active" : ""}" data-action="option-expiry" data-expiry="${item.value}"><strong>${item.label}</strong><small>${item.dte} DTE</small></button>`).join("")}</div></div>
+        </aside>
+        <div class="option-chain-panel">
+          <div class="option-panel-head"><div><span>04 / CONTRACT TAPE</span><h2>${selection.strategy.side === "call" ? "Calls" : "Puts"} near the money.</h2></div><p>Select a strike. Bid/ask width matters before every Greek.</p></div>
+          <div class="option-chain-head"><span>STRIKE</span><span>BID</span><span>ASK</span><span>DELTA</span><span>IV</span><span>VOL / OI</span></div>
+          <div class="option-chain">${selection.chain.map((row) => {
+            const quote = row[selection.strategy.side];
+            const active = row.strike === selection.selected.strike;
+            return `<button type="button" class="option-chain-row ${active ? "is-active" : ""}" data-action="option-strike" data-strike="${row.strike}" aria-pressed="${active}"><strong>${money(row.strike, 0)}</strong><span>${money(quote.bid)}</span><span>${money(quote.ask)}</span><span>${quote.delta.toFixed(2)}</span><span>${row.iv}%</span><span>${row.volume.toLocaleString()} / ${row.oi.toLocaleString()}</span></button>`;
+          }).join("")}</div>
+        </div>
+        <aside class="option-contract" aria-label="Selected contract analysis">
+          <div class="option-contract__title"><span>SELECTED CONTRACT</span><h2>${esc(optionDeskContractLabel(selection))}</h2><p>${expiry.dte} days to expiry · 1 contract = 100 shares</p></div>
+          <div class="option-quote"><div><small>MID</small><strong>${money(selection.quote.mid)}</strong></div><div><small>ASK</small><strong>${money(selection.quote.ask)}</strong></div><div><small>SPREAD</small><strong class="${liquidity === "CLEAN" ? "positive" : liquidity === "WIDE" ? "negative" : "gold"}">${percent(selection.spreadPercent, 1)}</strong></div><div><small>LIQUIDITY</small><strong>${liquidity}</strong></div></div>
+          <div class="option-greeks"><span>GREEKS / PER SHARE</span><dl><div><dt>Delta</dt><dd>${selection.selected[selection.strategy.side].delta.toFixed(3)}</dd></div><div><dt>Gamma</dt><dd>${selection.selected.gamma.toFixed(3)}</dd></div><div><dt>Theta</dt><dd>${selection.selected.theta.toFixed(3)}</dd></div><div><dt>Vega</dt><dd>${selection.selected.vega.toFixed(3)}</dd></div></dl></div>
+          <div class="option-plain-read"><span>PLAIN-LANGUAGE READ</span><p><strong>Delta:</strong> ${deltaLabel}. <strong>Theta:</strong> about ${money(Math.abs(selection.selected.theta) * 100)} of theoretical value decays per day for one contract, all else equal.</p></div>
+        </aside>
+      </section>
+      <section class="option-risk-sheet">
+        <div class="option-risk-sheet__intro"><span>05 / PAYOFF BEFORE ENTRY</span><h2>Know the bill and the break-even.</h2><p>Estimates use the displayed ask for the long leg${selection.strategy.mode === "spread" ? " and bid for the short leg" : ""}. Your broker fill can differ.</p></div>
+        <div class="option-risk-metrics"><div><small>ESTIMATED DEBIT</small><strong>${money(selection.debit * 100)}</strong><span>${money(selection.debit)} × 100</span></div><div><small>MAXIMUM LOSS</small><strong class="negative">${money(selection.maxLoss)}</strong><span>Defined at entry</span></div><div><small>BREAK-EVEN AT EXPIRY</small><strong>${money(selection.breakEven)}</strong><span>Underlying price</span></div><div><small>MAXIMUM PROFIT</small><strong>${selection.maxProfit === null ? "OPEN" : money(selection.maxProfit)}</strong><span>${selection.maxProfit === null ? "Not capped" : "Defined spread"}</span></div></div>
+        <div class="option-risk-actions"><p><strong>Market estimate, not a fill.</strong> Verify the live chain in Webull before sending any order.</p><button class="button button--primary" type="button" data-action="option-draft-preview">${state.optionDeskDraftOpen ? "Hide draft" : "Preview draft"}</button></div>
+      </section>
+      ${state.optionDeskDraftOpen ? `<section id="option-draft" class="option-draft-preview"><div><span>06 / SAMPLE DRAFT</span><h2>Ready for a human check.</h2><p>This preview is intentionally disconnected from Supabase until live OPRA mapping and server validation are ready.</p></div><dl><div><dt>Portfolio</dt><dd>${esc(currentPortfolio()?.name || "Options")}</dd></div><div><dt>Strategy</dt><dd>${esc(selection.strategy.label)}</dd></div><div><dt>Contract</dt><dd>${esc(optionDeskContractLabel(selection))}</dd></div><div><dt>Quantity</dt><dd>1 contract</dd></div><div><dt>Limit reference</dt><dd>${money(selection.debit)} debit</dd></div><div><dt>Maximum loss</dt><dd>${money(selection.maxLoss)}</dd></div></dl><footer><span>NOT SAVED · NO ORDER SENT</span><button class="button" type="button" disabled>Send to trade review after OPRA</button></footer></section>` : ""}
+    `;
+    refreshIcons();
   }
 
   function renderOverview() {
@@ -1692,6 +1815,7 @@
     const plan = allocationSummary(portfolio, rows);
     viewRoot.innerHTML = `
       ${pageHead(`${portfolio.name} · ${brokerProfile(portfolio).toUpperCase()} ledger`, portfolio.name, "Stocks and ETFs allocate by market value; options allocate by maximum loss. Each trade follows this portfolio's broker cost method.", `
+        <button class="button button--ghost" type="button" data-action="option-desk-open">Option Desk</button>
         <button class="button button--ghost" type="button" data-action="cash-add">Add / withdraw money</button>
         <button class="button button--ghost" type="button" data-action="execution-history">History</button>
         <button class="button button--ghost" type="button" data-action="trade-sell">Sell</button>
@@ -4350,6 +4474,44 @@
     }
     else if (action === "macro-sync") await syncMacroCalendar({ notify: true });
     else if (action === "account") await openAccountDialog();
+    else if (action === "option-desk-open") {
+      state.route = "option-desk";
+      state.optionDeskDraftOpen = false;
+      window.scrollTo(0, 0);
+      render();
+    }
+    else if (action === "option-desk-back") {
+      state.route = "portfolio";
+      state.optionDeskDraftOpen = false;
+      window.scrollTo(0, 0);
+      render();
+    }
+    else if (action === "option-underlying") {
+      state.optionDeskUnderlying = optionDeskSamples[target.dataset.symbol] ? target.dataset.symbol : "NVDA";
+      state.optionDeskStrike = optionDeskSamples[state.optionDeskUnderlying].strikes[4];
+      state.optionDeskDraftOpen = false;
+      renderOptionDesk();
+    }
+    else if (action === "option-strategy") {
+      state.optionDeskStrategy = optionDeskStrategies[target.dataset.strategy] ? target.dataset.strategy : "long_call";
+      state.optionDeskDraftOpen = false;
+      renderOptionDesk();
+    }
+    else if (action === "option-expiry") {
+      state.optionDeskExpiry = optionDeskExpiries.some((item) => item.value === target.dataset.expiry) ? target.dataset.expiry : optionDeskExpiries[1].value;
+      state.optionDeskDraftOpen = false;
+      renderOptionDesk();
+    }
+    else if (action === "option-strike") {
+      state.optionDeskStrike = num(target.dataset.strike);
+      state.optionDeskDraftOpen = false;
+      renderOptionDesk();
+    }
+    else if (action === "option-draft-preview") {
+      state.optionDeskDraftOpen = !state.optionDeskDraftOpen;
+      renderOptionDesk();
+      if (state.optionDeskDraftOpen) requestAnimationFrame(() => $("#option-draft")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+    }
     else if (action === "portfolio-create") openCreatePortfolioDialog();
     else if (action === "portfolio-manage") openPortfolioManagerDialog();
     else if (action === "portfolio-broker") openPortfolioBrokerDialog(target.dataset.portfolioManageId);

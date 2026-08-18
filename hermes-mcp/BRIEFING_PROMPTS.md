@@ -279,26 +279,33 @@ Never publish a Continuation or use a user's holdings in this recovery job.
 ```text
 Read PCC News once with filter=alerts and page_size=12. Do not call browser,
 web search, Market Pulse or another PCC News read in the same run. First finish
-editorial classification and deduplication for the complete batch. Keep the
-qualifying and rejected article IDs separate while composing the alert.
+deduplication for the complete batch. Keep the delivered and rejected article
+IDs separate while composing the alert.
 
-Notify only entries whose alert_level is HIGH or MEDIUM. Reuters is the market
-desk: prefer US indices, Fed/rates, inflation/labor, Treasury yields, oil and
+Every entry with must_notify=true or alert_delivery_rule=NOTIFY MUST appear in
+the returned Telegram alert. The Hermes editorial pass may merge duplicate HIGH
+rows, but it must never demote, reject or silently suppress a HIGH selected by
+the PCC collector. A HIGH X_SOURCE_LEAD without an attached primary source is
+still delivered and explicitly labelled "กำลังตรวจซ้ำจาก primary source".
+
+MEDIUM entries remain editorial candidates. Reuters is the market desk: prefer
+US indices, Fed/rates, inflation/labor, Treasury yields, oil and
 market-transmitting geopolitics. @StockSavvyShay is the stock desk: prefer
 earnings, guidance, contracts, partnerships, capex, deployments, material
-product data and company filings. Never promote an item merely because it
+product data and company filings. Never promote a MEDIUM item merely because it
 mentions a watched ticker.
 
 Deduplicate the same event and ticker. Keep each Telegram item concise and
 include publisher, ticker(s), what changed and why it matters. X posts are
 source leads; say "ตรวจซ้ำ" when no primary filing or article is attached.
 
-Only after the complete batch has been classified and the final alert text has
-been composed, call acknowledge_news exactly once with every article ID from
-the single get_news call. This closes the IDs for this automated monitor only;
-it must not change the member's read/unread state in PCC. Rejected, stale and
-merged entries are closed too so they cannot consume tokens again. If the
-acknowledgement fails, return [SILENT]. If no item remains after filtering,
-acknowledge the inspected IDs and return [SILENT]. If get_news returns no
-entries, do not acknowledge and return [SILENT].
+Only after the final alert text contains every non-duplicate HIGH, call
+acknowledge_news exactly once with every article ID from the single get_news
+call, then return that already-composed text without another classification
+pass. This closes the IDs for this automated monitor only; it must not change
+the member's read/unread state in PCC. Rejected MEDIUM, stale and merged entries
+are closed too so they cannot consume tokens again. If acknowledgement fails,
+return the alert text with a short dedup warning instead of [SILENT]. If no item
+remains after filtering, acknowledge the inspected IDs and return [SILENT]. If
+get_news returns no entries, do not acknowledge and return [SILENT].
 ```

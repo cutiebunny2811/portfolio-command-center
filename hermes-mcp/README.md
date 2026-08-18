@@ -33,6 +33,9 @@ Center without editing dashboard files or receiving Supabase SQL access.
   not mark an article read for the member. Alert jobs classify the complete
   batch first, then close every inspected ID once so rejected or merged items
   cannot consume tokens again.
+- `requeue_news_alerts` is a narrow recovery tool for article IDs that were
+  acknowledged before delivery. It never changes the member's read state and
+  is not part of a normal monitor run.
 - The agent token is separate from the browser session and can be revoked.
 
 ## Hermes configuration

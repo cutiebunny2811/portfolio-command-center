@@ -20,6 +20,10 @@ const backfillSource = await readFile(
   ),
   "utf8",
 );
+const promptSource = await readFile(
+  new URL("../hermes-mcp/BRIEFING_PROMPTS.md", import.meta.url),
+  "utf8",
+);
 
 test("News alert dedup is independent from the member read state", () => {
   assert.match(migrationSource, /alert_processed_at timestamptz/i);
@@ -30,6 +34,17 @@ test("News alert dedup is independent from the member read state", () => {
     /async function acknowledgeNews[\s\S]*?update\(\{ is_read: true/,
   );
   assert.match(apiSource, /user_read_state_changed: false/);
+  assert.match(apiSource, /async function requeueNewsAlerts/);
+  assert.match(apiSource, /update\(\{ alert_processed_at: null, updated_at:/);
   assert.match(backfillSource, /where is_read = true/i);
   assert.match(backfillSource, /alert_processed_at is null/i);
+});
+
+test("collector-confirmed HIGH news cannot be silently demoted by Hermes", () => {
+  assert.match(apiSource, /must_notify: alertLevel === "HIGH"/);
+  assert.match(apiSource, /alert_delivery_rule: alertLevel === "HIGH" \? "NOTIFY"/);
+  assert.match(apiSource, /source_verification: article\.source === "x" \? "X_SOURCE_LEAD"/);
+  assert.match(promptSource, /MUST appear in[\s\S]*returned Telegram alert/i);
+  assert.match(promptSource, /must never demote, reject or silently suppress a HIGH/i);
+  assert.match(promptSource, /กำลังตรวจซ้ำจาก primary source/);
 });

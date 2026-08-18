@@ -219,7 +219,7 @@ const tools = [
   },
   {
     name: "get_news",
-    description: "Read the user's cached PCC Research News feed. Use filter=alerts for unprocessed HIGH/MEDIUM monitor candidates; stay silent when none exist. Each entry includes alert_level (HIGH, MEDIUM or LOW). Never triggers an external sync.",
+    description: "Read the user's cached PCC Research News feed. Use filter=alerts for unprocessed HIGH/MEDIUM monitor candidates; stay silent when none exist. Entries with must_notify=true are collector-confirmed HIGH alerts and must appear in the returned alert text; do not demote or silently reject them. X_SOURCE_LEAD means label the source as awaiting primary confirmation, not suppress the alert. Never triggers an external sync.",
     inputSchema: {
       type: "object",
       properties: {
@@ -233,7 +233,7 @@ const tools = [
   },
   {
     name: "acknowledge_news",
-    description: "Close inspected News entries for the automated alert monitor without changing the member's read/unread state. Call once after editorial classification so rejected and merged entries do not repeat.",
+    description: "Close inspected News entries for the automated alert monitor without changing the member's read/unread state. Call once only after the final response contains every mandatory HIGH alert so rejected and merged entries do not repeat.",
     inputSchema: {
       type: "object",
       properties: {
@@ -242,6 +242,23 @@ const tools = [
           items: { type: "string" },
           minItems: 1,
           maxItems: 50,
+        },
+      },
+      required: ["article_ids"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "requeue_news_alerts",
+    description: "Recovery only: reopen specific linked News article IDs that were acknowledged before their alert was delivered. This never changes the member's read/unread state and must not be used during a normal monitor run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        article_ids: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 12,
         },
       },
       required: ["article_ids"],
@@ -569,6 +586,7 @@ const actionByTool = {
   get_watchlist: "watchlist",
   get_news: "news",
   acknowledge_news: "acknowledge_news",
+  requeue_news_alerts: "requeue_news_alerts",
   get_earnings_calendar: "earnings",
   get_macro_calendar: "macro_calendar",
   get_macro_alerts: "macro_alerts",

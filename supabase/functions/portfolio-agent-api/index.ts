@@ -532,10 +532,14 @@ async function researchNews(
     .map((article): Record<string, unknown> => {
       const scope = scopeByArticle.get(String(article.id))!;
       const state = stateByArticle.get(String(article.id));
+      const alertLevel = researchAlertLevel(article, scope);
       return {
         ...article,
         ...scope,
-        alert_level: researchAlertLevel(article, scope),
+        alert_level: alertLevel,
+        must_notify: alertLevel === "HIGH",
+        alert_delivery_rule: alertLevel === "HIGH" ? "NOTIFY" : alertLevel === "MEDIUM" ? "EDITORIAL_REVIEW" : "IGNORE",
+        source_verification: article.source === "x" ? "X_SOURCE_LEAD" : "PUBLISHED_SOURCE",
         is_read: Boolean(state?.is_read),
         is_saved: Boolean(state?.is_saved),
         is_hidden: Boolean(state?.is_hidden),
@@ -608,6 +612,40 @@ async function acknowledgeNews(
     .in("article_id", allowedIds));
   return {
     acknowledged: allowedIds.length,
+    article_ids: allowedIds,
+    user_read_state_changed: false,
+  };
+}
+
+async function requeueNewsAlerts(
+  service: any,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const requestedIds = Array.isArray(body.article_ids)
+    ? unique(body.article_ids.map(String).filter((id) => /^[0-9a-f-]{36}$/i.test(id))).slice(0, 12)
+    : [];
+  if (!requestedIds.length) throw new Error("article_ids must contain at least one article UUID");
+
+  const [instrumentLinks, sourceLinks] = await Promise.all([
+    must(service.from("research_article_matches")
+      .select("article_id")
+      .eq("user_id", userId)
+      .in("article_id", requestedIds)),
+    must(service.from("research_source_article_matches")
+      .select("article_id")
+      .eq("user_id", userId)
+      .in("article_id", requestedIds)),
+  ]);
+  const allowedIds = unique([...instrumentLinks, ...sourceLinks].map((row: Record<string, unknown>) => String(row.article_id)));
+  if (!allowedIds.length) throw new Error("No linked news articles were found");
+
+  await must(service.from("research_article_state")
+    .update({ alert_processed_at: null, updated_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .in("article_id", allowedIds));
+  return {
+    requeued: allowedIds.length,
     article_ids: allowedIds,
     user_read_state_changed: false,
   };
@@ -1540,6 +1578,10 @@ Deno.serve(async (request) => {
 
     if (action === "acknowledge_news") {
       return response({ action, data: await acknowledgeNews(service, identity.user_id, body) });
+    }
+
+    if (action === "requeue_news_alerts") {
+      return response({ action, data: await requeueNewsAlerts(service, identity.user_id, body) });
     }
 
     if (action === "earnings") {

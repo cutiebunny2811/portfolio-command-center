@@ -53,8 +53,11 @@ invocations in the same window do not call X again. Keep the X Developer Console
 spending limit at $5 as the external hard stop.
 
 Every kept X row is tagged `ALERT_HIGH` or `ALERT_MEDIUM`. Hermes News monitors
-must request `unread`, notify only those two levels, mark an item read only after
-successful Telegram delivery, and return `[SILENT]` when no qualifying row exists.
+must request `alerts`. A collector-confirmed HIGH is mandatory output; an X lead
+without a primary source is labelled as awaiting confirmation instead of being
+silently rejected. `acknowledge_news` closes the automated monitor state without
+changing the member's read/unread state, and `[SILENT]` is valid only when no
+qualifying row remains.
 
 Hermes calls `refresh_brief_sources` immediately before the 20:00 brief and
 00:00 continuation. The action invokes this same collector with the server-side

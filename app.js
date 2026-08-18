@@ -62,8 +62,8 @@
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null, optionPriceAccess: false,
-    watchlist: [], watchlistReady: true, watchlistBars: [], watchlistLivePrice: null, watchlistChartBusy: false,
-    selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "6M", watchlistSearch: "", watchlistRecentIds: [],
+    watchlist: [], watchlistReady: true, watchlistBars: [], watchlistBarsInstrumentId: null, watchlistLivePrice: null, watchlistChartBusy: false, watchlistChartMeta: null,
+    selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "15M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
     marketPulseMode: "rotation", marketPulseWindow: "1D", expandedRotationSymbol: null,
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
@@ -101,6 +101,7 @@
   let watchlistChart = null;
   let watchlistBarsRequestId = 0;
   let watchlistChartRenderId = 0;
+  const watchlistChartRefreshes = new Set();
   let authEntryPromise = null;
   let passwordRecoveryActive = passwordRecoveryRequested;
 
@@ -2905,15 +2906,7 @@
       </section>`;
   }
 
-  const watchlistChartOptions = {
-    "1H": { apiTimespan: "M60", defaultRange: "5D", ranges: { "5D": 50, "10D": 100 } },
-    "4H": { apiTimespan: "M240", defaultRange: "1M", ranges: { "1M": 50, "3M": 150 } },
-    "1D": { apiTimespan: "D", defaultRange: "6M", ranges: { "1M": 32, "6M": 190, "1Y": 370, "2Y": 760 } }
-  };
-
-  function currentWatchlistChartOption() {
-    return watchlistChartOptions[state.watchlistTimeframe] || watchlistChartOptions["1D"];
-  }
+  const watchlistChartConfig = { apiTimespan: "D", range: "15M", count: 320 };
 
   function watchlistRows() {
     const instruments = instrumentMap();
@@ -3180,13 +3173,79 @@
     return [...fixed, ...watched];
   }
 
-  function movingAverage(bars, period) {
-    let sum = 0;
+  function exponentialMovingAverage(bars, period) {
+    const multiplier = 2 / (period + 1);
+    let seed = 0;
+    let average = null;
     return bars.map((bar, index) => {
-      sum += num(bar.close);
-      if (index >= period) sum -= num(bars[index - period].close);
-      return index >= period - 1 ? sum / period : null;
+      const close = num(bar.close);
+      if (index < period) {
+        seed += close;
+        if (index === period - 1) average = seed / period;
+        return average;
+      }
+      average = (close - average) * multiplier + average;
+      return average;
     });
+  }
+
+  function chartTechnicalLevels(bars) {
+    if (bars.length < 20) return { supports: [], resistances: [], atr: 0 };
+    const sample = bars.slice(-140);
+    const current = num(sample[sample.length - 1]?.close);
+    const trueRanges = sample.slice(1).map((bar, index) => Math.max(
+      num(bar.high) - num(bar.low),
+      Math.abs(num(bar.high) - num(sample[index].close)),
+      Math.abs(num(bar.low) - num(sample[index].close))
+    ));
+    const atrValues = trueRanges.slice(-14);
+    const atr = atrValues.reduce((sum, value) => sum + value, 0) / Math.max(atrValues.length, 1);
+    const clusterWidth = Math.max(current * .006, atr * .55);
+    const pivots = [];
+    for (let index = 3; index < sample.length - 3; index += 1) {
+      const neighbors = sample.slice(index - 3, index + 4);
+      const high = num(sample[index].high);
+      const low = num(sample[index].low);
+      if (high >= Math.max(...neighbors.map((bar) => num(bar.high)))) pivots.push({ price: high, index });
+      if (low <= Math.min(...neighbors.map((bar) => num(bar.low)))) pivots.push({ price: low, index });
+    }
+    const clusters = [];
+    pivots.forEach((pivot) => {
+      const match = clusters.find((cluster) => Math.abs(cluster.price - pivot.price) <= clusterWidth);
+      if (match) {
+        match.price = (match.price * match.touches + pivot.price) / (match.touches + 1);
+        match.touches += 1;
+        match.lastIndex = Math.max(match.lastIndex, pivot.index);
+      } else {
+        clusters.push({ price: pivot.price, touches: 1, lastIndex: pivot.index });
+      }
+    });
+    const useful = clusters.filter((cluster) => cluster.touches >= 2 || cluster.lastIndex >= sample.length - 45);
+    const supports = useful.filter((cluster) => cluster.price < current - clusterWidth * .25)
+      .sort((a, b) => b.price - a.price).slice(0, 2);
+    const resistances = useful.filter((cluster) => cluster.price > current + clusterWidth * .25)
+      .sort((a, b) => a.price - b.price).slice(0, 2);
+    const projectionStep = Math.max(atr, current * .015);
+    while (supports.length < 2) {
+      const distance = projectionStep * (supports.length ? 3 : 1.5);
+      supports.push({ price: Math.max(current - distance, .01), touches: 0, lastIndex: sample.length - 1 });
+    }
+    while (resistances.length < 2) {
+      const distance = projectionStep * (resistances.length ? 3 : 1.5);
+      resistances.push({ price: current + distance, touches: 0, lastIndex: sample.length - 1 });
+    }
+    return { supports, resistances, atr };
+  }
+
+  function chartLevelMarkup(levels) {
+    const cells = [
+      ["R2", levels.resistances[1], "resistance"], ["R1", levels.resistances[0], "resistance"],
+      ["S1", levels.supports[0], "support"], ["S2", levels.supports[1], "support"]
+    ];
+    return `<section class="chart-levels" aria-label="Calculated support and resistance">
+      ${cells.map(([label, level, tone]) => `<div class="chart-level chart-level--${tone}"><small>${label}</small><strong>${level ? money(level.price, 2) : "—"}</strong><span>${level ? level.touches ? `${level.touches} pivot touch${level.touches === 1 ? "" : "es"}` : "ATR projection" : "No clear level"}</span></div>`).join("")}
+      <p>Calculated from recent daily swing pivots and ATR. Levels are zones, not guaranteed reversals.</p>
+    </section>`;
   }
 
   function drawWatchlistChart() {
@@ -3286,7 +3345,7 @@
     })));
     watchlistChart.priceScale("volume").applyOptions({ visible: false, scaleMargins: { top: .82, bottom: 0 } });
 
-    [[20, "#d4af37", 2], [50, "#f5f5f5", 1], [200, "#a50000", 1]].forEach(([period, color, lineWidth]) => {
+    [[20, "#d4af37", 2], [50, "#f5f5f5", 1], [200, "#a50000", 2]].forEach(([period, color, lineWidth]) => {
       const series = watchlistChart.addSeries(charts.LineSeries, {
         color,
         lineWidth,
@@ -3294,8 +3353,30 @@
         lastValueVisible: false,
         crosshairMarkerVisible: false
       });
-      const values = movingAverage(bars, period);
+      const values = exponentialMovingAverage(bars, period);
       series.setData(values.flatMap((value, index) => value == null ? [] : [{ time: bars[index].time, value }]));
+    });
+
+    const levels = chartTechnicalLevels(bars);
+    const scaleAnchor = watchlistChart.addSeries(charts.LineSeries, {
+      color: "rgba(0,0,0,0)",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false
+    });
+    scaleAnchor.setData([
+      { time: bars[0].time, value: levels.supports[1].price },
+      { time: bars[bars.length - 1].time, value: levels.resistances[1].price }
+    ]);
+    [
+      ["R1", levels.resistances[0], "#e04b4b", charts.LineStyle.Solid],
+      ["R2", levels.resistances[1], "#8f2727", charts.LineStyle.Dashed],
+      ["S1", levels.supports[0], "#55b98d", charts.LineStyle.Solid],
+      ["S2", levels.supports[1], "#24765b", charts.LineStyle.Dashed]
+    ].forEach(([title, level, color, lineStyle]) => {
+      if (!level) return;
+      candleSeries.createPriceLine({ price: level.price, color, lineWidth: 1, lineStyle, axisLabelVisible: true, title });
     });
 
     watchlistChart.timeScale().fitContent();
@@ -3317,7 +3398,6 @@
         ${state.marketPulseBusy && !state.marketPulse.length ? `<div class="pulse-loading"><span></span><p>Measuring your Watchlist through Webull…</p></div>` : renderMarketPulse()}`;
       return;
     }
-    const chartOption = currentWatchlistChartOption();
     const timeframe = state.watchlistTimeframe;
     const rows = watchlistRows();
     const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
@@ -3329,6 +3409,11 @@
     const rangeChangePercent = first && num(first.close) ? rangeChange / num(first.close) * 100 : 0;
     const dailyChange = bars.length > 1 ? num(last?.close) - num(bars[bars.length - 2]?.close) : 0;
     const dailyChangePercent = bars.length > 1 && num(bars[bars.length - 2]?.close) ? dailyChange / num(bars[bars.length - 2]?.close) * 100 : 0;
+    const levels = chartTechnicalLevels(bars);
+    const chartFetchedAt = state.watchlistChartMeta?.fetchedAt ? new Date(state.watchlistChartMeta.fetchedAt) : null;
+    const chartFreshness = chartFetchedAt && Number.isFinite(chartFetchedAt.getTime())
+      ? `${state.watchlistChartMeta?.cached ? "CACHED" : "REFRESHED"} · ${chartFetchedAt.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+      : "WAITING FOR DAILY CACHE";
 
     viewRoot.innerHTML = `
       ${pageHead("Webull market data · Stocks and ETFs", "Watch the names that matter.", "A separate research list. Nothing here changes portfolio cash, positions or allocation.", `<button class="button button--primary" type="button" data-action="watchlist-add">+ Add ticker</button>`)}
@@ -3341,19 +3426,16 @@
         </aside>
         <article class="market-chart-panel">
           ${selected ? `<header class="market-chart-head">
-            <div><span class="section-index">02 / WEBULL ${timeframe} BARS</span><h2>${esc(selected.instrument.symbol)}</h2><p>${esc(selected.instrument.display_name || selected.instrument.asset_type)}</p></div>
+            <div><span class="section-index">02 / CACHED WEBULL DAILY BARS</span><h2>${esc(selected.instrument.symbol)}</h2><p>${esc(selected.instrument.display_name || selected.instrument.asset_type)}</p></div>
             <div class="market-chart-quote"><strong>${displayPrice ? money(displayPrice, 4) : "—"}</strong><span class="${dailyChange >= 0 ? "positive" : "negative"}">${dailyChange > 0 ? "+" : ""}${dailyChange.toFixed(2)} · ${dailyChange > 0 ? "+" : ""}${dailyChangePercent.toFixed(2)}%</span></div>
           </header>
           <div class="market-chart-toolbar">
-            <div class="chart-switches">
-              <div class="range-switch" aria-label="Chart timeframe">${Object.keys(watchlistChartOptions).map((frame) => `<button type="button" class="${frame === timeframe ? "is-active" : ""}" data-action="watchlist-timeframe" data-timeframe="${frame}">${frame}</button>`).join("")}</div>
-              <div class="range-switch range-switch--range" aria-label="Chart range">${Object.keys(chartOption.ranges).map((range) => `<button type="button" class="${range === state.watchlistRange ? "is-active" : ""}" data-action="watchlist-range" data-range="${range}">${range}</button>`).join("")}</div>
-            </div>
-            <div class="chart-toolbar-meta"><span class="chart-interaction-hint">Wheel/pinch to zoom · Drag to move</span><div class="chart-legend"><span class="ma20">MA20</span><span class="ma50">MA50</span><span class="ma200">MA200</span></div></div>
+            <div class="chart-fixed-range"><strong>1D</strong><span>${watchlistChartConfig.range} · ${watchlistChartConfig.count} sessions</span></div>
+            <div class="chart-toolbar-meta"><span class="chart-cache-status ${state.watchlistChartBusy && bars.length ? "is-refreshing" : ""}">${state.watchlistChartBusy && bars.length ? "Refreshing behind cache" : chartFreshness}</span><div class="chart-legend"><span class="ma20">EMA20</span><span class="ma50">EMA50</span><span class="ma200">EMA200</span></div></div>
           </div>
-          ${state.watchlistChartBusy ? `<div class="watchlist-chart-state"><span></span><p>Reading ${esc(selected.instrument.symbol)} ${timeframe} bars from Webull…</p></div>` : bars.length ? `<div id="watchlist-chart" role="img" tabindex="0" aria-label="${esc(selected.instrument.symbol)} interactive ${timeframe} candlestick chart with volume and moving averages"></div>` : `<div class="watchlist-chart-state"><p>Select a range to load Webull bars.</p></div>`}
+          ${bars.length ? `<div id="watchlist-chart" role="img" tabindex="0" aria-label="${esc(selected.instrument.symbol)} interactive daily candlestick chart with volume, exponential moving averages, support and resistance"></div>${chartLevelMarkup(levels)}` : state.watchlistChartBusy ? `<div class="watchlist-chart-state"><span></span><p>Opening ${esc(selected.instrument.symbol)} from the shared daily cache…</p></div>` : `<div class="watchlist-chart-state"><p>Daily chart unavailable. Try the ticker again.</p></div>`}
           <footer class="market-chart-foot">
-            <div><small>${state.watchlistRange} MOVE</small><strong class="${rangeChange >= 0 ? "positive" : "negative"}">${rangeChange > 0 ? "+" : ""}${rangeChangePercent.toFixed(2)}%</strong></div>
+            <div><small>${watchlistChartConfig.range} MOVE</small><strong class="${rangeChange >= 0 ? "positive" : "negative"}">${rangeChange > 0 ? "+" : ""}${rangeChangePercent.toFixed(2)}%</strong></div>
             <div><small>LATEST VOLUME</small><strong>${last ? compactNumber(last.volume) : "—"}</strong></div>
             <div><small>DATA SOURCE</small><strong>WEBULL · ${timeframe}</strong></div>
             <button class="button button--small button--remove" type="button" data-action="watchlist-remove" data-instrument-id="${selected.instrument_id}">Remove</button>
@@ -3385,18 +3467,45 @@
     return rows;
   }
 
-  async function loadWatchlistBars(instrumentId = state.selectedWatchlistInstrumentId, range = state.watchlistRange, timeframe = state.watchlistTimeframe) {
+  async function refreshWatchlistBarsBehindCache(instrumentId) {
+    if (!instrumentId || watchlistChartRefreshes.has(instrumentId) || localPreviewEnabled) return;
+    watchlistChartRefreshes.add(instrumentId);
+    if (state.selectedWatchlistInstrumentId === instrumentId) {
+      state.watchlistChartBusy = true;
+      renderWatchlist();
+    }
+    try {
+      const { data, error } = await db.functions.invoke("refresh-stock-prices", {
+        body: { action: "chart", instrument_id: instrumentId, refresh: true }
+      });
+      if (error || data?.error || !Array.isArray(data?.bars) || !data.bars.length) return;
+      if (state.selectedWatchlistInstrumentId !== instrumentId) return;
+      state.watchlistBars = data.bars;
+      state.watchlistBarsInstrumentId = instrumentId;
+      state.watchlistChartMeta = { cached: data.cached === true, fetchedAt: data.fetched_at || null };
+    } finally {
+      watchlistChartRefreshes.delete(instrumentId);
+      if (state.selectedWatchlistInstrumentId === instrumentId) {
+        state.watchlistChartBusy = false;
+        if (state.route === "watchlist" && state.watchlistView === "charts") renderWatchlist();
+      }
+    }
+  }
+
+  async function loadWatchlistBars(instrumentId = state.selectedWatchlistInstrumentId) {
     if (!instrumentId) return;
     const requestId = ++watchlistBarsRequestId;
+    const changedInstrument = state.watchlistBarsInstrumentId !== instrumentId;
     state.selectedWatchlistInstrumentId = instrumentId;
     rememberWatchlistInstrument(instrumentId);
-    state.watchlistTimeframe = watchlistChartOptions[timeframe] ? timeframe : "1D";
-    const chartOption = currentWatchlistChartOption();
-    state.watchlistRange = chartOption.ranges[range] ? range : chartOption.defaultRange;
-    const requestedTimeframe = state.watchlistTimeframe;
-    const requestedRange = state.watchlistRange;
+    state.watchlistTimeframe = "1D";
+    state.watchlistRange = watchlistChartConfig.range;
     state.watchlistChartBusy = true;
-    state.watchlistBars = [];
+    if (changedInstrument) {
+      state.watchlistBars = [];
+      state.watchlistBarsInstrumentId = null;
+      state.watchlistChartMeta = null;
+    }
     state.watchlistLivePrice = null;
     renderWatchlist();
     try {
@@ -3404,10 +3513,11 @@
       let nextLivePrice = null;
       if (localPreviewEnabled) {
         const symbol = instrumentMap().get(instrumentId)?.symbol || "DEMO";
-        nextBars = previewBars(symbol, chartOption.ranges[requestedRange], requestedTimeframe);
+        nextBars = previewBars(symbol, watchlistChartConfig.count, "1D");
+        state.watchlistChartMeta = { cached: true, fetchedAt: new Date().toISOString() };
       } else {
         const { data, error } = await db.functions.invoke("refresh-stock-prices", {
-          body: { action: "chart", instrument_id: instrumentId, timespan: chartOption.apiTimespan, count: chartOption.ranges[requestedRange] }
+          body: { action: "chart", instrument_id: instrumentId }
         });
         if (error) {
           let detail = error.message;
@@ -3419,6 +3529,8 @@
         nextLivePrice = num(data?.live_price) > 0
           ? { price: num(data.live_price), marketTime: data.live_market_time || null }
           : null;
+        state.watchlistChartMeta = { cached: data?.cached === true, fetchedAt: data?.fetched_at || null };
+        if (data?.stale) void refreshWatchlistBarsBehindCache(instrumentId);
         if (!nextBars.length) {
           const responsePreview = data == null ? "empty response" : JSON.stringify(data).slice(0, 500);
           throw new Error(`Webull returned no chart bars · ${responsePreview}`);
@@ -3426,15 +3538,14 @@
       }
       if (requestId !== watchlistBarsRequestId) return;
       state.watchlistBars = nextBars;
+      state.watchlistBarsInstrumentId = instrumentId;
       state.watchlistLivePrice = nextLivePrice;
     } catch (error) {
       if (requestId === watchlistBarsRequestId) toast(`Webull chart: ${friendlyError(error)}`, true);
     } finally {
       if (requestId !== watchlistBarsRequestId) return;
       state.watchlistChartBusy = false;
-      const requestIsCurrent = state.selectedWatchlistInstrumentId === instrumentId
-        && state.watchlistTimeframe === requestedTimeframe
-        && state.watchlistRange === requestedRange;
+      const requestIsCurrent = state.selectedWatchlistInstrumentId === instrumentId;
       if (state.route === "watchlist" && state.watchlistView === "charts" && requestIsCurrent) renderWatchlist();
     }
   }
@@ -4470,13 +4581,7 @@
       renderWatchlist();
     }
     else if (action === "watchlist-add") openWatchlistDialog();
-    else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId, state.watchlistRange, state.watchlistTimeframe);
-    else if (action === "watchlist-timeframe") {
-      const nextTimeframe = target.dataset.timeframe;
-      const nextOption = watchlistChartOptions[nextTimeframe] || watchlistChartOptions["1D"];
-      await loadWatchlistBars(state.selectedWatchlistInstrumentId, nextOption.defaultRange, nextTimeframe);
-    }
-    else if (action === "watchlist-range") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.range, state.watchlistTimeframe);
+    else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId);
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "smart-money-side") { state.smartMoneySide = target.dataset.side || "all"; renderSmartMoney(); }
     else if (action === "smart-money-window") { state.smartMoneyWindow = num(target.dataset.days) || 30; renderSmartMoney(); }
@@ -4822,7 +4927,7 @@
 
   async function refreshVisibleWatchlistChart() {
     if (state.route !== "watchlist" || state.watchlistView !== "charts" || !state.selectedWatchlistInstrumentId || state.watchlistChartBusy) return;
-    await loadWatchlistBars(state.selectedWatchlistInstrumentId, state.watchlistRange, state.watchlistTimeframe);
+    await loadWatchlistBars(state.selectedWatchlistInstrumentId);
   }
 
   async function refreshMarketData() {

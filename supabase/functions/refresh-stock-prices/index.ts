@@ -14,6 +14,8 @@ const webullLogoCdn = "https://quotes-static.webullfintech.com/ticker-icon";
 const refreshWindowMs = 15 * 60_000;
 const optionEodRefreshWindowMs = 8 * 60 * 60_000;
 const optionEodRequestLimit = 4;
+const chartBarCount = 320;
+const chartCacheWindowMs = 20 * 60 * 60_000;
 const marketPulseBenchmarks = [
   { symbol: "SPY", displayName: "S&P 500 proxy" },
   { symbol: "QQQ", displayName: "Nasdaq-100 proxy" },
@@ -128,40 +130,6 @@ type ChartBar = {
 };
 
 type ChartTimespan = "D" | "M60" | "M240";
-
-function chartTimespan(value: unknown): ChartTimespan {
-  const normalized = String(value || "D").trim().toUpperCase();
-  if (normalized === "D" || normalized === "M60" || normalized === "M240") return normalized;
-  throw new Error("Unsupported chart timespan");
-}
-
-function utcDay(value: string): string {
-  return value.slice(0, 10);
-}
-
-// Webull's D endpoint can remain at the previous completed daily candle while
-// the market is open. Build a provisional current-day candle from hourly bars
-// so the daily chart is live without replacing its historical data source.
-function mergeLiveDailyBar(dailyBars: ChartBar[], hourlyBars: ChartBar[], snapshot: PriceResult | null): ChartBar[] {
-  if (!dailyBars.length || !hourlyBars.length) return dailyBars;
-  const latestHourly = hourlyBars[hourlyBars.length - 1];
-  const day = utcDay(latestHourly.time);
-  const session = hourlyBars.filter((bar) => utcDay(bar.time) === day);
-  if (!session.length) return dailyBars;
-
-  const snapshotPrice = snapshot && utcDay(snapshot.marketTime) === day ? snapshot.price : null;
-  const close = snapshotPrice ?? latestHourly.close;
-  const liveBar: ChartBar = {
-    time: dailyBars.find((bar) => utcDay(bar.time) === day)?.time || latestHourly.time,
-    open: session[0].open,
-    high: Math.max(...session.map((bar) => bar.high), close),
-    low: Math.min(...session.map((bar) => bar.low), close),
-    close,
-    volume: session.reduce((sum, bar) => sum + bar.volume, 0),
-  };
-  return [...dailyBars.filter((bar) => utcDay(bar.time) !== day), liveBar]
-    .sort((a, b) => a.time.localeCompare(b.time));
-}
 
 function timestampUtc(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -562,8 +530,12 @@ Deno.serve(async (request) => {
     if (!authorization) return new Response(JSON.stringify({ error: "Authentication required" }), { status: 401, headers: jsonHeaders });
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authorization } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const admin = createClient(supabaseUrl, supabaseServiceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const { data: authData, error: authError } = await supabase.auth.getUser();
@@ -763,35 +735,101 @@ Deno.serve(async (request) => {
         .maybeSingle();
       if (instrumentError) throw instrumentError;
       if (!instrument) return new Response(JSON.stringify({ error: "Stock or ETF not found" }), { status: 404, headers: jsonHeaders });
-      const timespan = chartTimespan(body?.timespan);
       const chartInstrument = instrument as Instrument;
-      const bars = await fetchHistoricalBars(chartInstrument, Number(body?.count || 190), timespan);
-      let snapshot: PriceResult | null = null;
-      let liveBars = bars;
-      if (timespan === "D") {
-        const [hourlyResult, snapshotResult] = await Promise.allSettled([
-          fetchHistoricalBars(chartInstrument, 16, "M60"),
-          fetchSnapshot(chartInstrument),
-        ]);
-        if (snapshotResult.status === "fulfilled") snapshot = snapshotResult.value;
-        if (hourlyResult.status === "fulfilled") liveBars = mergeLiveDailyBar(bars, hourlyResult.value, snapshot);
+      const { data: cached, error: cacheError } = await admin
+        .from("market_chart_cache")
+        .select("instrument_id,symbol,bars,source,fetched_at,refresh_started_at,last_error")
+        .eq("instrument_id", instrumentId)
+        .maybeSingle();
+      if (cacheError) throw cacheError;
+
+      const cachedBars = Array.isArray(cached?.bars) ? cached.bars : [];
+      const cacheAge = cached?.fetched_at ? Date.now() - new Date(cached.fetched_at).getTime() : Number.POSITIVE_INFINITY;
+      const stale = !cachedBars.length || !Number.isFinite(cacheAge) || cacheAge >= chartCacheWindowMs;
+      const refreshRequested = body?.refresh === true;
+
+      // Normal reads never wait on Webull when a usable shared cache exists.
+      if (cachedBars.length && (!refreshRequested || !stale)) {
+        return new Response(JSON.stringify({
+          symbol: instrument.symbol,
+          source: cached.source || "webull",
+          timespan: "D",
+          fetched_at: cached.fetched_at,
+          cached: true,
+          stale,
+          bars: cachedBars,
+        }), { headers: jsonHeaders });
       }
-      if (snapshot) {
-        await syncInstrumentLogos(supabase, [{
-          instrumentId: instrument.id,
-          webullInstrumentId: snapshot.webullInstrumentId,
-          logoUrl: snapshot.logoUrl,
-        }]);
+
+      const { data: claimed, error: claimError } = await admin.rpc("api_claim_market_chart_refresh", {
+        p_instrument_id: instrumentId,
+        p_symbol: instrument.symbol,
+        p_asset_type: instrument.asset_type,
+        p_lease_seconds: 90,
+      });
+      if (claimError) throw claimError;
+      if (!claimed && cachedBars.length) {
+        return new Response(JSON.stringify({
+          symbol: instrument.symbol,
+          source: cached.source || "webull",
+          timespan: "D",
+          fetched_at: cached.fetched_at,
+          cached: true,
+          stale: true,
+          refreshing: true,
+          bars: cachedBars,
+        }), { headers: jsonHeaders });
       }
-      return new Response(JSON.stringify({
-        symbol: instrument.symbol,
-        source: "webull",
-        timespan,
-        fetched_at: new Date().toISOString(),
-        live_price: snapshot?.price ?? null,
-        live_market_time: snapshot?.marketTime ?? null,
-        bars: liveBars,
-      }), { headers: jsonHeaders });
+      if (!claimed) {
+        return new Response(JSON.stringify({ error: `${instrument.symbol}: chart refresh is already running` }), { status: 409, headers: jsonHeaders });
+      }
+
+      try {
+        const bars = await fetchHistoricalBars(chartInstrument, chartBarCount, "D");
+        const fetchedAt = new Date().toISOString();
+        const { error: writeError } = await admin.from("market_chart_cache").upsert({
+          instrument_id: instrumentId,
+          symbol: instrument.symbol.trim().toUpperCase(),
+          asset_type: instrument.asset_type,
+          timespan: "D",
+          bars,
+          source: "webull",
+          fetched_at: fetchedAt,
+          refresh_started_at: null,
+          last_error: null,
+          updated_at: fetchedAt,
+        }, { onConflict: "instrument_id" });
+        if (writeError) throw writeError;
+        return new Response(JSON.stringify({
+          symbol: instrument.symbol,
+          source: "webull",
+          timespan: "D",
+          fetched_at: fetchedAt,
+          cached: false,
+          stale: false,
+          bars,
+        }), { headers: jsonHeaders });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await admin.from("market_chart_cache").update({
+          refresh_started_at: null,
+          last_error: detail.slice(0, 500),
+          updated_at: new Date().toISOString(),
+        }).eq("instrument_id", instrumentId);
+        if (cachedBars.length) {
+          return new Response(JSON.stringify({
+            symbol: instrument.symbol,
+            source: cached.source || "webull",
+            timespan: "D",
+            fetched_at: cached.fetched_at,
+            cached: true,
+            stale: true,
+            refresh_error: detail,
+            bars: cachedBars,
+          }), { headers: jsonHeaders });
+        }
+        throw error;
+      }
     }
 
     const force = body?.force === true;

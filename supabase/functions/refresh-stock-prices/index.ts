@@ -648,14 +648,25 @@ Deno.serve(async (request) => {
     const admin = createClient(supabaseUrl, supabaseServiceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const { data: authData, error: authError } = await supabase.auth.getUser();
-    if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
+    const bearer = authorization.replace(/^Bearer\s+/i, "").trim();
+    const internalChartUserId = body?.action === "chart" && bearer === supabaseServiceRoleKey
+      ? String(body?.user_id || "").trim()
+      : "";
+    let authenticatedUserId = internalChartUserId;
+    if (internalChartUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(internalChartUserId)) {
+      return new Response(JSON.stringify({ error: "Invalid internal chart user" }), { status: 400, headers: jsonHeaders });
+    }
+    if (!authenticatedUserId) {
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
+      authenticatedUserId = authData.user.id;
+    }
 
     if (body?.action === "option_chain") {
       const ownerUserId = Deno.env.get("OPTIONS_OPRA_OWNER_USER_ID")?.trim()
         || Deno.env.get("OPTIONS_EOD_OWNER_USER_ID")?.trim()
         || "";
-      if (!ownerUserId || authData.user.id !== ownerUserId) {
+      if (!ownerUserId || authenticatedUserId !== ownerUserId) {
         return new Response(JSON.stringify({
           error: "Live OPRA access is limited to the market-data subscription owner.",
           code: "OPRA_OWNER_ONLY",
@@ -789,7 +800,7 @@ Deno.serve(async (request) => {
       const { data: cachedRows, error: cacheError } = await supabase
         .from("market_pulse_latest")
         .select("*")
-        .eq("user_id", authData.user.id);
+        .eq("user_id", authenticatedUserId);
       if (cacheError) throw cacheError;
       const cachedBySymbol = new Map((cachedRows || []).map((row) => [String(row.symbol).toUpperCase(), row]));
       const snapshotCutoff = Date.now() - refreshWindowMs;
@@ -845,7 +856,7 @@ Deno.serve(async (request) => {
         if (!Number.isFinite(price) || price <= 0) return [];
         const returns = sectorReturns.get(instrument.symbol);
         return [{
-          user_id: authData.user.id,
+          user_id: authenticatedUserId,
           instrument_id: instrument.instrumentId,
           symbol: instrument.symbol,
           display_name: instrument.displayName,
@@ -882,14 +893,14 @@ Deno.serve(async (request) => {
         const { error: cleanupError } = await supabase
           .from("market_pulse_latest")
           .delete()
-          .eq("user_id", authData.user.id)
+          .eq("user_id", authenticatedUserId)
           .in("symbol", staleSymbols);
         if (cleanupError) throw cleanupError;
       }
       const { data: rows, error: rowsError } = await supabase
         .from("market_pulse_latest")
         .select("*")
-        .eq("user_id", authData.user.id)
+        .eq("user_id", authenticatedUserId)
         .order("symbol");
       if (rowsError) throw rowsError;
       return new Response(JSON.stringify({
@@ -908,10 +919,12 @@ Deno.serve(async (request) => {
       if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });
       const timespan = chartTimespan(body?.timespan);
       const chartConfig = chartConfigs[timespan];
-      const { data: instrument, error: instrumentError } = await supabase
+      const chartClient = internalChartUserId ? admin : supabase;
+      const { data: instrument, error: instrumentError } = await chartClient
         .from("instruments")
         .select("id,symbol,asset_type")
         .eq("id", instrumentId)
+        .eq("user_id", authenticatedUserId)
         .in("asset_type", ["stock", "etf"])
         .maybeSingle();
       if (instrumentError) throw instrumentError;
@@ -1018,7 +1031,7 @@ Deno.serve(async (request) => {
     const force = body?.force === true;
     const massiveApiKey = Deno.env.get("MASSIVE_API_KEY") || "";
     const optionOwnerUserId = Deno.env.get("OPTIONS_EOD_OWNER_USER_ID") || "";
-    const optionPriceAccess = Boolean(massiveApiKey && optionOwnerUserId && authData.user.id === optionOwnerUserId);
+    const optionPriceAccess = Boolean(massiveApiKey && optionOwnerUserId && authenticatedUserId === optionOwnerUserId);
     const [{ data: targets, error: targetError }, { data: positions, error: positionError }, watchlistResult] = await Promise.all([
       supabase.from("allocation_targets").select("instrument_id").eq("is_active", true),
       supabase.from("position_balances").select("instrument_id").gt("quantity", 0),

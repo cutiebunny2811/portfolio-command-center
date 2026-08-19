@@ -42,7 +42,7 @@ test("an older EOD close cannot overwrite a newer manual observation", () => {
 
 test("Massive option pricing is server-gated to one configured owner", () => {
   assert.match(edgeFunction, /OPTIONS_EOD_OWNER_USER_ID/);
-  assert.match(edgeFunction, /authData\.user\.id === optionOwnerUserId/);
+  assert.match(edgeFunction, /authenticatedUserId === optionOwnerUserId/);
   assert.match(edgeFunction, /item\.asset_type === "option" && openPositionIds\.has\(item\.id\)/);
   assert.match(edgeFunction, /optionEodRequestLimit = 4/);
   assert.match(edgeFunction, /p_source: "massive_eod"/);

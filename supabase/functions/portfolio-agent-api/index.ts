@@ -1677,9 +1677,14 @@ Deno.serve(async (request) => {
       if (!["stock", "etf"].includes(String(instrument.asset_type))) throw new Error("Charts support stocks and ETFs only");
       const chartResponse = await fetch(`${supabaseUrl}/functions/v1/refresh-stock-prices`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: {
+          "Authorization": `Bearer ${serviceRoleKey}`,
+          "apikey": serviceRoleKey,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           action: "chart",
+          user_id: identity.user_id,
           instrument_id: instrument.id,
           timespan: body.timespan || "D",
           count: integer(body.count, 190, 20, 600),

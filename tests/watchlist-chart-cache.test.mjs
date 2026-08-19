@@ -6,6 +6,7 @@ import vm from "node:vm";
 const appUrl = new URL("../app.js", import.meta.url);
 const indexUrl = new URL("../index.html", import.meta.url);
 const functionUrl = new URL("../supabase/functions/refresh-stock-prices/index.ts", import.meta.url);
+const agentApiUrl = new URL("../supabase/functions/portfolio-agent-api/index.ts", import.meta.url);
 const migrationUrl = new URL("../supabase/migrations/20260819020000_market_chart_cache.sql", import.meta.url);
 const timeframeMigrationUrl = new URL("../supabase/migrations/20260819060000_market_chart_timeframes.sql", import.meta.url);
 const technicalsUrl = new URL("../chart-technicals.js", import.meta.url);
@@ -62,6 +63,21 @@ test("chart endpoint serves a shared cache per timeframe before Webull", async (
   assert.match(source, /api_claim_market_chart_refresh/);
   assert.match(source, /if \(cachedBars\.length\) \{[\s\S]*refresh_error: detail/);
   assert.match(source, /onConflict: "instrument_id,timespan"/);
+});
+
+test("agent chart calls exchange the agent token for a scoped internal chart request", async () => {
+  const [source, agentApi] = await Promise.all([
+    readFile(functionUrl, "utf8"),
+    readFile(agentApiUrl, "utf8"),
+  ]);
+
+  assert.match(agentApi, /"Authorization": `Bearer \$\{serviceRoleKey\}`/);
+  assert.match(agentApi, /"apikey": serviceRoleKey/);
+  assert.match(agentApi, /user_id: identity\.user_id/);
+  assert.match(source, /body\?\.action === "chart" && bearer === supabaseServiceRoleKey/);
+  assert.match(source, /Invalid internal chart user/);
+  assert.match(source, /const chartClient = internalChartUserId \? admin : supabase/);
+  assert.match(source, /\.eq\("user_id", authenticatedUserId\)/);
 });
 
 test("chart cache is shared read-only data with a per-timeframe service lease", async () => {

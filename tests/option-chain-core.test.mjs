@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   chooseExpiry,
   expirationChoices,
+  isStandardOptionContract,
   mergeOptionChain,
   nearestContracts,
   normalizeOptionContract,
@@ -67,6 +68,12 @@ test("builds expiration choices and limits a chain to the nearest 20 contracts",
   const selected = nearestContracts(contracts, { expiry: "2026-09-18", optionType: "call", spot: 168, limit: 20 });
   assert.equal(selected.length, 15);
   assert.deepEqual([...selected].sort((a, b) => a.strike - b.strike), selected);
+});
+
+test("rejects adjusted option roots that the OPRA snapshot endpoint cannot quote", () => {
+  assert.equal(isStandardOptionContract({ symbol: "NVDA260828C00215000", underlying_symbol: "NVDA" }, "NVDA"), true);
+  assert.equal(isStandardOptionContract({ symbol: "2NVDA260828C00215000", underlying_symbol: "NVDA" }, "NVDA"), false);
+  assert.equal(isStandardOptionContract({ symbol: "BRKB260828P00400000", underlying_symbol: "BRK.B" }, "BRK.B"), true);
 });
 
 test("merges contract metadata with OPRA snapshots and computes a valid midpoint", () => {

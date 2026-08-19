@@ -3,6 +3,7 @@ import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod }
 import {
   chooseExpiry,
   expirationChoices,
+  isStandardOptionContract,
   mergeOptionChain,
   nearestContracts,
   normalizeOptionContract,
@@ -681,7 +682,8 @@ Deno.serve(async (request) => {
       };
       const [underlyingSnapshot] = await fetchMarketPulseBatch([marketInstrument]);
       if (!underlyingSnapshot?.price) throw new Error(`${symbol}: Webull returned no usable underlying quote`);
-      const contracts = await fetchOptionContractRows(symbol, force);
+      const contracts = (await fetchOptionContractRows(symbol, force))
+        .filter((contract) => isStandardOptionContract(contract, symbol));
       const expiries = expirationChoices(contracts);
       const expiry = chooseExpiry(expiries, requestedExpiry);
       if (!expiry) {

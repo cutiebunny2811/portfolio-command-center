@@ -96,6 +96,13 @@ export function chooseExpiry(expiries, requested) {
   return expiries.find((item) => item.dte >= 7)?.value || expiries[0]?.value || null;
 }
 
+export function isStandardOptionContract(contract, underlying) {
+  const symbol = String(contract?.symbol || "").trim().toUpperCase();
+  const expectedRoot = String(underlying || contract?.underlying_symbol || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const match = symbol.match(/^([A-Z][A-Z0-9]{0,5})\d{6}[CP]\d{8}$/);
+  return Boolean(match && expectedRoot && match[1] === expectedRoot);
+}
+
 export function nearestContracts(contracts, { expiry, optionType: type, spot, limit = 16 }) {
   const candidates = contracts.filter((item) => item.expiry === expiry && item.option_type === type);
   return candidates

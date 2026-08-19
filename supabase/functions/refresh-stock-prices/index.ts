@@ -1,5 +1,13 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
+import {
+  chooseExpiry,
+  expirationChoices,
+  mergeOptionChain,
+  nearestContracts,
+  normalizeOptionContract,
+  normalizeOptionSnapshot,
+} from "./option-chain-core.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -10,10 +18,14 @@ const corsHeaders = {
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
 const snapshotPath = "/openapi/market-data/stock/snapshot";
 const barsPath = "/openapi/market-data/stock/bars";
+const optionContractsPath = "/openapi/instrument/option/contracts";
+const optionSnapshotPath = "/openapi/market-data/option/snapshot";
 const webullLogoCdn = "https://quotes-static.webullfintech.com/ticker-icon";
 const refreshWindowMs = 15 * 60_000;
 const optionEodRefreshWindowMs = 8 * 60 * 60_000;
 const optionEodRequestLimit = 4;
+const optionContractCacheWindowMs = 15 * 60_000;
+const optionContractCache = new Map<string, { fetchedAt: number; rows: Record<string, unknown>[] }>();
 const chartConfigs = {
   D: { count: 320, cacheWindowMs: 20 * 60 * 60_000 },
   M240: { count: 260, cacheWindowMs: 4 * 60 * 60_000 },
@@ -78,6 +90,18 @@ type OptionPriceResult = {
   ticker: string;
   price: number;
   marketTime: string;
+};
+
+type OptionContract = {
+  instrument_id: string | null;
+  symbol: string;
+  underlying_symbol: string | null;
+  expiry: string;
+  option_type: "call" | "put";
+  strike: number;
+  multiplier: number;
+  style: string | null;
+  status: string | null;
 };
 
 async function fetchMassiveOptionEod(instrument: OptionInstrument, apiKey: string): Promise<OptionPriceResult> {
@@ -273,6 +297,80 @@ async function signedGet(
   const response = await fetch(url, { headers });
   const payload = await response.json().catch(() => null);
   return { response, payload };
+}
+
+function nestedRows(payload: unknown): Record<string, unknown>[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && !Array.isArray(row));
+  }
+  if (!payload || typeof payload !== "object") return [];
+  const object = payload as Record<string, unknown>;
+  for (const key of ["data", "items", "list", "results", "records", "contracts"]) {
+    const rows = nestedRows(object[key]);
+    if (rows.length) return rows;
+  }
+  return Object.keys(object).some((key) => ["symbol", "option_symbol", "instrument_id"].includes(key)) ? [object] : [];
+}
+
+function webullCredentials() {
+  const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
+  const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
+  const region = Deno.env.get("WEBULL_REGION")?.trim().toLowerCase() || "th";
+  const host = Deno.env.get("WEBULL_API_HOST")?.trim() || (region === "th" ? "api.webull.co.th" : "api.webull.com");
+  const accessToken = Deno.env.get("WEBULL_ACCESS_TOKEN")?.trim();
+  if (!appKey || !appSecret) throw new Error("Webull secrets are not configured");
+  return { appKey, appSecret, host, accessToken };
+}
+
+async function fetchOptionContractRows(underlying: string, force = false): Promise<OptionContract[]> {
+  const cached = optionContractCache.get(underlying);
+  if (!force && cached && Date.now() - cached.fetchedAt < optionContractCacheWindowMs) {
+    return cached.rows.map(normalizeOptionContract).filter((item): item is OptionContract => Boolean(item));
+  }
+  const { appKey, appSecret, host, accessToken } = webullCredentials();
+  const collected: Record<string, unknown>[] = [];
+  let lastInstrumentId = "";
+  const startDate = new Date();
+  const endDate = new Date(startDate);
+  endDate.setUTCMonth(endDate.getUTCMonth() + 18);
+  for (let page = 0; page < 4; page += 1) {
+    const query: Record<string, string> = {
+      category: "US_OPTION",
+      underlying_symbols: underlying,
+      status: "LISTING",
+      start_date: startDate.toISOString().slice(0, 10),
+      end_date: endDate.toISOString().slice(0, 10),
+      page_size: "1000",
+    };
+    if (lastInstrumentId) query.last_instrument_id = lastInstrumentId;
+    const { response, payload } = await signedGet(optionContractsPath, query, appKey, appSecret, host, accessToken);
+    if (!response.ok) {
+      const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 600) : `HTTP ${response.status}`;
+      throw new Error(`Webull option contracts failed: ${detail}`);
+    }
+    const rows = nestedRows(payload);
+    collected.push(...rows);
+    if (rows.length < 1000) break;
+    const nextId = String(rows[rows.length - 1]?.instrument_id || "");
+    if (!nextId || nextId === lastInstrumentId) break;
+    lastInstrumentId = nextId;
+  }
+  optionContractCache.set(underlying, { fetchedAt: Date.now(), rows: collected });
+  return collected.map(normalizeOptionContract).filter((item): item is OptionContract => Boolean(item));
+}
+
+async function fetchOptionSnapshots(symbols: string[]) {
+  if (!symbols.length) return [];
+  const { appKey, appSecret, host, accessToken } = webullCredentials();
+  const { response, payload } = await signedGet(optionSnapshotPath, {
+    symbols: symbols.slice(0, 20).join(","),
+    category: "US_OPTION",
+  }, appKey, appSecret, host, accessToken);
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 600) : `HTTP ${response.status}`;
+    throw new Error(`Webull OPRA snapshot failed: ${detail}`);
+  }
+  return nestedRows(payload).map(normalizeOptionSnapshot).filter(Boolean);
 }
 
 function webullIdentity(row: Record<string, unknown> | null | undefined): {
@@ -551,6 +649,74 @@ Deno.serve(async (request) => {
     });
     const { data: authData, error: authError } = await supabase.auth.getUser();
     if (authError || !authData.user) return new Response(JSON.stringify({ error: "Invalid session" }), { status: 401, headers: jsonHeaders });
+
+    if (body?.action === "option_chain") {
+      const ownerUserId = Deno.env.get("OPTIONS_OPRA_OWNER_USER_ID")?.trim()
+        || Deno.env.get("OPTIONS_EOD_OWNER_USER_ID")?.trim()
+        || "";
+      if (!ownerUserId || authData.user.id !== ownerUserId) {
+        return new Response(JSON.stringify({
+          error: "Live OPRA access is limited to the market-data subscription owner.",
+          code: "OPRA_OWNER_ONLY",
+        }), { status: 403, headers: jsonHeaders });
+      }
+      const symbol = String(body?.symbol || "").trim().toUpperCase();
+      if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) {
+        return new Response(JSON.stringify({ error: "Enter a valid US underlying symbol." }), { status: 400, headers: jsonHeaders });
+      }
+      const requestedType = String(body?.option_type || "call").trim().toLowerCase();
+      const type = requestedType === "put" ? "put" : "call";
+      const requestedExpiry = String(body?.expiry || "").trim();
+      const force = body?.force === true;
+      const marketInstrument: MarketPulseInstrument = {
+        id: `option-underlying-${symbol}`,
+        instrumentId: null,
+        symbol,
+        displayName: symbol,
+        asset_type: "stock",
+        isWatchlist: false,
+        isBenchmark: false,
+        isSector: false,
+        sectorName: null,
+      };
+      const [underlyingSnapshot] = await fetchMarketPulseBatch([marketInstrument]);
+      if (!underlyingSnapshot?.price) throw new Error(`${symbol}: Webull returned no usable underlying quote`);
+      const contracts = await fetchOptionContractRows(symbol, force);
+      const expiries = expirationChoices(contracts);
+      const expiry = chooseExpiry(expiries, requestedExpiry);
+      if (!expiry) {
+        return new Response(JSON.stringify({ error: `${symbol}: no listed option expirations were returned by Webull` }), { status: 404, headers: jsonHeaders });
+      }
+      const selectedContracts = nearestContracts(contracts, {
+        expiry,
+        optionType: type,
+        spot: underlyingSnapshot.price,
+        limit: 20,
+      });
+      if (!selectedContracts.length) {
+        return new Response(JSON.stringify({ error: `${symbol}: no ${type} contracts were returned for ${expiry}` }), { status: 404, headers: jsonHeaders });
+      }
+      const snapshots = await fetchOptionSnapshots(selectedContracts.map((item: OptionContract) => item.symbol));
+      const chain = mergeOptionChain(selectedContracts, snapshots);
+      return new Response(JSON.stringify({
+        source: "webull_opra",
+        quote_mode: "REAL-TIME OPRA",
+        owner_access: true,
+        symbol,
+        option_type: type,
+        expiry,
+        expiries,
+        underlying: {
+          price: underlyingSnapshot.price,
+          previous_close: underlyingSnapshot.previousClose,
+          change_value: underlyingSnapshot.changeValue,
+          change_percent: underlyingSnapshot.changePercent,
+          market_time: underlyingSnapshot.marketTime,
+        },
+        contracts: chain,
+        fetched_at: new Date().toISOString(),
+      }), { headers: jsonHeaders });
+    }
 
     if (body?.action === "market_pulse") {
       const force = body?.force === true;

@@ -79,8 +79,8 @@
     selectedBriefId: null, selectedSmartMoneyBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
     agentTokens: [], agentDrafts: [],
     route: initialRoute, selectedPortfolioId: null,
-    optionDeskUnderlying: "NVDA", optionDeskStrategy: "long_call", optionDeskExpiry: "2026-09-18",
-    optionDeskStrike: 185, optionDeskDraftOpen: false,
+    optionDeskUnderlying: "NVDA", optionDeskStrategy: "long_call", optionDeskExpiry: "",
+    optionDeskContractSymbol: "", optionDeskData: null, optionDeskBusy: false, optionDeskError: "", optionDeskDraftOpen: false,
     holdingsQuery: "", holdingsPage: 1, holdingsPageSize: 25, expandedHoldingId: null,
     tradeHistoryPage: 1, tradeHistoryPageSize: 6, tradeHistoryQuery: "", tradeHistoryView: "trades",
     loading: false, lastSync: null
@@ -101,6 +101,7 @@
   let watchlistChart = null;
   let watchlistBarsRequestId = 0;
   let watchlistChartRenderId = 0;
+  let optionDeskRequestId = 0;
   const watchlistChartRefreshes = new Set();
   let authEntryPromise = null;
   let passwordRecoveryActive = passwordRecoveryRequested;
@@ -1289,6 +1290,7 @@
     appShell.hidden = false;
     await loadData();
     await refreshStockPrices();
+    if (state.route === "option-desk") await loadOptionDesk();
   }
 
   async function fetchMemberOnboarding() {
@@ -1360,16 +1362,6 @@
     return `<header class="page-head"><div><p class="eyebrow">${esc(kicker)}</p><h1>${esc(title)}</h1><p>${esc(copy)}</p></div><div class="page-actions">${actions}</div></header>`;
   }
 
-  const optionDeskSamples = {
-    NVDA: { name: "NVIDIA", spot: 181.74, change: -1.84, iv: 38, strikes: [165, 170, 175, 180, 185, 190, 195, 200] },
-    AMD: { name: "Advanced Micro Devices", spot: 205.38, change: 0.92, iv: 42, strikes: [185, 190, 195, 200, 205, 210, 215, 220] },
-    TSLA: { name: "Tesla", spot: 335.62, change: -0.48, iv: 51, strikes: [300, 310, 320, 330, 340, 350, 360, 370] }
-  };
-  const optionDeskExpiries = [
-    { value: "2026-08-28", label: "AUG 28", dte: 9 },
-    { value: "2026-09-18", label: "SEP 18", dte: 30 },
-    { value: "2026-10-16", label: "OCT 16", dte: 58 }
-  ];
   const optionDeskStrategies = {
     long_call: { label: "Long Call", side: "call", mode: "single", note: "Bullish · loss limited to premium" },
     long_put: { label: "Long Put", side: "put", mode: "single", note: "Bearish · loss limited to premium" },
@@ -1377,42 +1369,116 @@
     cash_secured_put: { label: "Cash-Secured Put", side: "put", mode: "income", note: "Income · cash reserved for assignment" }
   };
 
-  function optionDeskChain() {
-    const sample = optionDeskSamples[state.optionDeskUnderlying] || optionDeskSamples.NVDA;
-    const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry) || optionDeskExpiries[1];
-    const timeFactor = Math.sqrt(expiry.dte / 30);
-    return sample.strikes.map((strike, index) => {
-      const distance = Math.abs(sample.spot - strike);
-      const extrinsic = Math.max(.48, sample.spot * (.045 + sample.iv / 4200) * timeFactor - distance * .31);
-      const callMid = Math.max(sample.spot - strike, 0) + extrinsic;
-      const putMid = Math.max(strike - sample.spot, 0) + extrinsic;
-      const quote = (mid, offset = 0) => {
-        const width = Math.max(.08, mid * (.045 + offset));
-        return { bid: Math.max(.01, mid - width / 2), ask: mid + width / 2, mid };
-      };
-      const callDelta = clamp(.5 + (sample.spot - strike) / (sample.spot * .22), .08, .92);
-      return {
-        strike,
-        call: { ...quote(callMid, index % 3 === 0 ? .012 : 0), delta: callDelta },
-        put: { ...quote(putMid, index % 3 === 1 ? .012 : 0), delta: callDelta - 1 },
-        gamma: .008 + Math.max(0, 1 - distance / (sample.spot * .14)) * .013,
-        theta: -(0.035 + extrinsic / Math.max(expiry.dte, 1) * 1.8),
-        vega: .07 + Math.max(0, 1 - distance / (sample.spot * .18)) * .11,
-        iv: sample.iv + Math.round(distance / sample.spot * 45),
-        volume: 420 + ((index * 617 + expiry.dte * 13) % 4200),
-        oi: 2100 + ((index * 1297 + expiry.dte * 71) % 18000)
-      };
+  function optionDeskPreviewData(symbol, type, requestedExpiry) {
+    const expiryRows = [
+      { value: "2026-08-28", dte: 8 },
+      { value: "2026-09-18", dte: 29 },
+      { value: "2026-10-16", dte: 57 }
+    ];
+    const expiry = expiryRows.some((item) => item.value === requestedExpiry) ? requestedExpiry : expiryRows[0].value;
+    const spot = 181.74;
+    const strikes = [165, 170, 175, 180, 185, 190, 195, 200];
+    return {
+      source: "preview_fixture", quote_mode: "PREVIEW FIXTURE", owner_access: true, symbol, option_type: type,
+      expiry, expiries: expiryRows,
+      underlying: { price: spot, previous_close: 183.1, change_value: -1.36, change_percent: -.74, market_time: new Date().toISOString() },
+      contracts: strikes.map((strike, index) => {
+        const intrinsic = type === "call" ? Math.max(spot - strike, 0) : Math.max(strike - spot, 0);
+        const mid = intrinsic + Math.max(.55, 5.3 - Math.abs(spot - strike) * .24);
+        return {
+          symbol: `${symbol}${expiry.replaceAll("-", "").slice(2)}${type === "call" ? "C" : "P"}${String(Math.round(strike * 1000)).padStart(8, "0")}`,
+          underlying_symbol: symbol, option_type: type, expiry, strike, multiplier: 100,
+          bid: Math.max(.01, mid - .12), ask: mid + .12, mid, delta: type === "call" ? .68 - index * .075 : -.22 - index * .075,
+          gamma: .019, theta: -.0718, vega: .1656, rho: .03, implied_volatility: .3848,
+          volume: 338 + index * 57, open_interest: 19169 - index * 913, quote_time: new Date().toISOString()
+        };
+      }),
+      fetched_at: new Date().toISOString()
+    };
+  }
+
+  function optionDeskStrategy() {
+    return optionDeskStrategies[state.optionDeskStrategy] || optionDeskStrategies.long_call;
+  }
+
+  function optionDeskUnderlyingChoices() {
+    const portfolio = currentPortfolio();
+    const instruments = instrumentMap();
+    const symbols = new Set([state.optionDeskUnderlying]);
+    state.positions.forEach((position) => {
+      const instrument = instruments.get(position.instrument_id);
+      if (position.portfolio_id === portfolio?.id && num(position.quantity) > 0 && ["stock", "etf"].includes(instrument?.asset_type)) symbols.add(String(instrument.symbol).toUpperCase());
     });
+    state.watchlist.forEach((item) => {
+      const instrument = instruments.get(item.instrument_id);
+      if (instrument && ["stock", "etf"].includes(instrument.asset_type)) symbols.add(String(instrument.symbol).toUpperCase());
+    });
+    return [...symbols].filter(Boolean).slice(0, 6);
+  }
+
+  async function loadOptionDesk({ symbol = state.optionDeskUnderlying, expiry = "", force = false } = {}) {
+    const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(normalizedSymbol)) {
+      state.optionDeskError = "Enter a valid US ticker symbol.";
+      renderOptionDesk();
+      return;
+    }
+    const requestId = ++optionDeskRequestId;
+    const type = optionDeskStrategy().side;
+    state.optionDeskUnderlying = normalizedSymbol;
+    state.optionDeskBusy = true;
+    state.optionDeskError = "";
+    state.optionDeskDraftOpen = false;
+    renderOptionDesk();
+    try {
+      let data;
+      if (localPreviewEnabled) {
+        data = optionDeskPreviewData(normalizedSymbol, type, expiry);
+      } else {
+        const { data: payload, error } = await db.functions.invoke("refresh-stock-prices", {
+          body: { action: "option_chain", symbol: normalizedSymbol, option_type: type, expiry: expiry || null, force }
+        });
+        if (error) {
+          let detail = error.message;
+          try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+          throw new Error(detail);
+        }
+        if (payload?.error) throw new Error(payload.error);
+        data = payload;
+      }
+      if (requestId !== optionDeskRequestId) return;
+      if (!Array.isArray(data?.contracts) || !data.contracts.length) throw new Error(`${normalizedSymbol}: no live contracts were returned.`);
+      state.optionDeskData = data;
+      state.optionDeskExpiry = data.expiry || "";
+      if (!data.contracts.some((item) => item.symbol === state.optionDeskContractSymbol)) {
+        const spot = num(data.underlying?.price);
+        const nearest = [...data.contracts].sort((a, b) => Math.abs(num(a.strike) - spot) - Math.abs(num(b.strike) - spot))[0];
+        state.optionDeskContractSymbol = nearest?.symbol || data.contracts[0].symbol;
+      }
+    } catch (error) {
+      if (requestId !== optionDeskRequestId) return;
+      state.optionDeskData = null;
+      state.optionDeskContractSymbol = "";
+      state.optionDeskError = friendlyError(error);
+    } finally {
+      if (requestId !== optionDeskRequestId) return;
+      state.optionDeskBusy = false;
+      if (state.route === "option-desk") renderOptionDesk();
+    }
   }
 
   function optionDeskSelection() {
-    const strategy = optionDeskStrategies[state.optionDeskStrategy] || optionDeskStrategies.long_call;
-    const chain = optionDeskChain();
-    const selected = chain.find((row) => row.strike === num(state.optionDeskStrike)) || chain[Math.floor(chain.length / 2)];
-    const quote = selected[strategy.side];
+    const strategy = optionDeskStrategy();
+    const data = state.optionDeskData;
+    const chain = Array.isArray(data?.contracts) ? data.contracts : [];
+    const selected = chain.find((row) => row.symbol === state.optionDeskContractSymbol) || chain[0];
+    if (!selected) return null;
     const isIncome = strategy.mode === "income";
-    const premium = isIncome ? quote.bid : quote.ask;
-    const premiumTotal = premium * 100;
+    const reference = isIncome ? Number(selected.bid) : Number(selected.ask);
+    const quoteReady = Number.isFinite(reference) && reference >= 0;
+    const premium = quoteReady ? reference : 0;
+    const multiplier = num(selected.multiplier) || 100;
+    const premiumTotal = premium * multiplier;
     const portfolio = currentPortfolio();
     const instruments = instrumentMap();
     const stockPosition = state.positions.find((position) => {
@@ -1424,104 +1490,220 @@
     const sharesHeld = num(stockPosition?.quantity);
     const shareCost = num(stockPosition?.average_cost);
     const cashAvailable = num(state.cash.find((item) => item.portfolio_id === portfolio?.id)?.cash_balance);
-    const cashRequired = selected.strike * 100;
+    const cashRequired = num(selected.strike) * multiplier;
     const coveredCall = state.optionDeskStrategy === "covered_call";
     const cashSecuredPut = state.optionDeskStrategy === "cash_secured_put";
-    const eligible = coveredCall ? sharesHeld >= 100 : cashSecuredPut ? cashAvailable >= cashRequired : true;
-    const basis = shareCost > 0 ? shareCost : (optionDeskSamples[state.optionDeskUnderlying]?.spot || selected.strike);
-    const maxLoss = coveredCall ? Math.max(0, basis * 100 - premiumTotal)
+    const eligible = quoteReady && (coveredCall ? sharesHeld >= multiplier : cashSecuredPut ? cashAvailable >= cashRequired : cashAvailable >= premiumTotal);
+    const basis = shareCost > 0 ? shareCost : num(data?.underlying?.price);
+    const maxLoss = coveredCall ? Math.max(0, basis * multiplier - premiumTotal)
       : cashSecuredPut ? Math.max(0, cashRequired - premiumTotal)
         : premiumTotal;
-    const maxProfit = coveredCall ? Math.max(0, (selected.strike - basis) * 100 + premiumTotal)
+    const maxProfit = coveredCall ? Math.max(0, (num(selected.strike) - basis) * multiplier + premiumTotal)
       : cashSecuredPut ? premiumTotal
-        : null;
+        : strategy.side === "put" ? Math.max(0, num(selected.strike) * multiplier - premiumTotal) : null;
     const breakEven = coveredCall ? basis - premium
-      : cashSecuredPut ? selected.strike - premium
-        : strategy.side === "call" ? selected.strike + premium : selected.strike - premium;
-    const spreadPercent = quote.mid ? ((quote.ask - quote.bid) / quote.mid) * 100 : 0;
+      : cashSecuredPut ? num(selected.strike) - premium
+        : strategy.side === "call" ? num(selected.strike) + premium : num(selected.strike) - premium;
+    const bid = Number(selected.bid);
+    const ask = Number(selected.ask);
+    const mid = Number(selected.mid);
+    const spreadPercent = Number.isFinite(mid) && mid > 0 && Number.isFinite(bid) && Number.isFinite(ask) ? ((ask - bid) / mid) * 100 : null;
     return {
-      strategy, chain, selected, quote, premium, premiumTotal, maxLoss, maxProfit, breakEven, spreadPercent,
-      isIncome, eligible, sharesHeld, shareCost, cashAvailable, cashRequired,
+      data, strategy, chain, selected, premium, premiumTotal, maxLoss, maxProfit, breakEven, spreadPercent,
+      isIncome, eligible, quoteReady, multiplier, sharesHeld, shareCost, cashAvailable, cashRequired,
       collateralLabel: coveredCall ? "SHARES READY" : cashSecuredPut ? "CASH TO RESERVE" : "ESTIMATED DEBIT",
-      collateralValue: coveredCall ? `${formatTradeQuantity(sharesHeld)} / 100` : cashSecuredPut ? money(cashRequired) : money(premiumTotal),
-      collateralDetail: coveredCall ? (sharesHeld >= 100 ? `${Math.floor(sharesHeld / 100)} contract${Math.floor(sharesHeld / 100) === 1 ? "" : "s"} covered` : `${formatTradeQuantity(Math.max(0, 100 - sharesHeld))} shares short`)
-        : cashSecuredPut ? `${money(cashAvailable)} available` : `${money(premium)} × 100`,
-      eligibilityTitle: coveredCall ? (eligible ? "100 shares are covered." : `Need ${formatTradeQuantity(Math.max(0, 100 - sharesHeld))} more shares.`)
+      collateralValue: coveredCall ? `${formatTradeQuantity(sharesHeld)} / ${multiplier}` : cashSecuredPut ? money(cashRequired) : money(premiumTotal),
+      collateralDetail: coveredCall ? (sharesHeld >= multiplier ? `${Math.floor(sharesHeld / multiplier)} contract${Math.floor(sharesHeld / multiplier) === 1 ? "" : "s"} covered` : `${formatTradeQuantity(Math.max(0, multiplier - sharesHeld))} shares short`)
+        : cashSecuredPut ? `${money(cashAvailable)} available` : `${money(premium)} × ${multiplier}`,
+      eligibilityTitle: !quoteReady ? "Live bid/ask is unavailable for this contract."
+        : coveredCall ? (eligible ? `${multiplier} shares are covered.` : `Need ${formatTradeQuantity(Math.max(0, multiplier - sharesHeld))} more shares.`)
         : cashSecuredPut ? (eligible ? "Assignment cash is covered." : `${money(cashRequired - cashAvailable)} more cash required.`)
-          : "Premium defines the maximum loss.",
+          : eligible ? "Premium fits the current cash balance." : `${money(premiumTotal - cashAvailable)} more cash required.`,
       eligibilityDetail: coveredCall ? `PCC found ${formatTradeQuantity(sharesHeld)} ${state.optionDeskUnderlying} shares in ${portfolio?.name || "this portfolio"}.`
-        : cashSecuredPut ? `${money(cashRequired)} must remain available to buy 100 shares at ${money(selected.strike)}.`
-          : "The estimate uses the displayed ask; the broker fill can differ."
+        : cashSecuredPut ? `${money(cashRequired)} must remain available to buy ${multiplier} shares at ${money(selected.strike)}.`
+          : `PCC found ${money(cashAvailable)} cash in ${portfolio?.name || "this portfolio"}. The broker fill can differ from the displayed ask.`
     };
   }
 
   function optionDeskContractLabel(selection) {
-    const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry);
-    const type = selection.strategy.side.toUpperCase();
-    return `${state.optionDeskUnderlying} ${expiry?.label} ${selection.selected.strike} ${type}`;
+    const expiry = new Date(`${selection.selected.expiry}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: "UTC" }).toUpperCase();
+    return `${state.optionDeskUnderlying} ${expiry} ${num(selection.selected.strike)} ${selection.strategy.side.toUpperCase()}`;
+  }
+
+  function optionDeskMetric(value, digits = 3) {
+    return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
+  }
+
+  function optionDeskPlannedInstrument(selection) {
+    return state.instruments.find((item) => String(item.asset_type).toLowerCase() === "option"
+      && String(item.symbol).toUpperCase() === state.optionDeskUnderlying
+      && String(item.option_type).toLowerCase() === selection.strategy.side
+      && String(item.expiry).slice(0, 10) === selection.selected.expiry
+      && Math.abs(num(item.strike) - num(selection.selected.strike)) < .0001) || null;
+  }
+
+  function renderOptionDeskState() {
+    if (state.optionDeskBusy) return `<section class="option-desk-state"><span class="option-desk-spinner"></span><div><strong>Reading the live OPRA chain.</strong><p>Webull is matching listed contracts, expiry dates and real-time quotes for ${esc(state.optionDeskUnderlying)}.</p></div></section>`;
+    if (state.optionDeskError) return `<section class="option-desk-state is-error"><div><span>LIVE DATA ERROR</span><strong>The option chain could not be read.</strong><p>${esc(state.optionDeskError)}</p><button class="button button--primary" type="button" data-action="option-refresh">Try again</button></div></section>`;
+    return `<section class="option-desk-state"><div><strong>Choose an underlying to begin.</strong><p>PCC will request listed expirations and up to 20 near-money contracts from Webull.</p></div></section>`;
+  }
+
+  function bindOptionDeskControls() {
+    const form = $("[data-option-symbol-form]", viewRoot);
+    form?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void loadOptionDesk({ symbol: new FormData(form).get("symbol"), force: true });
+    });
+    $("[data-option-expiry]", viewRoot)?.addEventListener("change", (event) => {
+      void loadOptionDesk({ expiry: event.target.value });
+    });
   }
 
   function renderOptionDesk() {
-    const sample = optionDeskSamples[state.optionDeskUnderlying] || optionDeskSamples.NVDA;
-    const expiry = optionDeskExpiries.find((item) => item.value === state.optionDeskExpiry) || optionDeskExpiries[1];
     const selection = optionDeskSelection();
-    const liquidity = selection.spreadPercent <= 7 ? "CLEAN" : selection.spreadPercent <= 12 ? "WATCH" : "WIDE";
-    const delta = Math.abs(selection.selected[selection.strategy.side].delta);
-    const deltaLabel = delta >= .6 ? "moves strongly with shares" : delta >= .35 ? "balanced price sensitivity" : "needs a larger share move";
-    const referenceLabel = selection.isIncome ? "BID / SELL REF" : "ASK / BUY REF";
-    const referencePrice = selection.isIncome ? selection.quote.bid : selection.quote.ask;
-    const thetaRead = selection.isIncome
-      ? `Daily decay works in the seller's favor by about ${money(Math.abs(selection.selected.theta) * 100)} per contract, all else equal.`
-      : `About ${money(Math.abs(selection.selected.theta) * 100)} of theoretical value decays per day for one contract, all else equal.`;
-    const payoffLead = selection.isIncome ? "Know the collateral and the assignment price." : "Know the bill and the break-even.";
-    const firstMetricLabel = selection.isIncome ? "ESTIMATED PREMIUM" : "ESTIMATED DEBIT";
-    const maxProfitValue = selection.maxProfit === null ? "OPEN" : money(selection.maxProfit);
-    const maxProfitDetail = selection.maxProfit === null ? "Not capped"
-      : state.optionDeskStrategy === "covered_call" ? "Called-away gain + premium"
-        : state.optionDeskStrategy === "cash_secured_put" ? "Premium received"
-          : "Defined at entry";
+    const data = state.optionDeskData;
+    const choices = optionDeskUnderlyingChoices();
+    const change = num(data?.underlying?.change_percent);
+    const expiryRows = Array.isArray(data?.expiries) ? data.expiries : [];
+    const liveBody = selection ? (() => {
+      const spread = selection.spreadPercent;
+      const liquidity = spread == null ? "NO QUOTE" : spread <= 7 ? "CLEAN" : spread <= 12 ? "WATCH" : "WIDE";
+      const delta = Math.abs(num(selection.selected.delta));
+      const deltaLabel = delta >= .6 ? "moves strongly with the underlying" : delta >= .35 ? "has balanced price sensitivity" : "needs a larger underlying move";
+      const ivRaw = Number(selection.selected.implied_volatility);
+      const ivPercent = Number.isFinite(ivRaw) ? (ivRaw <= 3 ? ivRaw * 100 : ivRaw) : null;
+      const referenceLabel = selection.isIncome ? "BID / SELL REF" : "ASK / BUY REF";
+      const referencePrice = selection.isIncome ? selection.selected.bid : selection.selected.ask;
+      const thetaPerContract = Math.abs(num(selection.selected.theta)) * selection.multiplier;
+      const thetaRead = selection.isIncome
+        ? `Time decay is about ${money(thetaPerContract)} per day per contract in the seller's favor, all else equal.`
+        : `Time decay is about ${money(thetaPerContract)} per day per contract against the buyer, all else equal.`;
+      const payoffLead = selection.isIncome ? "Know the collateral and assignment price." : "Know the bill and break-even.";
+      const maxProfitValue = selection.maxProfit === null ? "OPEN" : money(selection.maxProfit);
+      const planned = optionDeskPlannedInstrument(selection);
+      return `<section class="option-status" aria-label="Live option quote status">
+          <div><small>UNDERLYING</small><strong>${esc(state.optionDeskUnderlying)} <em>${money(data.underlying?.price)}</em></strong></div>
+          <div><small>SESSION MOVE</small><strong class="${change >= 0 ? "positive" : "negative"}">${change >= 0 ? "+" : ""}${percent(change, 2)}</strong></div>
+          <div><small>QUOTE MODE</small><strong>${esc(data.quote_mode || "WEBULL OPRA")}</strong></div>
+          <div><small>CONTRACTS</small><strong>${selection.chain.length} NEAR MONEY</strong></div>
+        </section>
+        <section class="option-workbench">
+          <aside class="option-controls" aria-label="Option setup">
+            <div class="option-control-block"><span>01 / UNDERLYING</span><div class="option-choice-grid">${choices.map((symbol) => `<button type="button" class="${symbol === state.optionDeskUnderlying ? "is-active" : ""}" data-action="option-underlying" data-symbol="${esc(symbol)}"><strong>${esc(symbol)}</strong><small>${symbol === state.optionDeskUnderlying ? money(data.underlying?.price) : "LOAD CHAIN"}</small></button>`).join("")}</div></div>
+            <div class="option-control-block"><span>02 / STRATEGY</span><div class="option-strategies">${Object.entries(optionDeskStrategies).map(([key, item]) => `<button type="button" class="${key === state.optionDeskStrategy ? "is-active" : ""}" data-action="option-strategy" data-strategy="${key}"><strong>${item.label}</strong><small>${item.note}</small></button>`).join("")}</div></div>
+            <div class="option-control-block"><label class="option-expiry-field"><span>03 / EXPIRY</span><select data-option-expiry aria-label="Option expiration">${expiryRows.map((item) => `<option value="${item.value}" ${item.value === data.expiry ? "selected" : ""}>${item.value} · ${item.dte} DTE</option>`).join("")}</select><small>${expiryRows.length} listed expirations available</small></label></div>
+          </aside>
+          <div class="option-chain-panel">
+            <div class="option-panel-head"><div><span>04 / LIVE CONTRACT TAPE</span><h2>${selection.strategy.side === "call" ? "Calls" : "Puts"} near the money.</h2></div><p>Select one contract. Read bid/ask width before Greeks.</p></div>
+            <div class="option-chain-head"><span>STRIKE</span><span>BID</span><span>ASK</span><span>DELTA</span><span>IV</span><span>VOL / OI</span></div>
+            <div class="option-chain">${selection.chain.map((row) => {
+              const rowIv = Number(row.implied_volatility);
+              const rowIvPercent = Number.isFinite(rowIv) ? (rowIv <= 3 ? rowIv * 100 : rowIv) : null;
+              const active = row.symbol === selection.selected.symbol;
+              return `<button type="button" class="option-chain-row ${active ? "is-active" : ""}" data-action="option-strike" data-contract-symbol="${esc(row.symbol)}" aria-pressed="${active}"><strong>${money(row.strike, 0)}</strong><span>${Number.isFinite(Number(row.bid)) ? money(row.bid) : "—"}</span><span>${Number.isFinite(Number(row.ask)) ? money(row.ask) : "—"}</span><span>${optionDeskMetric(row.delta, 2)}</span><span>${rowIvPercent == null ? "—" : percent(rowIvPercent, 1)}</span><span>${num(row.volume).toLocaleString()} / ${num(row.open_interest).toLocaleString()}</span></button>`;
+            }).join("")}</div>
+          </div>
+          <aside class="option-contract" aria-label="Selected contract analysis">
+            <div class="option-contract__title"><span>SELECTED CONTRACT</span><h2>${esc(optionDeskContractLabel(selection))}</h2><p>${esc(selection.selected.symbol)} · ${expiryRows.find((item) => item.value === selection.selected.expiry)?.dte ?? "—"} DTE · ${selection.multiplier} shares</p></div>
+            <div class="option-quote"><div><small>MID</small><strong>${Number.isFinite(Number(selection.selected.mid)) ? money(selection.selected.mid) : "—"}</strong></div><div><small>${referenceLabel}</small><strong>${Number.isFinite(Number(referencePrice)) ? money(referencePrice) : "—"}</strong></div><div><small>SPREAD</small><strong class="${liquidity === "CLEAN" ? "positive" : liquidity === "WIDE" || liquidity === "NO QUOTE" ? "negative" : "gold"}">${spread == null ? "—" : percent(spread, 1)}</strong></div><div><small>LIQUIDITY</small><strong>${liquidity}</strong></div></div>
+            <div class="option-greeks"><span>GREEKS / PER SHARE</span><dl><div><dt>Delta</dt><dd>${optionDeskMetric(selection.selected.delta)}</dd></div><div><dt>Gamma</dt><dd>${optionDeskMetric(selection.selected.gamma)}</dd></div><div><dt>Theta</dt><dd>${optionDeskMetric(selection.selected.theta)}</dd></div><div><dt>Vega</dt><dd>${optionDeskMetric(selection.selected.vega)}</dd></div></dl></div>
+            <div class="option-plain-read"><span>PLAIN-LANGUAGE READ</span><p><strong>Delta:</strong> This contract ${deltaLabel}. <strong>IV:</strong> ${ivPercent == null ? "not supplied" : percent(ivPercent, 1)}. <strong>Theta:</strong> ${thetaRead}</p></div>
+          </aside>
+        </section>
+        <section class="option-risk-sheet">
+          <div class="option-risk-sheet__intro"><span>05 / PAYOFF BEFORE ENTRY</span><h2>${payoffLead}</h2><p>Estimates use the live ${selection.isIncome ? "bid" : "ask"}. Enter the completed broker fill later; PCC never sends an order.</p></div>
+          <div class="option-risk-metrics"><div><small>${selection.isIncome ? "ESTIMATED CREDIT" : "ESTIMATED DEBIT"}</small><strong class="${selection.isIncome ? "positive" : ""}">${selection.quoteReady ? money(selection.premiumTotal) : "—"}</strong><span>${selection.quoteReady ? `${money(selection.premium)} × ${selection.multiplier}` : "No executable reference"}</span></div><div><small>${selection.collateralLabel}</small><strong class="${selection.eligible ? "" : "negative"}">${selection.collateralValue}</strong><span>${selection.collateralDetail}</span></div><div><small>MAXIMUM LOSS</small><strong class="negative">${selection.quoteReady ? money(selection.maxLoss) : "—"}</strong><span>At expiry</span></div><div><small>BREAK-EVEN AT EXPIRY</small><strong>${selection.quoteReady ? money(selection.breakEven) : "—"}</strong><span>Underlying price</span></div><div><small>MAXIMUM PROFIT</small><strong>${selection.quoteReady ? maxProfitValue : "—"}</strong><span>${selection.maxProfit === null ? "Not capped" : "Defined at expiry"}</span></div></div>
+          <div class="option-eligibility ${selection.eligible ? "is-ready" : "is-blocked"}"><span>${selection.eligible ? "READY" : "CHECK"}</span><div><strong>${esc(selection.eligibilityTitle)}</strong><p>${esc(selection.eligibilityDetail)}</p></div></div>
+          <div class="option-risk-actions"><p><strong>${planned ? "Already in this portfolio plan." : "Market estimate, not a fill."}</strong> Quote read ${selection.selected.quote_time ? new Date(selection.selected.quote_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "time unavailable"}.</p><div><button class="button button--ghost" type="button" data-action="option-copy-sheet">Copy contract</button><button class="button button--primary" type="button" data-action="option-draft-preview" ${selection.quoteReady ? "" : "disabled"}>${state.optionDeskDraftOpen ? "Hide decision sheet" : "Open decision sheet"}</button></div></div>
+        </section>
+        ${state.optionDeskDraftOpen ? `<section id="option-draft" class="option-draft-preview"><div><span>06 / HUMAN CONFIRMATION</span><h2>Ready for the broker fill.</h2><p>${selection.isIncome ? "PCC can analyze this income contract, but the current ledger does not create short-option positions. Copy the contract and record the broker activity only after short-option accounting is enabled." : "Add the exact contract to this portfolio plan, then record only the price and quantity that actually filled at Webull."}</p></div><dl><div><dt>Portfolio</dt><dd>${esc(currentPortfolio()?.name || "Options")}</dd></div><div><dt>Strategy</dt><dd>${esc(selection.strategy.label)}</dd></div><div><dt>Contract</dt><dd>${esc(selection.selected.symbol)}</dd></div><div><dt>Quantity reference</dt><dd>1 contract</dd></div><div><dt>${selection.isIncome ? "Credit reference" : "Debit reference"}</dt><dd>${money(selection.premium)} per share</dd></div><div><dt>Source</dt><dd>Webull OPRA · live snapshot</dd></div></dl><footer><span>NO ORDER SENT</span><div>${selection.isIncome ? `<button class="button button--primary" type="button" data-action="option-copy-sheet">Copy contract details</button>` : `<button class="button" type="button" data-action="option-plan-contract">${planned ? "Update plan" : "Add contract to plan"}</button><button class="button button--primary" type="button" data-action="option-record-fill" ${selection.eligible ? "" : "disabled"}>Record completed fill</button>`}</div></footer></section>` : ""}`;
+    })() : renderOptionDeskState();
     viewRoot.innerHTML = `
       <header class="option-desk-head">
-        <div><p class="eyebrow">OPTIONS / DECISION SHEET</p><h1>Price the contract<br>before the story.</h1><p>Compare contract cost, liquidity and decay before preparing a portfolio draft. This desk never places an order.</p></div>
-        <div class="option-desk-head__actions"><button class="button button--ghost" type="button" data-action="option-desk-back">Back to portfolio</button><span>SAMPLE MARKET DATA</span><small>OPRA NOT CONNECTED</small></div>
+        <div><p class="eyebrow">OPTIONS / LIVE DECISION SHEET</p><h1>Price the contract<br>before the story.</h1><p>Read real-time OPRA quotes, liquidity, Greeks and payoff before recording a completed Webull trade. PCC never places an order.</p></div>
+        <div class="option-desk-head__actions"><button class="button button--ghost" type="button" data-action="option-desk-back">Back to portfolio</button><span>${localPreviewEnabled ? "PREVIEW FIXTURE" : "LIVE OPRA DATA"}</span><small>${localPreviewEnabled ? "LOCAL QA ONLY" : "SUBSCRIPTION OWNER ONLY"}</small></div>
       </header>
-      <section class="option-status" aria-label="Sample quote status">
-        <div><small>UNDERLYING</small><strong>${esc(state.optionDeskUnderlying)} <em>${money(sample.spot)}</em></strong></div>
-        <div><small>SESSION MOVE</small><strong class="${sample.change >= 0 ? "positive" : "negative"}">${sample.change >= 0 ? "+" : ""}${percent(sample.change, 2)}</strong></div>
-        <div><small>QUOTE MODE</small><strong>DELAYED SAMPLE</strong></div>
-        <div><small>CONTRACTS</small><strong>${selection.chain.length} NEAR MONEY</strong></div>
-      </section>
-      <section class="option-workbench">
-        <aside class="option-controls" aria-label="Option setup">
-          <div class="option-control-block"><span>01 / UNDERLYING</span><div class="option-choice-grid">${Object.entries(optionDeskSamples).map(([symbol, item]) => `<button type="button" class="${symbol === state.optionDeskUnderlying ? "is-active" : ""}" data-action="option-underlying" data-symbol="${symbol}"><strong>${symbol}</strong><small>${money(item.spot)}</small></button>`).join("")}</div></div>
-          <div class="option-control-block"><span>02 / STRATEGY</span><div class="option-strategies">${Object.entries(optionDeskStrategies).map(([key, item]) => `<button type="button" class="${key === state.optionDeskStrategy ? "is-active" : ""}" data-action="option-strategy" data-strategy="${key}"><strong>${item.label}</strong><small>${item.note}</small></button>`).join("")}</div></div>
-          <div class="option-control-block"><span>03 / EXPIRY</span><div class="option-expiries">${optionDeskExpiries.map((item) => `<button type="button" class="${item.value === state.optionDeskExpiry ? "is-active" : ""}" data-action="option-expiry" data-expiry="${item.value}"><strong>${item.label}</strong><small>${item.dte} DTE</small></button>`).join("")}</div></div>
-        </aside>
-        <div class="option-chain-panel">
-          <div class="option-panel-head"><div><span>04 / CONTRACT TAPE</span><h2>${selection.strategy.side === "call" ? "Calls" : "Puts"} near the money.</h2></div><p>Select a strike. Bid/ask width matters before every Greek.</p></div>
-          <div class="option-chain-head"><span>STRIKE</span><span>BID</span><span>ASK</span><span>DELTA</span><span>IV</span><span>VOL / OI</span></div>
-          <div class="option-chain">${selection.chain.map((row) => {
-            const quote = row[selection.strategy.side];
-            const active = row.strike === selection.selected.strike;
-            return `<button type="button" class="option-chain-row ${active ? "is-active" : ""}" data-action="option-strike" data-strike="${row.strike}" aria-pressed="${active}"><strong>${money(row.strike, 0)}</strong><span>${money(quote.bid)}</span><span>${money(quote.ask)}</span><span>${quote.delta.toFixed(2)}</span><span>${row.iv}%</span><span>${row.volume.toLocaleString()} / ${row.oi.toLocaleString()}</span></button>`;
-          }).join("")}</div>
-        </div>
-        <aside class="option-contract" aria-label="Selected contract analysis">
-          <div class="option-contract__title"><span>SELECTED CONTRACT</span><h2>${esc(optionDeskContractLabel(selection))}</h2><p>${expiry.dte} days to expiry · 1 contract = 100 shares</p></div>
-          <div class="option-quote"><div><small>MID</small><strong>${money(selection.quote.mid)}</strong></div><div><small>${referenceLabel}</small><strong>${money(referencePrice)}</strong></div><div><small>SPREAD</small><strong class="${liquidity === "CLEAN" ? "positive" : liquidity === "WIDE" ? "negative" : "gold"}">${percent(selection.spreadPercent, 1)}</strong></div><div><small>LIQUIDITY</small><strong>${liquidity}</strong></div></div>
-          <div class="option-greeks"><span>GREEKS / PER SHARE</span><dl><div><dt>Delta</dt><dd>${selection.selected[selection.strategy.side].delta.toFixed(3)}</dd></div><div><dt>Gamma</dt><dd>${selection.selected.gamma.toFixed(3)}</dd></div><div><dt>Theta</dt><dd>${selection.selected.theta.toFixed(3)}</dd></div><div><dt>Vega</dt><dd>${selection.selected.vega.toFixed(3)}</dd></div></dl></div>
-          <div class="option-plain-read"><span>PLAIN-LANGUAGE READ</span><p><strong>Delta:</strong> ${deltaLabel}. <strong>Theta:</strong> ${thetaRead}</p></div>
-        </aside>
-      </section>
-      <section class="option-risk-sheet">
-        <div class="option-risk-sheet__intro"><span>05 / PAYOFF BEFORE ENTRY</span><h2>${payoffLead}</h2><p>Estimates use the displayed ${selection.isIncome ? "bid because this strategy sells the option" : "ask because this strategy buys the option"}. Your broker fill can differ.</p></div>
-        <div class="option-risk-metrics"><div><small>${firstMetricLabel}</small><strong class="${selection.isIncome ? "positive" : ""}">${money(selection.premiumTotal)}</strong><span>${money(selection.premium)} × 100</span></div><div><small>${selection.collateralLabel}</small><strong class="${selection.eligible ? "" : "negative"}">${selection.collateralValue}</strong><span>${selection.collateralDetail}</span></div><div><small>MAXIMUM LOSS</small><strong class="negative">${money(selection.maxLoss)}</strong><span>Worst case at expiry</span></div><div><small>BREAK-EVEN AT EXPIRY</small><strong>${money(selection.breakEven)}</strong><span>Underlying price</span></div><div><small>MAXIMUM PROFIT</small><strong>${maxProfitValue}</strong><span>${maxProfitDetail}</span></div></div>
-        <div class="option-eligibility ${selection.eligible ? "is-ready" : "is-blocked"}"><span>${selection.eligible ? "READY" : "COLLATERAL CHECK"}</span><div><strong>${esc(selection.eligibilityTitle)}</strong><p>${esc(selection.eligibilityDetail)}</p></div></div>
-        <div class="option-risk-actions"><p><strong>Market estimate, not a fill.</strong> Verify the live chain in Webull before sending any order.</p><button class="button button--primary" type="button" data-action="option-draft-preview" ${selection.eligible ? "" : "disabled"}>${state.optionDeskDraftOpen ? "Hide draft" : "Preview draft"}</button></div>
-      </section>
-      ${state.optionDeskDraftOpen ? `<section id="option-draft" class="option-draft-preview"><div><span>06 / SAMPLE DRAFT</span><h2>Ready for a human check.</h2><p>This preview is intentionally disconnected from Supabase until live OPRA mapping and server validation are ready.</p></div><dl><div><dt>Portfolio</dt><dd>${esc(currentPortfolio()?.name || "Options")}</dd></div><div><dt>Strategy</dt><dd>${esc(selection.strategy.label)}</dd></div><div><dt>Contract</dt><dd>${esc(optionDeskContractLabel(selection))}</dd></div><div><dt>Quantity</dt><dd>1 contract</dd></div><div><dt>${selection.isIncome ? "Credit reference" : "Debit reference"}</dt><dd>${money(selection.premium)} ${selection.isIncome ? "credit" : "debit"}</dd></div><div><dt>${selection.collateralLabel}</dt><dd>${selection.collateralValue}</dd></div></dl><footer><span>NOT SAVED · NO ORDER SENT</span><button class="button" type="button" disabled>Send to trade review after OPRA</button></footer></section>` : ""}
+      <section class="option-symbol-command"><form data-option-symbol-form><label><span>UNDERLYING SYMBOL</span><input name="symbol" maxlength="10" value="${esc(state.optionDeskUnderlying)}" placeholder="NVDA" autocomplete="off" spellcheck="false"></label><button class="button button--primary" type="submit">Load live chain</button></form><button class="button" type="button" data-action="option-refresh" ${state.optionDeskBusy ? "disabled" : ""}>Refresh OPRA</button></section>
+      ${liveBody}
     `;
     refreshIcons();
+    bindOptionDeskControls();
+  }
+
+  async function copyOptionDeskSelection() {
+    const selection = optionDeskSelection();
+    if (!selection) return;
+    const direction = selection.isIncome ? "sell reference" : "buy reference";
+    const text = [
+      `${selection.strategy.label} · ${optionDeskContractLabel(selection)}`,
+      `OCC: ${selection.selected.symbol}`,
+      `Underlying: ${money(selection.data.underlying?.price)} · Expiry: ${selection.selected.expiry}`,
+      `Bid / Ask: ${Number.isFinite(Number(selection.selected.bid)) ? money(selection.selected.bid) : "—"} / ${Number.isFinite(Number(selection.selected.ask)) ? money(selection.selected.ask) : "—"}`,
+      `${direction}: ${money(selection.premium)} per share · ${money(selection.premiumTotal)} per contract`,
+      `Break-even at expiry: ${money(selection.breakEven)}`,
+      `Source: Webull OPRA · ${selection.selected.quote_time || selection.data.fetched_at || "time unavailable"}`,
+      "PCC decision sheet only. No order sent."
+    ].join("\n");
+    await navigator.clipboard.writeText(text);
+    toast("Live option contract copied");
+  }
+
+  function openOptionPlanDialog(recordAfterSave = false) {
+    const selection = optionDeskSelection();
+    const portfolio = currentPortfolio();
+    if (!selection || selection.isIncome || !selection.quoteReady) {
+      toast("Only live long-call and long-put contracts can be added to the current long-option ledger", true);
+      return;
+    }
+    const existing = optionDeskPlannedInstrument(selection);
+    const existingTarget = existing && state.targets.find((item) => item.portfolio_id === portfolio?.id && item.instrument_id === existing.id);
+    if (recordAfterSave && existing && existingTarget) {
+      openTradeDialog("buy", {
+        instrumentId: existing.id,
+        quantity: 1,
+        price: selection.premium,
+        underlyingPrice: num(selection.data.underlying?.price)
+      });
+      return;
+    }
+    openDialog({
+      kicker: `${portfolio.name} · Live OPRA contract`,
+      title: recordAfterSave ? "Plan, then record the fill" : "Add contract to the plan",
+      submitLabel: recordAfterSave ? "Save plan and record fill" : "Save option plan",
+      body: `<div class="option-plan-contract"><small>SELECTED CONTRACT</small><strong>${esc(optionDeskContractLabel(selection))}</strong><span>${esc(selection.selected.symbol)}</span><div><b>Live ask ${money(selection.selected.ask)}</b><b>1 contract ${money(selection.premiumTotal)}</b><b>Break-even ${money(selection.breakEven)}</b></div></div><div class="field-row"><label class="field"><span>Target % of this portfolio</span><input name="target" type="number" min="0.01" max="100" step="0.01" value="${num(existingTarget?.target_percent) || 5}" required></label><label class="field"><span>Planned entries</span><input name="tranches" type="number" min="1" max="20" step="1" value="${num(existingTarget?.planned_tranches) || 1}" required></label></div><label class="field"><span>Plan notes</span><textarea name="notes" maxlength="500">${esc(existingTarget?.notes || `${selection.strategy.label} selected from Webull OPRA. Verify the broker fill before recording.`)}</textarea></label><p class="form-hint">This saves the exact strike and expiry to Supabase. It does not place or route an order.</p>`,
+      onSubmit: async (form) => {
+        const instrumentId = await rpc("api_upsert_instrument", {
+          p_asset_type: "option",
+          p_symbol: state.optionDeskUnderlying,
+          p_display_name: selection.selected.symbol,
+          p_exchange: null,
+          p_currency: "USD",
+          p_option_type: selection.strategy.side,
+          p_strike: num(selection.selected.strike),
+          p_expiry: selection.selected.expiry,
+          p_multiplier: selection.multiplier
+        });
+        await rpc("api_set_allocation_target", {
+          p_portfolio_id: portfolio.id,
+          p_instrument_id: instrumentId,
+          p_target_percent: num(form.get("target")),
+          p_maximum_percent: null,
+          p_planned_tranches: num(form.get("tranches")),
+          p_notes: form.get("notes") || null
+        });
+        closeDialog();
+        await loadData({ quiet: true });
+        toast(`${optionDeskContractLabel(selection)} added to ${portfolio.name}`);
+        if (recordAfterSave) {
+          openTradeDialog("buy", {
+            instrumentId,
+            quantity: 1,
+            price: selection.premium,
+            underlyingPrice: num(selection.data.underlying?.price)
+          });
+        }
+      }
+    });
   }
 
   function renderOverview() {
@@ -4174,6 +4356,7 @@
     const underlyingField = $("[data-underlying-field]", tradeBody);
     const underlyingInput = $('[name="underlying_price"]', tradeBody);
     const executedInput = $('[name="executed"]', tradeBody);
+    if (prefills?.underlyingPrice) underlyingInput.value = Number(prefills.underlyingPrice.toFixed(4));
     const renderTradeProjection = () => {
       const row = portfolioRows(portfolio).find((item) => item.id === instrumentSelect.value);
       const isOption = isOptionInstrument(instrumentSelect.value);
@@ -4591,6 +4774,7 @@
       state.optionDeskDraftOpen = false;
       window.scrollTo(0, 0);
       render();
+      await loadOptionDesk();
     }
     else if (action === "option-desk-back") {
       state.route = "portfolio";
@@ -4599,31 +4783,29 @@
       render();
     }
     else if (action === "option-underlying") {
-      state.optionDeskUnderlying = optionDeskSamples[target.dataset.symbol] ? target.dataset.symbol : "NVDA";
-      state.optionDeskStrike = optionDeskSamples[state.optionDeskUnderlying].strikes[4];
-      state.optionDeskDraftOpen = false;
-      renderOptionDesk();
+      await loadOptionDesk({ symbol: target.dataset.symbol, force: true });
     }
     else if (action === "option-strategy") {
+      const previousSide = optionDeskStrategy().side;
       state.optionDeskStrategy = optionDeskStrategies[target.dataset.strategy] ? target.dataset.strategy : "long_call";
       state.optionDeskDraftOpen = false;
-      renderOptionDesk();
-    }
-    else if (action === "option-expiry") {
-      state.optionDeskExpiry = optionDeskExpiries.some((item) => item.value === target.dataset.expiry) ? target.dataset.expiry : optionDeskExpiries[1].value;
-      state.optionDeskDraftOpen = false;
-      renderOptionDesk();
+      if (optionDeskStrategy().side !== previousSide) await loadOptionDesk({ expiry: state.optionDeskExpiry });
+      else renderOptionDesk();
     }
     else if (action === "option-strike") {
-      state.optionDeskStrike = num(target.dataset.strike);
+      state.optionDeskContractSymbol = target.dataset.contractSymbol || "";
       state.optionDeskDraftOpen = false;
       renderOptionDesk();
     }
+    else if (action === "option-refresh") await loadOptionDesk({ expiry: state.optionDeskExpiry, force: true });
     else if (action === "option-draft-preview") {
       state.optionDeskDraftOpen = !state.optionDeskDraftOpen;
       renderOptionDesk();
       if (state.optionDeskDraftOpen) requestAnimationFrame(() => $("#option-draft")?.scrollIntoView({ block: "start", behavior: "smooth" }));
     }
+    else if (action === "option-copy-sheet") await copyOptionDeskSelection();
+    else if (action === "option-plan-contract") openOptionPlanDialog(false);
+    else if (action === "option-record-fill") openOptionPlanDialog(true);
     else if (action === "portfolio-create") openCreatePortfolioDialog();
     else if (action === "portfolio-manage") openPortfolioManagerDialog();
     else if (action === "portfolio-broker") openPortfolioBrokerDialog(target.dataset.portfolioManageId);
@@ -5182,6 +5364,7 @@
     setSync(true, "Local preview");
     render();
     renderNotificationCenter();
+    if (state.route === "option-desk") void loadOptionDesk();
   }
 
   (async () => {

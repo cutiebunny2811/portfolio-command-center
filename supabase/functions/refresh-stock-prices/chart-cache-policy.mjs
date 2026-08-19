@@ -41,6 +41,33 @@ function dailyBarMatchesSession(bar, sessionKey) {
   return date.toISOString().slice(0, 10) === sessionKey || newYorkClock(date)?.dateKey === sessionKey;
 }
 
+function dailyBarSessionKey(bar) {
+  const date = new Date(bar?.time || "");
+  if (!Number.isFinite(date.getTime())) return null;
+  const utcKey = date.toISOString().slice(0, 10);
+  const newYorkKey = newYorkClock(date)?.dateKey || null;
+  return { utcKey, newYorkKey };
+}
+
+function snapshotDailyBar(latestPrice, marketClock) {
+  const source = latestPrice?.day_bar;
+  if (!source || typeof source !== "object") return null;
+  const open = finitePositive(source.open);
+  const high = finitePositive(source.high);
+  const low = finitePositive(source.low);
+  const close = finitePositive(source.close ?? latestPrice?.price);
+  const volume = Number(source.volume ?? 0);
+  if (!open || !high || !low || !close || high < Math.max(open, close) || low > Math.min(open, close)) return null;
+  return {
+    time: `${marketClock.dateKey}T12:00:00.000Z`,
+    open,
+    high,
+    low,
+    close,
+    volume: Number.isFinite(volume) && volume >= 0 ? volume : 0,
+  };
+}
+
 function isWeekday(clock) {
   return clock && !["Sat", "Sun"].includes(clock.weekday);
 }
@@ -75,23 +102,41 @@ export function chartCacheIsStale({ timespan, fetchedAt, cacheWindowMs, now = Da
 }
 
 export function reconcileDailyBarsWithPrice(bars, latestPrice, dailyFetchedAt) {
-  if (!Array.isArray(bars) || !bars.length) return { bars: Array.isArray(bars) ? bars : [], reconciled: false };
+  if (!Array.isArray(bars) || !bars.length) return { bars: Array.isArray(bars) ? bars : [], reconciled: false, missingSession: false };
   const price = finitePositive(latestPrice?.price);
   const marketClock = newYorkClock(latestPrice?.market_time);
-  if (!price || !marketClock) return { bars, reconciled: false };
+  if (!price || !marketClock) return { bars, reconciled: false, missingSession: false };
 
   const last = bars[bars.length - 1];
-  if (!dailyBarMatchesSession(last, marketClock.dateKey)) return { bars, reconciled: false };
+  if (!dailyBarMatchesSession(last, marketClock.dateKey)) {
+    const lastSession = dailyBarSessionKey(last);
+    const latestBarKey = lastSession ? [lastSession.utcKey, lastSession.newYorkKey].filter(Boolean).sort().at(-1) : null;
+    const quoteIsNewer = latestBarKey && marketClock.dateKey > latestBarKey;
+    if (!quoteIsNewer) return { bars, reconciled: false, missingSession: false };
+    const dayBar = snapshotDailyBar(latestPrice, marketClock);
+    return dayBar
+      ? { bars: [...bars, dayBar], reconciled: true, missingSession: false }
+      : { bars, reconciled: false, missingSession: true };
+  }
   const currentClose = finitePositive(last?.close);
   if (currentClose != null && Math.abs(currentClose - price) <= Math.max(price * 0.000001, 0.000001)) {
-    return { bars, reconciled: false };
+    return { bars, reconciled: false, missingSession: false };
   }
 
-  const open = finitePositive(last?.open) ?? price;
-  const high = Math.max(finitePositive(last?.high) ?? price, open, price);
-  const low = Math.min(finitePositive(last?.low) ?? price, open, price);
+  const snapshotBar = snapshotDailyBar(latestPrice, marketClock);
+  const open = snapshotBar?.open ?? finitePositive(last?.open) ?? price;
+  const high = snapshotBar?.high ?? Math.max(finitePositive(last?.high) ?? price, open, price);
+  const low = snapshotBar?.low ?? Math.min(finitePositive(last?.low) ?? price, open, price);
   return {
-    bars: [...bars.slice(0, -1), { ...last, open, high, low, close: price }],
+    bars: [...bars.slice(0, -1), {
+      ...last,
+      open,
+      high,
+      low,
+      close: snapshotBar?.close ?? price,
+      volume: snapshotBar?.volume ?? last?.volume ?? 0,
+    }],
     reconciled: true,
+    missingSession: false,
   };
 }

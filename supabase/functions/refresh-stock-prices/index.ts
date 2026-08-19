@@ -85,6 +85,7 @@ type PriceResult = {
   marketTime: string;
   webullInstrumentId: string | null;
   logoUrl: string | null;
+  dayBar?: ChartBar | null;
 };
 
 type OptionPriceResult = {
@@ -301,6 +302,31 @@ async function signedGet(
   return { response, payload };
 }
 
+function regularSnapshotDayBar(snapshot: Record<string, unknown>): ChartBar | null {
+  const open = finiteNumber(snapshot.open);
+  const high = finiteNumber(snapshot.high);
+  const low = finiteNumber(snapshot.low);
+  const close = finiteNumber(snapshot.price ?? snapshot.latest_price ?? snapshot.last_price ?? snapshot.close);
+  const volume = finiteNumber(snapshot.volume) ?? 0;
+  const rawTime = snapshot.last_trade_time ?? snapshot.timestamp ?? snapshot.time;
+  const numericTime = Number(rawTime);
+  const parsedTime = Number.isFinite(numericTime)
+    ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime)
+    : new Date(String(rawTime || ""));
+  if (![open, high, low, close].every((value) => value != null && value > 0)
+    || !Number.isFinite(parsedTime.getTime())
+    || high! < Math.max(open!, close!)
+    || low! > Math.min(open!, close!)) return null;
+  return {
+    time: parsedTime.toISOString(),
+    open: open!,
+    high: high!,
+    low: low!,
+    close: close!,
+    volume: volume > 0 ? volume : 0,
+  };
+}
+
 function nestedRows(payload: unknown): Record<string, unknown>[] {
   if (Array.isArray(payload)) {
     return payload.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && !Array.isArray(row));
@@ -491,23 +517,29 @@ async function fetchLatestRegularClose(
     const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
     throw new Error(`${instrument.symbol}: historical close fallback failed: ${detail}`);
   }
-  const bars = payloadRows(payload).map((bar) => {
-    const price = Number(bar.close);
+  const bars = historicalBarRows(payload).map((bar): ChartBar | null => {
+    const open = Number(bar.open);
+    const high = Number(bar.high);
+    const low = Number(bar.low);
+    const close = Number(bar.close);
+    const volume = Number(bar.volume ?? bar.vol ?? 0);
     const rawTime = bar.time ?? bar.timestamp;
     const numericTime = Number(rawTime);
     const time = Number.isFinite(numericTime)
-      ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime).getTime()
-      : new Date(String(rawTime || "")).getTime();
-    return { price, time };
-  }).filter((bar) => Number.isFinite(bar.price) && bar.price > 0);
-  bars.sort((a, b) => (Number.isFinite(b.time) ? b.time : 0) - (Number.isFinite(a.time) ? a.time : 0));
+      ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime)
+      : new Date(String(rawTime || ""));
+    if (![open, high, low, close].every((value) => Number.isFinite(value) && value > 0) || !Number.isFinite(time.getTime())) return null;
+    return { time: time.toISOString(), open, high, low, close, volume: Number.isFinite(volume) && volume > 0 ? volume : 0 };
+  }).filter((bar): bar is ChartBar => Boolean(bar));
+  bars.sort((a, b) => b.time.localeCompare(a.time));
   if (!bars.length) throw new Error(`${instrument.symbol}: historical close fallback returned no usable bars`);
   return {
     instrument,
-    price: bars[0].price,
-    marketTime: new Date(Number.isFinite(bars[0].time) ? bars[0].time : Date.now()).toISOString(),
+    price: bars[0].close,
+    marketTime: bars[0].time,
     webullInstrumentId: null,
     logoUrl: null,
+    dayBar: bars[0],
   };
 }
 
@@ -592,7 +624,7 @@ async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
   const row = rows.find((item) => String(item.symbol || "").toUpperCase() === instrument.symbol.toUpperCase()) || rows[0];
   const value = row ? marketValue(row) : null;
   if (!value) throw new Error(`${instrument.symbol}: snapshot did not contain a usable price`);
-  return { instrument, ...value, ...webullIdentity(row) };
+  return { instrument, ...value, ...webullIdentity(row), dayBar: regularSnapshotDayBar(row) };
 }
 
 async function syncInstrumentLogos(
@@ -956,7 +988,7 @@ Deno.serve(async (request) => {
         ? reconcileDailyBarsWithPrice(rawCachedBars, latestPrice, cached?.fetched_at)
         : { bars: rawCachedBars, reconciled: false };
       const cachedBars = cachedReconciliation.bars;
-      const stale = !cachedBars.length || cachedReconciliation.reconciled || chartCacheIsStale({
+      const stale = !cachedBars.length || cachedReconciliation.reconciled || cachedReconciliation.missingSession || chartCacheIsStale({
         timespan,
         fetchedAt: cached?.fetched_at,
         cacheWindowMs: chartConfig.cacheWindowMs,
@@ -1007,10 +1039,16 @@ Deno.serve(async (request) => {
       }
 
       try {
-        const fetchedBars = await fetchHistoricalBars(chartInstrument, chartConfig.count, timespan);
+        const [fetchedBars, freshSnapshot] = await Promise.all([
+          fetchHistoricalBars(chartInstrument, chartConfig.count, timespan),
+          timespan === "D" ? fetchSnapshot(chartInstrument).catch(() => null) : Promise.resolve(null),
+        ]);
         const fetchedAt = new Date().toISOString();
+        const effectivePrice = freshSnapshot
+          ? { price: freshSnapshot.price, market_time: freshSnapshot.marketTime, day_bar: freshSnapshot.dayBar }
+          : latestPrice;
         const bars = timespan === "D"
-          ? reconcileDailyBarsWithPrice(fetchedBars, latestPrice, cached?.fetched_at).bars
+          ? reconcileDailyBarsWithPrice(fetchedBars, effectivePrice, fetchedAt).bars
           : fetchedBars;
         const { error: writeError } = await admin.from("market_chart_cache").upsert({
           instrument_id: instrumentId,
@@ -1032,8 +1070,9 @@ Deno.serve(async (request) => {
           fetched_at: fetchedAt,
           cached: false,
           stale: false,
-          live_price: latestPrice?.price ?? null,
-          live_market_time: latestPrice?.market_time ?? null,
+          live_price: freshSnapshot?.price ?? latestPrice?.price ?? null,
+          live_market_time: freshSnapshot?.marketTime ?? latestPrice?.market_time ?? null,
+          live_day_bar: freshSnapshot?.dayBar ?? null,
           bars,
         }), { headers: jsonHeaders });
       } catch (error) {

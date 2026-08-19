@@ -122,6 +122,37 @@ test("daily chart reconciles a lagging historical close with a newer regular sna
   }, "2026-08-19T20:33:00Z").reconciled, false);
 });
 
+test("daily chart appends a missing session only when Webull supplies real OHLCV", async () => {
+  const { reconcileDailyBarsWithPrice } = await import(cachePolicyUrl);
+  const daily = [
+    { time: "2026-08-18T12:00:00Z", open: 960, high: 975, low: 930, close: 940.76, volume: 20 },
+  ];
+  const quoteOnly = reconcileDailyBarsWithPrice(daily, {
+    price: 937.105,
+    market_time: "2026-08-19T20:00:00Z",
+  });
+  assert.equal(quoteOnly.reconciled, false);
+  assert.equal(quoteOnly.missingSession, true);
+  assert.equal(quoteOnly.bars.length, 1);
+
+  const completed = reconcileDailyBarsWithPrice(daily, {
+    price: 937.105,
+    market_time: "2026-08-19T20:00:00Z",
+    day_bar: { open: 959.36, high: 960, low: 915.18, close: 937.105, volume: 26_467_843 },
+  });
+  assert.equal(completed.reconciled, true);
+  assert.equal(completed.missingSession, false);
+  assert.equal(completed.bars.length, 2);
+  assert.deepEqual(completed.bars.at(-1), {
+    time: "2026-08-19T12:00:00.000Z",
+    open: 959.36,
+    high: 960,
+    low: 915.18,
+    close: 937.105,
+    volume: 26_467_843,
+  });
+});
+
 test("client reconciles a stale daily cache with the regular Webull snapshot", async () => {
   const code = await readFile(technicalsUrl, "utf8");
   const context = { Intl, Date, Number, Math, Object };

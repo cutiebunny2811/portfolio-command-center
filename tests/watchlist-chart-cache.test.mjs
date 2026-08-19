@@ -97,6 +97,30 @@ test("daily chart cache settles a candle fetched just before the New York close"
   }), false);
 });
 
+test("daily chart reconciles a lagging historical close with a newer regular snapshot", async () => {
+  const { reconcileDailyBarsWithPrice } = await import(cachePolicyUrl);
+  const daily = [
+    { time: "2026-08-18T13:30:00Z", open: 1000, high: 1020, low: 980, close: 1011.75, volume: 10 },
+    { time: "2026-08-19T13:30:00Z", open: 990, high: 995, low: 930, close: 940.76, volume: 20 },
+  ];
+  const result = reconcileDailyBarsWithPrice(daily, {
+    price: 937.105,
+    market_time: "2026-08-19T20:00:00Z",
+    fetched_at: "2026-08-19T20:40:00Z",
+  }, "2026-08-19T20:33:00Z");
+
+  assert.equal(result.reconciled, true);
+  assert.equal(result.bars.at(-1).close, 937.105);
+  assert.equal(result.bars.at(-1).high, 995);
+  assert.equal(result.bars.at(-1).low, 930);
+  assert.equal(result.bars.at(-2).close, 1011.75);
+  assert.equal(reconcileDailyBarsWithPrice(daily, {
+    price: 937.105,
+    market_time: "2026-08-18T20:00:00Z",
+    fetched_at: "2026-08-19T20:40:00Z",
+  }, "2026-08-19T20:33:00Z").reconciled, false);
+});
+
 test("agent chart calls exchange the agent token for a scoped internal chart request", async () => {
   const [source, agentApi] = await Promise.all([
     readFile(functionUrl, "utf8"),

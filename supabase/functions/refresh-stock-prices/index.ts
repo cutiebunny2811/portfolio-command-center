@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
-import { chartCacheIsStale } from "./chart-cache-policy.mjs";
+import { chartCacheIsStale, reconcileDailyBarsWithPrice } from "./chart-cache-policy.mjs";
 import {
   chooseExpiry,
   expirationChoices,
@@ -931,16 +931,32 @@ Deno.serve(async (request) => {
       if (instrumentError) throw instrumentError;
       if (!instrument) return new Response(JSON.stringify({ error: "Stock or ETF not found" }), { status: 404, headers: jsonHeaders });
       const chartInstrument = instrument as Instrument;
-      const { data: cached, error: cacheError } = await admin
-        .from("market_chart_cache")
-        .select("instrument_id,symbol,bars,source,fetched_at,refresh_started_at,last_error")
-        .eq("instrument_id", instrumentId)
-        .eq("timespan", timespan)
-        .maybeSingle();
+      const [{ data: cached, error: cacheError }, { data: latestPrices, error: latestPriceError }] = await Promise.all([
+        admin
+          .from("market_chart_cache")
+          .select("instrument_id,symbol,bars,source,fetched_at,refresh_started_at,last_error")
+          .eq("instrument_id", instrumentId)
+          .eq("timespan", timespan)
+          .maybeSingle(),
+        chartClient
+          .from("instrument_prices")
+          .select("price,market_time,fetched_at")
+          .eq("instrument_id", instrumentId)
+          .eq("user_id", authenticatedUserId)
+          .eq("source", "webull")
+          .order("fetched_at", { ascending: false })
+          .limit(1),
+      ]);
       if (cacheError) throw cacheError;
+      if (latestPriceError) throw latestPriceError;
 
-      const cachedBars = Array.isArray(cached?.bars) ? cached.bars : [];
-      const stale = !cachedBars.length || chartCacheIsStale({
+      const latestPrice = Array.isArray(latestPrices) ? latestPrices[0] : null;
+      const rawCachedBars = Array.isArray(cached?.bars) ? cached.bars : [];
+      const cachedReconciliation = timespan === "D"
+        ? reconcileDailyBarsWithPrice(rawCachedBars, latestPrice, cached?.fetched_at)
+        : { bars: rawCachedBars, reconciled: false };
+      const cachedBars = cachedReconciliation.bars;
+      const stale = !cachedBars.length || cachedReconciliation.reconciled || chartCacheIsStale({
         timespan,
         fetchedAt: cached?.fetched_at,
         cacheWindowMs: chartConfig.cacheWindowMs,
@@ -958,6 +974,8 @@ Deno.serve(async (request) => {
           fetched_at: cached.fetched_at,
           cached: true,
           stale,
+          live_price: latestPrice?.price ?? null,
+          live_market_time: latestPrice?.market_time ?? null,
           bars: cachedBars,
         }), { headers: jsonHeaders });
       }
@@ -979,6 +997,8 @@ Deno.serve(async (request) => {
           cached: true,
           stale: true,
           refreshing: true,
+          live_price: latestPrice?.price ?? null,
+          live_market_time: latestPrice?.market_time ?? null,
           bars: cachedBars,
         }), { headers: jsonHeaders });
       }
@@ -987,8 +1007,11 @@ Deno.serve(async (request) => {
       }
 
       try {
-        const bars = await fetchHistoricalBars(chartInstrument, chartConfig.count, timespan);
+        const fetchedBars = await fetchHistoricalBars(chartInstrument, chartConfig.count, timespan);
         const fetchedAt = new Date().toISOString();
+        const bars = timespan === "D"
+          ? reconcileDailyBarsWithPrice(fetchedBars, latestPrice, cached?.fetched_at).bars
+          : fetchedBars;
         const { error: writeError } = await admin.from("market_chart_cache").upsert({
           instrument_id: instrumentId,
           symbol: instrument.symbol.trim().toUpperCase(),
@@ -1009,6 +1032,8 @@ Deno.serve(async (request) => {
           fetched_at: fetchedAt,
           cached: false,
           stale: false,
+          live_price: latestPrice?.price ?? null,
+          live_market_time: latestPrice?.market_time ?? null,
           bars,
         }), { headers: jsonHeaders });
       } catch (error) {
@@ -1027,6 +1052,8 @@ Deno.serve(async (request) => {
             cached: true,
             stale: true,
             refresh_error: detail,
+            live_price: latestPrice?.price ?? null,
+            live_market_time: latestPrice?.market_time ?? null,
             bars: cachedBars,
           }), { headers: jsonHeaders });
         }

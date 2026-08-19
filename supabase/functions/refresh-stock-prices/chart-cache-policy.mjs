@@ -30,6 +30,17 @@ function newYorkClock(value) {
   };
 }
 
+function finitePositive(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function dailyBarMatchesSession(bar, sessionKey) {
+  const date = new Date(bar?.time || "");
+  if (!Number.isFinite(date.getTime())) return false;
+  return date.toISOString().slice(0, 10) === sessionKey || newYorkClock(date)?.dateKey === sessionKey;
+}
+
 function isWeekday(clock) {
   return clock && !["Sat", "Sun"].includes(clock.weekday);
 }
@@ -61,4 +72,29 @@ export function chartCacheIsStale({ timespan, fetchedAt, cacheWindowMs, now = Da
   const sameDateAfterSettlement = nowClock.dateKey === fetchedClock.dateKey
     && nowClock.minutes >= dailySettlementMinutes;
   return laterNewYorkDate || sameDateAfterSettlement;
+}
+
+export function reconcileDailyBarsWithPrice(bars, latestPrice, dailyFetchedAt) {
+  if (!Array.isArray(bars) || !bars.length) return { bars: Array.isArray(bars) ? bars : [], reconciled: false };
+  const price = finitePositive(latestPrice?.price);
+  const marketClock = newYorkClock(latestPrice?.market_time);
+  const priceFetchedTime = new Date(latestPrice?.fetched_at || "").getTime();
+  const dailyFetchedTime = new Date(dailyFetchedAt || "").getTime();
+  if (!price || !marketClock || !Number.isFinite(priceFetchedTime)) return { bars, reconciled: false };
+  if (Number.isFinite(dailyFetchedTime) && priceFetchedTime <= dailyFetchedTime) return { bars, reconciled: false };
+
+  const last = bars[bars.length - 1];
+  if (!dailyBarMatchesSession(last, marketClock.dateKey)) return { bars, reconciled: false };
+  const currentClose = finitePositive(last?.close);
+  if (currentClose != null && Math.abs(currentClose - price) <= Math.max(price * 0.000001, 0.000001)) {
+    return { bars, reconciled: false };
+  }
+
+  const open = finitePositive(last?.open) ?? price;
+  const high = Math.max(finitePositive(last?.high) ?? price, open, price);
+  const low = Math.min(finitePositive(last?.low) ?? price, open, price);
+  return {
+    bars: [...bars.slice(0, -1), { ...last, open, high, low, close: price }],
+    reconciled: true,
+  };
 }

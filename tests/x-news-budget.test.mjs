@@ -11,14 +11,20 @@ import {
   xBudgetAllowance,
   xSourcePlan,
 } from "../supabase/functions/sync-research-news/x-core.mjs";
+import { readFile } from "node:fs/promises";
+
+const workflowSource = await readFile(
+  new URL("../.github/workflows/sync-research-news.yml", import.meta.url),
+  "utf8",
+);
 
 test("allocates the five-dollar X budget across the market and stock desks", () => {
   assert.equal(X_POST_READ_USD, 0.005);
   assert.equal(X_MONTHLY_POST_TARGET, 900);
   assert.equal(X_MONTHLY_POST_HARD_LIMIT, 1000);
-  assert.equal(xSourcePlan("Reuters").monthlyLimit, 420);
-  assert.equal(xSourcePlan("@stocksavvyshay").monthlyLimit, 480);
-  assert.equal(xSourcePlan("stocksavvyshay").maxResults, 10);
+  assert.equal(xSourcePlan("Reuters").monthlyLimit, 460);
+  assert.equal(xSourcePlan("@stocksavvyshay").monthlyLimit, 440);
+  assert.equal(xSourcePlan("stocksavvyshay").maxResults, 5);
   assert.equal(xSourcePlan("naklongpoong"), null);
   assert.equal(X_MONTHLY_POST_TARGET * X_POST_READ_USD, 4.5);
   assert.equal(X_MONTHLY_POST_HARD_LIMIT * X_POST_READ_USD, 5);
@@ -36,22 +42,25 @@ test("deduplicates shared subscriptions before an X API read", () => {
 });
 
 test("opens only the planned Bangkok collection windows", () => {
+  assert.match(workflowSource, /cron: "0 10,12,14,16,18,20 \* \* 1-5"/);
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T11:30:00Z"), null), null);
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T12:30:00Z"), null), "2026-08-12:brief");
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T16:30:00Z"), "2026-08-12:brief"), "2026-08-12:continuation");
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T16:30:00Z"), "2026-08-12:continuation"), null);
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T17:05:00Z"), "2026-08-12:brief"), "2026-08-12:continuation");
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T17:05:00Z"), "2026-08-12:continuation"), null);
-  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T12:30:00Z"), null), null);
-  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T13:30:00Z"), null), "2026-08-12:open");
-  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T17:30:00Z"), "2026-08-12:open"), "2026-08-13:midnight");
-  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T20:30:00Z"), "2026-08-13:midnight"), "2026-08-13:postmarket");
+  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T10:30:00Z"), null), "2026-08-12:premarket");
+  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T12:30:00Z"), "2026-08-12:premarket"), null);
+  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T14:30:00Z"), "2026-08-12:premarket"), "2026-08-12:open");
+  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T16:30:00Z"), "2026-08-12:open"), null);
+  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T18:30:00Z"), "2026-08-12:open"), "2026-08-13:late");
+  assert.equal(dueXWindow("stocksavvyshay", new Date("2026-08-12T20:30:00Z"), "2026-08-13:late"), "2026-08-13:postmarket");
 });
 
 test("stops each source and the shared collector at its monthly target", () => {
   assert.equal(xBudgetAllowance("reuters", []), 10);
-  assert.equal(xBudgetAllowance("reuters", [{ source_key: "reuters", posts_read: 415 }]), 5);
-  assert.equal(xBudgetAllowance("reuters", [{ source_key: "reuters", posts_read: 420 }]), 0);
+  assert.equal(xBudgetAllowance("reuters", [{ source_key: "reuters", posts_read: 455 }]), 5);
+  assert.equal(xBudgetAllowance("reuters", [{ source_key: "reuters", posts_read: 460 }]), 0);
   assert.equal(xBudgetAllowance("reuters", [
     { source_key: "reuters", posts_read: 410 },
     { source_key: "stocksavvyshay", posts_read: 485 },

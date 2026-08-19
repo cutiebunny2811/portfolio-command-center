@@ -219,7 +219,7 @@ const tools = [
   },
   {
     name: "get_news",
-    description: "Read the user's cached PCC Research News feed. Use filter=alerts for unprocessed HIGH/MEDIUM monitor candidates; stay silent when none exist. Entries with must_notify=true are collector-confirmed HIGH alerts and must appear in the returned alert text; do not demote or silently reject them. X_SOURCE_LEAD means label the source as awaiting primary confirmation, not suppress the alert. Never triggers an external sync.",
+    description: "Read the user's cached PCC Research News feed. filter=alerts atomically claims unprocessed HIGH/MEDIUM candidates for this monitor and returns a claim_token; concurrent monitors cannot receive the same article. Stay silent when none exist. Entries with must_notify=true are collector-confirmed HIGH alerts and must appear in the returned alert text. Never triggers an external sync.",
     inputSchema: {
       type: "object",
       properties: {
@@ -233,7 +233,7 @@ const tools = [
   },
   {
     name: "acknowledge_news",
-    description: "Close inspected News entries for the automated alert monitor without changing the member's read/unread state. Call once only after the final response contains every mandatory HIGH alert so rejected and merged entries do not repeat.",
+    description: "Close the News entries claimed by get_news(filter=alerts) without changing the member's read/unread state. Pass that exact claim_token once after composing the final alert. IDs not owned by the claim cannot be acknowledged.",
     inputSchema: {
       type: "object",
       properties: {
@@ -243,8 +243,9 @@ const tools = [
           minItems: 1,
           maxItems: 50,
         },
+        claim_token: { type: "string", description: "Exact claim_token returned by the preceding get_news(filter=alerts) call." },
       },
-      required: ["article_ids"],
+      required: ["article_ids", "claim_token"],
       additionalProperties: false,
     },
   },

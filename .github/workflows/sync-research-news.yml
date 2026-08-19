@@ -1,0 +1,31 @@
+name: Sync research news
+
+on:
+  schedule:
+    # 17:00, 19:00, 21:00, 23:00, 01:00 and 03:00 Asia/Bangkok.
+    # All six UTC executions belong to the same US weekday session.
+    - cron: "0 10,12,14,16,18,20 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-research-news
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Collect the due Reuters or Shay window
+        env:
+          RESEARCH_SYNC_SECRET: ${{ secrets.RESEARCH_SYNC_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 2 \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-sync-secret: ${RESEARCH_SYNC_SECRET}" \
+            --data '{}' \
+            https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/sync-research-news

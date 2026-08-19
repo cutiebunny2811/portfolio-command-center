@@ -299,9 +299,11 @@ Deduplicate the same event and ticker. Keep each Telegram item concise and
 include publisher, ticker(s), what changed and why it matters. X posts are
 source leads; say "ตรวจซ้ำ" when no primary filing or article is attached.
 
-Only after the final alert text contains every non-duplicate HIGH, call
-acknowledge_news exactly once with every article ID from the single get_news
-call, then return that already-composed text without another classification
+The alerts response atomically leases its entries and returns a claim_token.
+Concurrent jobs receive none of those IDs. Only after the final alert text
+contains every non-duplicate HIGH, call acknowledge_news exactly once with that
+exact claim_token and every article ID from the single get_news call, then
+return that already-composed text without another classification
 pass. This closes the IDs for this automated monitor only; it must not change
 the member's read/unread state in PCC. Rejected MEDIUM, stale and merged entries
 are closed too so they cannot consume tokens again. If acknowledgement fails,

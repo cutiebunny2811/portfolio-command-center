@@ -6,7 +6,7 @@ const SOURCE_PLANS = Object.freeze({
   reuters: Object.freeze({
     sourceKey: "reuters",
     displayName: "@Reuters",
-    monthlyLimit: 420,
+    monthlyLimit: 460,
     maxResults: 10,
     mode: "search",
     briefCandidate: true,
@@ -18,14 +18,15 @@ const SOURCE_PLANS = Object.freeze({
   stocksavvyshay: Object.freeze({
     sourceKey: "stocksavvyshay",
     displayName: "@stocksavvyshay",
-    monthlyLimit: 480,
-    maxResults: 10,
+    monthlyLimit: 440,
+    maxResults: 5,
     mode: "timeline",
     briefCandidate: false,
     windows: Object.freeze([
-      Object.freeze({ key: "midnight", hour: 0 }),
+      Object.freeze({ key: "premarket", hour: 17 }),
+      Object.freeze({ key: "open", hour: 21 }),
+      Object.freeze({ key: "late", hour: 1 }),
       Object.freeze({ key: "postmarket", hour: 3 }),
-      Object.freeze({ key: "open", hour: 20 }),
     ]),
   }),
 });
@@ -77,12 +78,14 @@ export function dueXWindow(sourceKey, value = new Date(), lastWindowKey = null) 
     return windowKey === lastWindowKey ? null : windowKey;
   }
   if (plan.sourceKey === "stocksavvyshay") {
-    const window = clock.hour >= 20
+    const window = clock.hour >= 21
       ? plan.windows.find((candidate) => candidate.key === "open")
-      : clock.hour < 3
-      ? plan.windows.find((candidate) => candidate.key === "midnight")
-      : clock.hour < 7
+      : clock.hour >= 17
+      ? plan.windows.find((candidate) => candidate.key === "premarket")
+      : clock.hour >= 3 && clock.hour < 7
       ? plan.windows.find((candidate) => candidate.key === "postmarket")
+      : clock.hour < 3
+      ? plan.windows.find((candidate) => candidate.key === "late")
       : null;
     if (!window) return null;
     const windowKey = `${clock.dateKey}:${window.key}`;

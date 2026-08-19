@@ -128,6 +128,7 @@ test("exposes read-only News and Earnings tools", async () => {
   assert.equal(byName.get("get_news").inputSchema.properties.page_size.maximum, 50);
   assert.equal(byName.get("get_earnings_calendar").inputSchema.properties.symbol.type, "string");
   assert.equal(byName.get("acknowledge_news").inputSchema.properties.article_ids.maxItems, 50);
+  assert.ok(byName.get("acknowledge_news").inputSchema.required.includes("claim_token"));
   assert.equal(byName.get("requeue_news_alerts").inputSchema.properties.article_ids.maxItems, 12);
 });
 
@@ -140,9 +141,10 @@ test("routes narrow News alert recovery without changing user read state", async
 
 test("routes News monitor acknowledgement without changing user read state", async () => {
   const articleId = "11111111-1111-4111-8111-111111111111";
-  const result = await callTool("acknowledge_news", { article_ids: [articleId] });
+  const claimToken = "22222222-2222-4222-8222-222222222222";
+  const result = await callTool("acknowledge_news", { article_ids: [articleId], claim_token: claimToken });
   assert.equal(result.response.result.isError, false);
-  assert.deepEqual(result.request, { action: "acknowledge_news", article_ids: [articleId] });
+  assert.deepEqual(result.request, { action: "acknowledge_news", article_ids: [articleId], claim_token: claimToken });
 });
 
 test("routes News and Earnings calls to their read-only API actions", async () => {

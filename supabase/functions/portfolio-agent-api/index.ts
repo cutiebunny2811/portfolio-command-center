@@ -749,13 +749,50 @@ async function researchNews(
     .sort((left, right) => String(right.published_at).localeCompare(String(left.published_at))
       || String(right.id).localeCompare(String(left.id)));
   const offset = (page - 1) * pageSize;
+  let pageEntries = entries.slice(offset, offset + pageSize);
+  let claimToken: string | null = null;
+  let claimExpiresAt: string | null = null;
+
+  if (filter === "alerts" && pageEntries.length) {
+    const now = new Date();
+    const claimedAt = now.toISOString();
+    const staleBefore = new Date(now.getTime() - 30 * 60_000).toISOString();
+    const candidateIds = pageEntries.map((entry) => String(entry.id));
+
+    await must(service.from("research_article_state")
+      .update({ alert_claim_token: null, alert_claimed_at: null, updated_at: claimedAt })
+      .eq("user_id", userId)
+      .is("alert_processed_at", null)
+      .lt("alert_claimed_at", staleBefore));
+    await must(service.from("research_article_state").upsert(candidateIds.map((articleId) => ({
+      user_id: userId,
+      article_id: articleId,
+      updated_at: claimedAt,
+    })), { onConflict: "user_id,article_id", ignoreDuplicates: true }));
+
+    claimToken = crypto.randomUUID();
+    const claimedRows = await must(service.from("research_article_state")
+      .update({ alert_claim_token: claimToken, alert_claimed_at: claimedAt, updated_at: claimedAt })
+      .eq("user_id", userId)
+      .in("article_id", candidateIds)
+      .is("alert_processed_at", null)
+      .is("alert_claimed_at", null)
+      .select("article_id"));
+    const claimedIds = new Set((claimedRows as Record<string, unknown>[]).map((row) => String(row.article_id)));
+    pageEntries = pageEntries.filter((entry) => claimedIds.has(String(entry.id)));
+    if (!pageEntries.length) claimToken = null;
+    else claimExpiresAt = new Date(now.getTime() + 30 * 60_000).toISOString();
+  }
+
   return {
-    entries: entries.slice(offset, offset + pageSize),
-    total_count: entries.length,
+    entries: pageEntries,
+    total_count: filter === "alerts" ? pageEntries.length : entries.length,
     page,
     page_size: pageSize,
     filter,
     search_ticker: searchTicker,
+    claim_token: claimToken,
+    claim_expires_at: claimExpiresAt,
   };
 }
 
@@ -768,6 +805,8 @@ async function acknowledgeNews(
     ? unique(body.article_ids.map(String).filter((id) => /^[0-9a-f-]{36}$/i.test(id))).slice(0, 50)
     : [];
   if (!requestedIds.length) throw new Error("article_ids must contain at least one article UUID");
+  const claimToken = String(body.claim_token || "").trim();
+  if (!/^[0-9a-f-]{36}$/i.test(claimToken)) throw new Error("claim_token must be the UUID returned by get_news(filter=alerts)");
 
   const [instrumentLinks, sourceLinks] = await Promise.all([
     must(service.from("research_article_matches")
@@ -788,13 +827,23 @@ async function acknowledgeNews(
     article_id: articleId,
     updated_at: now,
   })), { onConflict: "user_id,article_id", ignoreDuplicates: true }));
-  await must(service.from("research_article_state")
-    .update({ alert_processed_at: now, updated_at: now })
+  const acknowledgedRows = await must(service.from("research_article_state")
+    .update({
+      alert_processed_at: now,
+      alert_claim_token: null,
+      alert_claimed_at: null,
+      updated_at: now,
+    })
     .eq("user_id", userId)
-    .in("article_id", allowedIds));
+    .eq("alert_claim_token", claimToken)
+    .in("article_id", allowedIds)
+    .select("article_id"));
+  const acknowledgedIds = (acknowledgedRows as Record<string, unknown>[])
+    .map((row) => String(row.article_id));
   return {
-    acknowledged: allowedIds.length,
-    article_ids: allowedIds,
+    acknowledged: acknowledgedIds.length,
+    article_ids: acknowledgedIds,
+    requested: requestedIds.length,
     user_read_state_changed: false,
   };
 }
@@ -823,7 +872,12 @@ async function requeueNewsAlerts(
   if (!allowedIds.length) throw new Error("No linked news articles were found");
 
   await must(service.from("research_article_state")
-    .update({ alert_processed_at: null, updated_at: new Date().toISOString() })
+    .update({
+      alert_processed_at: null,
+      alert_claim_token: null,
+      alert_claimed_at: null,
+      updated_at: new Date().toISOString(),
+    })
     .eq("user_id", userId)
     .in("article_id", allowedIds));
   return {

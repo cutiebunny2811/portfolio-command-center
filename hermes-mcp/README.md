@@ -16,6 +16,12 @@ Center without editing dashboard files or receiving Supabase SQL access.
   PCC. `get_macro_alerts` is the compact monitor input: upcoming releases,
   recent Actual values, the next FOMC decision, and source freshness. Neither
   tool triggers a data sync or sends a notification by itself.
+- `get_option_chain` reads the subscription owner's live Webull OPRA tape used
+  by Option Desk. `analyze_option_contract` selects one returned contract and
+  calculates payoff, spread quality, break-even and portfolio collateral using
+  PCC's deterministic rules. Both are read-only, owner-gated, and cannot create
+  a plan, draft, fill or broker order. Other PCC members do not inherit the
+  owner's OPRA entitlement.
 - `get_briefing_context` defaults to a privacy-safe `shared_market` fact pack:
   benchmarks, sectors, and high-impact Macro only. The canonical 20:00 brief
   combines that pack with current external research and never uses an owner's

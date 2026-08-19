@@ -155,6 +155,39 @@ test("routes News and Earnings calls to their read-only API actions", async () =
   assert.deepEqual(earnings.request, { action: "earnings", symbol: "AXTI" });
 });
 
+test("exposes and routes owner-only read-only Option Desk tools", async () => {
+  const tools = await listTools();
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const chainTool = byName.get("get_option_chain");
+  const analysisTool = byName.get("analyze_option_contract");
+
+  assert.deepEqual(chainTool.inputSchema.properties.option_type.enum, ["call", "put"]);
+  assert.deepEqual(analysisTool.inputSchema.properties.strategy.enum, [
+    "long_call", "long_put", "covered_call", "cash_secured_put",
+  ]);
+  assert.match(analysisTool.description, /Read-only market analysis only/);
+
+  const chain = await callTool("get_option_chain", { symbol: "EOSE", option_type: "call", expiry: "2026-08-28" });
+  const analysis = await callTool("analyze_option_contract", {
+    portfolio: "Long Term",
+    symbol: "EOSE",
+    strategy: "long_call",
+    expiry: "2026-08-28",
+    strike: 2.5,
+  });
+  assert.equal(chain.response.result.isError, false);
+  assert.deepEqual(chain.request, { action: "option_chain", symbol: "EOSE", option_type: "call", expiry: "2026-08-28" });
+  assert.equal(analysis.response.result.isError, false);
+  assert.deepEqual(analysis.request, {
+    action: "option_analysis",
+    portfolio: "Long Term",
+    symbol: "EOSE",
+    strategy: "long_call",
+    expiry: "2026-08-28",
+    strike: 2.5,
+  });
+});
+
 test("exposes and routes read-only Macro calendar tools", async () => {
   const tools = await listTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));

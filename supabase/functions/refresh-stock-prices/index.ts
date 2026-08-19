@@ -649,12 +649,12 @@ Deno.serve(async (request) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const bearer = authorization.replace(/^Bearer\s+/i, "").trim();
-    const internalChartUserId = body?.action === "chart" && bearer === supabaseServiceRoleKey
+    const internalUserId = ["chart", "option_chain"].includes(String(body?.action || "")) && bearer === supabaseServiceRoleKey
       ? String(body?.user_id || "").trim()
       : "";
-    let authenticatedUserId = internalChartUserId;
-    if (internalChartUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(internalChartUserId)) {
-      return new Response(JSON.stringify({ error: "Invalid internal chart user" }), { status: 400, headers: jsonHeaders });
+    let authenticatedUserId = internalUserId;
+    if (internalUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(internalUserId)) {
+      return new Response(JSON.stringify({ error: "Invalid internal user" }), { status: 400, headers: jsonHeaders });
     }
     if (!authenticatedUserId) {
       const { data: authData, error: authError } = await supabase.auth.getUser();
@@ -919,7 +919,7 @@ Deno.serve(async (request) => {
       if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });
       const timespan = chartTimespan(body?.timespan);
       const chartConfig = chartConfigs[timespan];
-      const chartClient = internalChartUserId ? admin : supabase;
+      const chartClient = internalUserId ? admin : supabase;
       const { data: instrument, error: instrumentError } = await chartClient
         .from("instruments")
         .select("id,symbol,asset_type")

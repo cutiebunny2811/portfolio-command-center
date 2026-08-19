@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { analyzeWatchlistSetup } from "./watchlist-setup-scanner.mjs";
+import { analyzeOptionDesk } from "./option-desk-analysis.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -530,6 +531,40 @@ async function portfolioSnapshot(
     latest_prices: latestPrices,
     recent_executions: executions,
   };
+}
+
+async function liveOptionChain(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const symbol = cleanSymbol(body.symbol);
+  if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) throw new Error("Enter a valid US underlying symbol");
+  const optionType = String(body.option_type || "call").trim().toLowerCase();
+  if (!["call", "put"].includes(optionType)) throw new Error("option_type must be call or put");
+  const expiry = body.expiry ? String(body.expiry).trim() : null;
+  if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) throw new Error("expiry must be YYYY-MM-DD");
+  const optionResponse = await fetch(`${supabaseUrl}/functions/v1/refresh-stock-prices`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${serviceRoleKey}`,
+      "apikey": serviceRoleKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      action: "option_chain",
+      user_id: userId,
+      symbol,
+      option_type: optionType,
+      expiry,
+    }),
+  });
+  const payload = await optionResponse.json().catch(() => ({ error: "Option service returned invalid JSON" }));
+  if (!optionResponse.ok || payload?.error) {
+    throw new Error(String(payload?.error || `Option service failed with HTTP ${optionResponse.status}`));
+  }
+  return payload as Record<string, unknown>;
 }
 
 async function resolveRuleACampaign(
@@ -1787,6 +1822,31 @@ Deno.serve(async (request) => {
       if (body.section === "benchmarks") query = query.eq("is_benchmark", true);
       const rows = await must(query.order("symbol"));
       return response({ action, data: rows });
+    }
+
+    if (action === "option_chain") {
+      return response({
+        action,
+        data: await liveOptionChain(supabaseUrl, serviceRoleKey, identity.user_id, body),
+      });
+    }
+
+    if (action === "option_analysis") {
+      const strategy = String(body.strategy || "").trim().toLowerCase();
+      if (!["long_call", "long_put", "covered_call", "cash_secured_put"].includes(strategy)) {
+        throw new Error("strategy must be long_call, long_put, covered_call, or cash_secured_put");
+      }
+      const optionType = ["long_put", "cash_secured_put"].includes(strategy) ? "put" : "call";
+      const portfolio = await resolvePortfolio(service, identity.user_id, body);
+      const snapshot = await portfolioSnapshot(service, identity.user_id, portfolio);
+      const chain = await liveOptionChain(supabaseUrl, serviceRoleKey, identity.user_id, {
+        ...body,
+        option_type: optionType,
+      });
+      return response({
+        action,
+        data: analyzeOptionDesk(chain, snapshot, { strategy, strike: body.strike }),
+      });
     }
 
     if (action === "watchlist_setups") {

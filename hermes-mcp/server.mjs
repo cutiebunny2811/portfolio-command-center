@@ -407,6 +407,37 @@ const tools = [
     },
   },
   {
+    name: "get_option_chain",
+    description: "Read the same owner-only live Webull OPRA tape used by PCC Option Desk: underlying quote, listed expirations, and up to 20 near-money contracts with bid, ask, midpoint, IV, Greeks, volume, open interest and quote timestamps. Read-only; never places an order. Start without expiry, then reuse an exact expiry returned by this tool when another date is needed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "US underlying ticker, for example NVDA or EOSE." },
+        option_type: { type: "string", enum: ["call", "put"], default: "call" },
+        expiry: { type: "string", description: "Optional listed expiration in YYYY-MM-DD. Omit on the first call." },
+      },
+      required: ["symbol"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "analyze_option_contract",
+    description: "Select one contract from the live near-money OPRA tape and calculate PCC's deterministic payoff, break-even, bid/ask liquidity and portfolio collateral check. Covered Call requires 100 underlying shares; Cash-Secured Put requires strike times 100 in cash. Read-only market analysis only: no plan, draft, fill or broker order is created.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...selectorProperties,
+        symbol: { type: "string", description: "US underlying ticker, for example NVDA or EOSE." },
+        strategy: { type: "string", enum: ["long_call", "long_put", "covered_call", "cash_secured_put"] },
+        expiry: { type: "string", description: "Optional listed expiration in YYYY-MM-DD. Omit to use PCC's default expiry." },
+        strike: { type: "number", exclusiveMinimum: 0, description: "Optional exact strike from get_option_chain. Omit to analyze the nearest-to-money contract." },
+      },
+      required: ["symbol", "strategy"],
+      anyOf: [{ required: ["portfolio_id"] }, { required: ["portfolio"] }],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "get_smart_money",
     description: "Read SEC Form 4 ownership events for Watchlist names. Codes and raw filing facts remain visible; do not interpret every event as an open-market trade.",
     inputSchema: {
@@ -613,6 +644,8 @@ const actionByTool = {
   publish_midnight_market_check: "publish_midnight_market_check",
   publish_brief_continuation: "publish_brief_continuation",
   get_market_pulse: "market_pulse",
+  get_option_chain: "option_chain",
+  analyze_option_contract: "option_analysis",
   get_smart_money: "smart_money",
   get_smart_money_briefing_context: "smart_money_briefing_context",
   publish_smart_money_brief: "publish_smart_money_brief",

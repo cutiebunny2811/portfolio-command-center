@@ -74,9 +74,10 @@ test("agent chart calls exchange the agent token for a scoped internal chart req
   assert.match(agentApi, /"Authorization": `Bearer \$\{serviceRoleKey\}`/);
   assert.match(agentApi, /"apikey": serviceRoleKey/);
   assert.match(agentApi, /user_id: identity\.user_id/);
-  assert.match(source, /body\?\.action === "chart" && bearer === supabaseServiceRoleKey/);
-  assert.match(source, /Invalid internal chart user/);
-  assert.match(source, /const chartClient = internalChartUserId \? admin : supabase/);
+  assert.match(source, /\["chart", "option_chain"\]\.includes\(String\(body\?\.action/);
+  assert.match(source, /bearer === supabaseServiceRoleKey/);
+  assert.match(source, /Invalid internal user/);
+  assert.match(source, /const chartClient = internalUserId \? admin : supabase/);
   assert.match(source, /\.eq\("user_id", authenticatedUserId\)/);
 });
 

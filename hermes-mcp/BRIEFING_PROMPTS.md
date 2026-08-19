@@ -310,4 +310,6 @@ are closed too so they cannot consume tokens again. If acknowledgement fails,
 return the alert text with a short dedup warning instead of [SILENT]. If no item
 remains after filtering, acknowledge the inspected IDs and return [SILENT]. If
 get_news returns no entries, do not acknowledge and return [SILENT].
+If either PCC News MCP tool is unavailable or times out, fail closed with
+exactly `[SILENT]`; never send a tool-error explanation as a Telegram alert.
 ```

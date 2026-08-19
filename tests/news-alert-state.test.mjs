@@ -60,4 +60,5 @@ test("collector-confirmed HIGH news cannot be silently demoted by Hermes", () =>
   assert.match(promptSource, /MUST appear in[\s\S]*returned Telegram alert/i);
   assert.match(promptSource, /must never demote, reject or silently suppress a HIGH/i);
   assert.match(promptSource, /กำลังตรวจซ้ำจาก primary source/);
+  assert.match(promptSource, /MCP tool is unavailable or times out[\s\S]*exactly `\[SILENT\]`/i);
 });

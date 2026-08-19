@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
+import { chartCacheIsStale } from "./chart-cache-policy.mjs";
 import {
   chooseExpiry,
   expirationChoices,
@@ -939,12 +940,17 @@ Deno.serve(async (request) => {
       if (cacheError) throw cacheError;
 
       const cachedBars = Array.isArray(cached?.bars) ? cached.bars : [];
-      const cacheAge = cached?.fetched_at ? Date.now() - new Date(cached.fetched_at).getTime() : Number.POSITIVE_INFINITY;
-      const stale = !cachedBars.length || !Number.isFinite(cacheAge) || cacheAge >= chartConfig.cacheWindowMs;
+      const stale = !cachedBars.length || chartCacheIsStale({
+        timespan,
+        fetchedAt: cached?.fetched_at,
+        cacheWindowMs: chartConfig.cacheWindowMs,
+      });
       const refreshRequested = body?.refresh === true;
 
       // Normal reads never wait on Webull when a usable shared cache exists.
-      if (cachedBars.length && (!refreshRequested || !stale)) {
+      // A refresh request bypasses a usable cache so the background refresh path
+      // can settle a daily candle after the regular session closes.
+      if (cachedBars.length && !refreshRequested) {
         return new Response(JSON.stringify({
           symbol: instrument.symbol,
           source: cached.source || "webull",

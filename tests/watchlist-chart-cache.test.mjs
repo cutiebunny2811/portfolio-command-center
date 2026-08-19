@@ -10,6 +10,7 @@ const agentApiUrl = new URL("../supabase/functions/portfolio-agent-api/index.ts"
 const migrationUrl = new URL("../supabase/migrations/20260819020000_market_chart_cache.sql", import.meta.url);
 const timeframeMigrationUrl = new URL("../supabase/migrations/20260819060000_market_chart_timeframes.sql", import.meta.url);
 const technicalsUrl = new URL("../chart-technicals.js", import.meta.url);
+const cachePolicyUrl = new URL("../supabase/functions/refresh-stock-prices/chart-cache-policy.mjs", import.meta.url);
 
 test("watchlist chart exposes cached 1H, 4H and 1D views with EMA200", async () => {
   const [app, index] = await Promise.all([readFile(appUrl, "utf8"), readFile(indexUrl, "utf8")]);
@@ -50,7 +51,7 @@ test("nearby levels reject remote historical pivots and never invent ATR levels"
   assert.ok(levels.resistances.length < 2 || Math.abs(levels.resistances[0].price - levels.resistances[1].price) > .5);
 });
 
-test("chart endpoint serves a shared cache per timeframe before Webull", async () => {
+test("chart endpoint serves a shared cache per timeframe and lets refresh bypass it", async () => {
   const source = await readFile(functionUrl, "utf8");
 
   assert.match(source, /D: \{ count: 320, cacheWindowMs: 20 \* 60 \* 60_000 \}/);
@@ -59,10 +60,41 @@ test("chart endpoint serves a shared cache per timeframe before Webull", async (
   assert.match(source, /function chartTimespan\(value: unknown\)/);
   assert.match(source, /from\("market_chart_cache"\)/);
   assert.match(source, /\.eq\("timespan", timespan\)/);
-  assert.match(source, /if \(cachedBars\.length && \(!refreshRequested \|\| !stale\)\)/);
+  assert.match(source, /chartCacheIsStale\(\{/);
+  assert.match(source, /if \(cachedBars\.length && !refreshRequested\)/);
   assert.match(source, /api_claim_market_chart_refresh/);
   assert.match(source, /if \(cachedBars\.length\) \{[\s\S]*refresh_error: detail/);
   assert.match(source, /onConflict: "instrument_id,timespan"/);
+});
+
+test("daily chart cache settles a candle fetched just before the New York close", async () => {
+  const { chartCacheIsStale } = await import(cachePolicyUrl);
+  const cacheWindowMs = 20 * 60 * 60_000;
+
+  assert.equal(chartCacheIsStale({
+    timespan: "D",
+    fetchedAt: "2026-08-19T19:52:00Z", // 15:52 ET
+    now: new Date("2026-08-19T20:15:00Z"), // 16:15 ET
+    cacheWindowMs,
+  }), true);
+  assert.equal(chartCacheIsStale({
+    timespan: "D",
+    fetchedAt: "2026-08-19T20:20:00Z", // settled after the close
+    now: new Date("2026-08-19T23:00:00Z"),
+    cacheWindowMs,
+  }), false);
+  assert.equal(chartCacheIsStale({
+    timespan: "D",
+    fetchedAt: "2026-08-19T14:00:00Z", // 10:00 ET
+    now: new Date("2026-08-19T14:46:00Z"),
+    cacheWindowMs,
+  }), true);
+  assert.equal(chartCacheIsStale({
+    timespan: "M60",
+    fetchedAt: "2026-08-19T19:52:00Z",
+    now: new Date("2026-08-19T20:15:00Z"),
+    cacheWindowMs: 45 * 60_000,
+  }), false);
 });
 
 test("agent chart calls exchange the agent token for a scoped internal chart request", async () => {

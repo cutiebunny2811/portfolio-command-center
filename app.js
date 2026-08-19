@@ -1511,10 +1511,10 @@
     return {
       data, strategy, chain, selected, premium, premiumTotal, maxLoss, maxProfit, breakEven, spreadPercent,
       isIncome, eligible, quoteReady, multiplier, sharesHeld, shareCost, cashAvailable, cashRequired,
-      collateralLabel: coveredCall ? "SHARES READY" : cashSecuredPut ? "CASH TO RESERVE" : "ESTIMATED DEBIT",
-      collateralValue: coveredCall ? `${formatTradeQuantity(sharesHeld)} / ${multiplier}` : cashSecuredPut ? money(cashRequired) : money(premiumTotal),
+      collateralLabel: coveredCall ? "SHARES READY" : cashSecuredPut ? "CASH TO RESERVE" : "CASH AVAILABLE",
+      collateralValue: coveredCall ? `${formatTradeQuantity(sharesHeld)} / ${multiplier}` : cashSecuredPut ? money(cashRequired) : money(cashAvailable),
       collateralDetail: coveredCall ? (sharesHeld >= multiplier ? `${Math.floor(sharesHeld / multiplier)} contract${Math.floor(sharesHeld / multiplier) === 1 ? "" : "s"} covered` : `${formatTradeQuantity(Math.max(0, multiplier - sharesHeld))} shares short`)
-        : cashSecuredPut ? `${money(cashAvailable)} available` : `${money(premium)} × ${multiplier}`,
+        : cashSecuredPut ? `${money(cashAvailable)} available` : `${money(premiumTotal)} estimated debit`,
       eligibilityTitle: !quoteReady ? "Live bid/ask is unavailable for this contract."
         : coveredCall ? (eligible ? `${multiplier} shares are covered.` : `Need ${formatTradeQuantity(Math.max(0, multiplier - sharesHeld))} more shares.`)
         : cashSecuredPut ? (eligible ? "Assignment cash is covered." : `${money(cashRequired - cashAvailable)} more cash required.`)

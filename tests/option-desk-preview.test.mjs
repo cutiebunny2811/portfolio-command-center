@@ -44,7 +44,7 @@ test("live long options can be planned and handed to completed-fill recording", 
 });
 
 test("option desk exposes live contract evidence and a mobile reflow", () => {
-  for (const label of ["BID", "ASK", "DELTA", "IV", "VOL / OI", "MAXIMUM LOSS", "BREAK-EVEN AT EXPIRY"]) {
+  for (const label of ["BID", "ASK", "DELTA", "IV", "VOL / OI", "CASH AVAILABLE", "MAXIMUM LOSS", "BREAK-EVEN AT EXPIRY"]) {
     assert.match(app, new RegExp(label.replace("/", "\\/")));
   }
   assert.match(css, /\.option-workbench\s*\{[^}]*grid-template-columns:/);

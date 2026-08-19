@@ -28,6 +28,9 @@
   const money = (value, digits = 2) => new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits
   }).format(num(value));
+  const strikeMoney = (value) => new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 3
+  }).format(num(value));
   const compactMoney = (value) => new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1
   }).format(num(value));
@@ -1600,7 +1603,7 @@
               const rowIv = Number(row.implied_volatility);
               const rowIvPercent = Number.isFinite(rowIv) ? (rowIv <= 3 ? rowIv * 100 : rowIv) : null;
               const active = row.symbol === selection.selected.symbol;
-              return `<button type="button" class="option-chain-row ${active ? "is-active" : ""}" data-action="option-strike" data-contract-symbol="${esc(row.symbol)}" aria-pressed="${active}"><strong>${money(row.strike, 0)}</strong><span>${Number.isFinite(Number(row.bid)) ? money(row.bid) : "—"}</span><span>${Number.isFinite(Number(row.ask)) ? money(row.ask) : "—"}</span><span>${optionDeskMetric(row.delta, 2)}</span><span>${rowIvPercent == null ? "—" : percent(rowIvPercent, 1)}</span><span>${num(row.volume).toLocaleString()} / ${num(row.open_interest).toLocaleString()}</span></button>`;
+              return `<button type="button" class="option-chain-row ${active ? "is-active" : ""}" data-action="option-strike" data-contract-symbol="${esc(row.symbol)}" aria-pressed="${active}"><strong>${strikeMoney(row.strike)}</strong><span>${Number.isFinite(Number(row.bid)) ? money(row.bid) : "—"}</span><span>${Number.isFinite(Number(row.ask)) ? money(row.ask) : "—"}</span><span>${optionDeskMetric(row.delta, 2)}</span><span>${rowIvPercent == null ? "—" : percent(rowIvPercent, 1)}</span><span>${num(row.volume).toLocaleString()} / ${num(row.open_interest).toLocaleString()}</span></button>`;
             }).join("")}</div>
           </div>
           <aside class="option-contract" aria-label="Selected contract analysis">

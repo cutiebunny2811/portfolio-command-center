@@ -51,4 +51,6 @@ test("option desk exposes live contract evidence and a mobile reflow", () => {
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.option-workbench\s*\{\s*display:\s*block;/);
   assert.match(css, /\.option-symbol-command/);
   assert.match(css, /\.option-expiry-field/);
+  assert.match(app, /strikeMoney\(row\.strike\)/);
+  assert.doesNotMatch(app, /money\(row\.strike, 0\)/);
 });

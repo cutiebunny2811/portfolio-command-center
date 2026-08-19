@@ -12,6 +12,48 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  const newYorkFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+
+  function newYorkClock(input) {
+    const date = new Date(input || "");
+    if (!Number.isFinite(date.getTime())) return null;
+    const parts = Object.fromEntries(newYorkFormatter.formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]));
+    return {
+      dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+      minutes: Number(parts.hour) * 60 + Number(parts.minute)
+    };
+  }
+
+  function reconcileDailyBarsWithQuote(bars, quote) {
+    if (!Array.isArray(bars) || !bars.length) return Array.isArray(bars) ? bars : [];
+    const price = value(quote?.price);
+    const quoteClock = newYorkClock(quote?.marketTime);
+    const last = bars[bars.length - 1];
+    const barTime = new Date(last?.time || "");
+    if (price <= 0 || !quoteClock || !Number.isFinite(barTime.getTime())) return bars;
+    const barMatchesQuote = barTime.toISOString().slice(0, 10) === quoteClock.dateKey
+      || newYorkClock(barTime)?.dateKey === quoteClock.dateKey;
+    if (!barMatchesQuote) return bars;
+    const open = value(last?.open) || price;
+    return [...bars.slice(0, -1), {
+      ...last,
+      open,
+      high: Math.max(value(last?.high) || price, open, price),
+      low: Math.min(value(last?.low) || price, open, price),
+      close: price
+    }];
+  }
+
   function calculateNearbyLevels(bars, timeframe = "1D") {
     const config = levelConfigs[timeframe] || levelConfigs["1D"];
     if (!Array.isArray(bars) || bars.length < 20) {
@@ -81,5 +123,5 @@
     };
   }
 
-  root.PccChartTechnicals = Object.freeze({ calculateNearbyLevels, levelConfigs });
+  root.PccChartTechnicals = Object.freeze({ calculateNearbyLevels, reconcileDailyBarsWithQuote, levelConfigs });
 })(globalThis);

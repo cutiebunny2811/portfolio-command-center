@@ -3111,6 +3111,24 @@
     })).filter((item) => item.instrument);
   }
 
+  function watchlistQuote(selected) {
+    const livePrice = num(state.watchlistLivePrice?.price);
+    if (livePrice > 0) {
+      return { price: livePrice, marketTime: state.watchlistLivePrice.marketTime || null };
+    }
+    const selectedPrice = num(selected?.price?.price);
+    return selectedPrice > 0
+      ? { price: selectedPrice, marketTime: selected.price.market_time || selected.price.fetched_at || null }
+      : null;
+  }
+
+  function reconcileWatchlistBars(bars, instrumentId, timeframe = state.watchlistTimeframe) {
+    if (timeframe !== "1D" || !Array.isArray(bars) || !bars.length) return bars;
+    const selected = watchlistRows().find((item) => item.instrument_id === instrumentId) || null;
+    if (selected?.price?.source !== "webull") return bars;
+    return window.PccChartTechnicals?.reconcileDailyBarsWithQuote(bars, watchlistQuote(selected)) || bars;
+  }
+
   function rememberWatchlistInstrument(instrumentId) {
     state.watchlistRecentIds = [instrumentId, ...state.watchlistRecentIds.filter((id) => id !== instrumentId)].slice(0, 6);
   }
@@ -3544,11 +3562,13 @@
     const bars = state.watchlistBars;
     const first = bars[0];
     const last = bars[bars.length - 1];
-    const displayPrice = num(state.watchlistLivePrice?.price) || num(last?.close) || num(selected?.price?.price);
+    const latestQuote = watchlistQuote(selected);
+    const displayPrice = num(latestQuote?.price) || num(last?.close);
     const rangeChange = first && last ? num(last.close) - num(first.close) : 0;
     const rangeChangePercent = first && num(first.close) ? rangeChange / num(first.close) * 100 : 0;
-    const dailyChange = bars.length > 1 ? num(last?.close) - num(bars[bars.length - 2]?.close) : 0;
-    const dailyChangePercent = bars.length > 1 && num(bars[bars.length - 2]?.close) ? dailyChange / num(bars[bars.length - 2]?.close) * 100 : 0;
+    const comparisonPrice = bars.length > 1 ? num(bars[bars.length - 2]?.close) : 0;
+    const dailyChange = comparisonPrice ? displayPrice - comparisonPrice : 0;
+    const dailyChangePercent = comparisonPrice ? dailyChange / comparisonPrice * 100 : 0;
     const levels = chartTechnicalLevels(bars, timeframe);
     const chartFetchedAt = state.watchlistChartMeta?.fetchedAt ? new Date(state.watchlistChartMeta.fetchedAt) : null;
     const chartFreshness = chartFetchedAt && Number.isFinite(chartFetchedAt.getTime())
@@ -3622,7 +3642,7 @@
       });
       if (error || data?.error || !Array.isArray(data?.bars) || !data.bars.length) return;
       if (state.selectedWatchlistInstrumentId !== instrumentId || state.watchlistTimeframe !== timeframe) return;
-      state.watchlistBars = data.bars;
+      state.watchlistBars = reconcileWatchlistBars(data.bars, instrumentId, timeframe);
       state.watchlistBarsInstrumentId = instrumentId;
       state.watchlistBarsTimespan = chartConfig.apiTimespan;
       state.watchlistChartMeta = { cached: data.cached === true, fetchedAt: data.fetched_at || null, timespan: data.timespan || chartConfig.apiTimespan };
@@ -3683,7 +3703,7 @@
         }
       }
       if (requestId !== watchlistBarsRequestId) return;
-      state.watchlistBars = nextBars;
+      state.watchlistBars = reconcileWatchlistBars(nextBars, instrumentId, requestedTimeframe);
       state.watchlistBarsInstrumentId = instrumentId;
       state.watchlistBarsTimespan = chartConfig.apiTimespan;
       state.watchlistLivePrice = nextLivePrice;

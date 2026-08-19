@@ -25,8 +25,8 @@ test("watchlist chart exposes cached 1H, 4H and 1D views with EMA200", async () 
   assert.doesNotMatch(app, /ATR projection/);
   assert.match(app, /No nearby level/);
   assert.doesNotMatch(app, /data-action="watchlist-range"/);
-  assert.match(index, /chart-technicals\.js\?v=20260820-opra-strikes/);
-  assert.match(index, /app\.js\?v=20260820-opra-strikes/);
+  assert.match(index, /chart-technicals\.js\?v=20260820-chart-session/);
+  assert.match(index, /app\.js\?v=20260820-chart-session/);
 });
 
 test("nearby levels reject remote historical pivots and never invent ATR levels", async () => {
@@ -114,11 +114,28 @@ test("daily chart reconciles a lagging historical close with a newer regular sna
   assert.equal(result.bars.at(-1).high, 995);
   assert.equal(result.bars.at(-1).low, 930);
   assert.equal(result.bars.at(-2).close, 1011.75);
+
   assert.equal(reconcileDailyBarsWithPrice(daily, {
     price: 937.105,
     market_time: "2026-08-18T20:00:00Z",
     fetched_at: "2026-08-19T20:40:00Z",
   }, "2026-08-19T20:33:00Z").reconciled, false);
+});
+
+test("client reconciles a stale daily cache with the regular Webull snapshot", async () => {
+  const code = await readFile(technicalsUrl, "utf8");
+  const context = { Intl, Date, Number, Math, Object };
+  context.globalThis = context;
+  vm.runInNewContext(code, context);
+  const bars = [{ time: "2026-08-19T04:00:00.000Z", open: 995, high: 997, low: 930, close: 940.76 }];
+  const reconciled = context.PccChartTechnicals.reconcileDailyBarsWithQuote(bars, {
+    price: 937.105,
+    marketTime: "2026-08-19T20:00:00.000Z"
+  });
+  assert.equal(reconciled.at(-1).close, 937.105);
+  assert.equal(reconciled.at(-1).high, 997);
+  assert.equal(reconciled.at(-1).low, 930);
+  assert.equal(bars[0].close, 940.76);
 });
 
 test("agent chart calls exchange the agent token for a scoped internal chart request", async () => {

@@ -78,10 +78,7 @@ export function reconcileDailyBarsWithPrice(bars, latestPrice, dailyFetchedAt) {
   if (!Array.isArray(bars) || !bars.length) return { bars: Array.isArray(bars) ? bars : [], reconciled: false };
   const price = finitePositive(latestPrice?.price);
   const marketClock = newYorkClock(latestPrice?.market_time);
-  const priceFetchedTime = new Date(latestPrice?.fetched_at || "").getTime();
-  const dailyFetchedTime = new Date(dailyFetchedAt || "").getTime();
-  if (!price || !marketClock || !Number.isFinite(priceFetchedTime)) return { bars, reconciled: false };
-  if (Number.isFinite(dailyFetchedTime) && priceFetchedTime <= dailyFetchedTime) return { bars, reconciled: false };
+  if (!price || !marketClock) return { bars, reconciled: false };
 
   const last = bars[bars.length - 1];
   if (!dailyBarMatchesSession(last, marketClock.dateKey)) return { bars, reconciled: false };

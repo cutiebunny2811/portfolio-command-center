@@ -8,6 +8,10 @@ Center without editing dashboard files or receiving Supabase SQL access.
 - Read tools cover Overview, Portfolios, Trading P/L, Watchlist, Research News,
   Earnings, the high-impact Macro calendar and alert feed, Market Pulse, Smart
   Money, and Webull chart bars.
+- `scan_watchlist_setups` performs the Daily Reclaim EMA200 / Near Support pass
+  server-side in bounded batches of 20 and returns compact metrics only. Follow
+  `next_offset` until complete, then request 4H/1H bars only for the resulting
+  `READY_FOR_4H` shortlist.
 - `get_macro_calendar` reads the same cached high-impact US event tape shown in
   PCC. `get_macro_alerts` is the compact monitor input: upcoming releases,
   recent Actual values, the next FOMC decision, and source freshness. Neither
@@ -73,3 +77,6 @@ it to GitHub Pages, `config.js`, a committed `.env`, or a chat message.
 The production job instructions are in
 [`BRIEFING_PROMPTS.md`](BRIEFING_PROMPTS.md). PCC stores the full publication;
 Telegram should carry only the preview and deep link.
+
+After adding or updating tools, restart the `portfolio-command-center` MCP
+server in Hermes so each profile, including Ian, receives the new `tools/list`.

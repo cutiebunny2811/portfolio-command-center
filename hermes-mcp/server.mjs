@@ -459,6 +459,21 @@ const tools = [
     },
   },
   {
+    name: "scan_watchlist_setups",
+    description: "Server-side Daily scan of the PCC Watchlist for Reclaim EMA200 and Near Support setups. It returns compact metrics only, in bounded batches, so the agent should follow next_offset until complete and then request 4H/1H bars only for READY_FOR_4H symbols.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        offset: { type: "integer", minimum: 0, default: 0, description: "Start at 0, then use next_offset until complete is true." },
+        batch_size: { type: "integer", minimum: 5, maximum: 20, default: 20 },
+        max_candidates: { type: "integer", minimum: 1, maximum: 10, default: 5, description: "Maximum candidates returned per setup in this batch." },
+        setup: { type: "string", enum: ["both", "reclaim_ema200", "near_support"], default: "both" },
+        refresh_stale: { type: "boolean", default: true, description: "Refresh only missing or stale Daily cache entries; fresh cache is reused." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "resolve_rule_a_campaign",
     description: "Deterministically resolve the one allowed open campaign for a Webull Swing Trade or Options fill. A buy starts tranche 1 when none is open, otherwise returns the existing campaign's next tranche. A sell requires that one open campaign. It never guesses across multiple campaigns.",
     inputSchema: {
@@ -602,6 +617,7 @@ const actionByTool = {
   get_smart_money_briefing_context: "smart_money_briefing_context",
   publish_smart_money_brief: "publish_smart_money_brief",
   get_chart_bars: "chart",
+  scan_watchlist_setups: "watchlist_setups",
   resolve_rule_a_campaign: "resolve_rule_a_campaign",
   get_confirmed_execution_sync: "confirmed_execution_sync",
   create_trade_draft: "create_trade_draft",

@@ -97,6 +97,27 @@ test("exposes Rule-A campaign resolution and confirmed execution export", async 
   assert.equal(byName.get("create_trade_draft").inputSchema.properties.campaign_id.type, "string");
 });
 
+test("exposes and routes the bounded watchlist setup scanner", async () => {
+  const tools = await listTools();
+  const scanner = tools.find((tool) => tool.name === "scan_watchlist_setups");
+  assert.ok(scanner);
+  assert.equal(scanner.inputSchema.properties.batch_size.maximum, 20);
+  assert.deepEqual(scanner.inputSchema.properties.setup.enum, ["both", "reclaim_ema200", "near_support"]);
+
+  const { response, request } = await callTool("scan_watchlist_setups", {
+    offset: 20,
+    batch_size: 20,
+    setup: "both",
+  });
+  assert.equal(response.result.isError, false);
+  assert.deepEqual(request, {
+    action: "watchlist_setups",
+    offset: 20,
+    batch_size: 20,
+    setup: "both",
+  });
+});
+
 test("exposes read-only News and Earnings tools", async () => {
   const tools = await listTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));

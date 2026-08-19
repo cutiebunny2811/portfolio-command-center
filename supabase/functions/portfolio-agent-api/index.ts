@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { analyzeWatchlistSetup } from "./watchlist-setup-scanner.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -268,6 +269,152 @@ async function must(promise: PromiseLike<{ data: any; error: { message: string }
   const { data, error } = await promise;
   if (error) throw new Error(error.message);
   return data;
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, task: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await task(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function watchlistSetupScan(
+  service: any,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const batchSize = integer(body.batch_size, 20, 5, 20);
+  const offset = integer(body.offset, 0, 0, 10_000);
+  const maxCandidates = integer(body.max_candidates, 5, 1, 10);
+  const setupFilter = ["both", "reclaim_ema200", "near_support"].includes(String(body.setup || "both"))
+    ? String(body.setup || "both")
+    : "both";
+  const refreshStale = body.refresh_stale !== false;
+  const watchlist = await must(service
+    .from("watchlist_items")
+    .select("instrument_id")
+    .eq("user_id", userId));
+  const instrumentIds = unique((watchlist as Record<string, unknown>[])
+    .map((item) => String(item.instrument_id || ""))
+    .filter(Boolean));
+  if (!instrumentIds.length) {
+    return {
+      universe_total: 0,
+      processed: 0,
+      offset,
+      next_offset: null,
+      complete: true,
+      reclaim_ema200: [],
+      near_support: [],
+      failures: [],
+    };
+  }
+
+  const [instrumentRows, marketRows] = await Promise.all([
+    must(service
+      .from("instruments")
+      .select("id,symbol,display_name,asset_type")
+      .eq("user_id", userId)
+      .in("id", instrumentIds)
+      .in("asset_type", ["stock", "etf"])),
+    must(service
+      .from("market_pulse_latest")
+      .select("instrument_id,symbol,price,market_time,fetched_at,volume")
+      .eq("user_id", userId)
+      .eq("is_watchlist", true)),
+  ]);
+  const instruments = (instrumentRows as Record<string, unknown>[])
+    .sort((left, right) => String(left.symbol).localeCompare(String(right.symbol)));
+  const marketByInstrument = new Map((marketRows as Record<string, unknown>[])
+    .map((row) => [String(row.instrument_id || ""), row]));
+  const batch = instruments.slice(offset, offset + batchSize);
+
+  const scans = await mapWithConcurrency(batch, 4, async (instrument) => {
+    const symbol = String(instrument.symbol || "").trim().toUpperCase();
+    try {
+      const chartResponse = await fetch(`${supabaseUrl}/functions/v1/refresh-stock-prices`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${serviceRoleKey}`,
+          "apikey": serviceRoleKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "chart",
+          user_id: userId,
+          instrument_id: instrument.id,
+          timespan: "D",
+          count: 320,
+          refresh: refreshStale,
+        }),
+      });
+      const chart = await chartResponse.json().catch(() => ({ error: "Chart service returned invalid JSON" }));
+      if (!chartResponse.ok || chart?.error) throw new Error(String(chart?.error || `HTTP ${chartResponse.status}`));
+      return {
+        ok: true,
+        symbol,
+        analysis: analyzeWatchlistSetup({
+          symbol,
+          bars: chart.bars,
+          market: marketByInstrument.get(String(instrument.id)) || null,
+          fetchedAt: chart.fetched_at || null,
+          stale: chart.stale === true,
+        }),
+        refresh_error: chart.refresh_error || null,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        symbol,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  const setupRows = scans.flatMap((scan: any) => scan.ok && Array.isArray(scan.analysis?.setups) ? scan.analysis.setups : []);
+  const rank = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    Number(right.score || 0) - Number(left.score || 0) || String(left.symbol).localeCompare(String(right.symbol));
+  const reclaim = setupFilter === "near_support"
+    ? []
+    : setupRows.filter((row: Record<string, unknown>) => row.setup === "RECLAIM_EMA200").sort(rank).slice(0, maxCandidates);
+  const support = setupFilter === "reclaim_ema200"
+    ? []
+    : setupRows.filter((row: Record<string, unknown>) => row.setup === "NEAR_SUPPORT").sort(rank).slice(0, maxCandidates);
+  const nextOffset = offset + batch.length < instruments.length ? offset + batch.length : null;
+  const readySymbols = unique([...reclaim, ...support]
+    .filter((row: Record<string, unknown>) => row.status === "READY_FOR_4H")
+    .map((row: Record<string, unknown>) => String(row.symbol)));
+
+  return {
+    universe_total: instruments.length,
+    processed: batch.length,
+    offset,
+    next_offset: nextOffset,
+    complete: nextOffset == null,
+    daily_scan_only: true,
+    refresh_stale: refreshStale,
+    reclaim_ema200: reclaim,
+    near_support: support,
+    follow_up_symbols: readySymbols,
+    failures: scans.filter((scan: any) => !scan.ok).map((scan: any) => ({ symbol: scan.symbol, error: scan.error })),
+    data_quality: {
+      successful: scans.filter((scan: any) => scan.ok).length,
+      stale_fallbacks: scans.filter((scan: any) => scan.ok && scan.analysis?.metrics?.stale).length,
+      insufficient_history: scans.filter((scan: any) => scan.ok && scan.analysis?.eligible === false).length,
+    },
+    guidance: nextOffset == null
+      ? "Daily universe scan complete. Open 4H and then 1H only for READY_FOR_4H symbols."
+      : `Call scan_watchlist_setups again with offset=${nextOffset}; aggregate candidates before opening 4H/1H.`,
+  };
 }
 
 async function collectPages(
@@ -1640,6 +1787,13 @@ Deno.serve(async (request) => {
       if (body.section === "benchmarks") query = query.eq("is_benchmark", true);
       const rows = await must(query.order("symbol"));
       return response({ action, data: rows });
+    }
+
+    if (action === "watchlist_setups") {
+      return response({
+        action,
+        data: await watchlistSetupScan(service, supabaseUrl, serviceRoleKey, identity.user_id, body),
+      });
     }
 
     if (action === "smart_money") {

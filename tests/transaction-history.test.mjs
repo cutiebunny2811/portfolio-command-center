@@ -10,9 +10,10 @@ test("portfolio history loads canonical cash movements beside executions", () =>
   assert.match(app, /cashMovements/);
 });
 
-test("history dialog separates trades from cash activity", () => {
+test("history dialog separates trades, cash activity and FX", () => {
   assert.match(app, /data-history-view="trades"/);
   assert.match(app, /data-history-view="cash"/);
+  assert.match(app, /data-history-view="fx"/);
   assert.match(app, /Deposit/);
   assert.match(app, /Withdrawal/);
   assert.match(app, /Initial funding/);

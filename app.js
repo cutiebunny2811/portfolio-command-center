@@ -4,7 +4,8 @@
   const config = window.__APP_CONFIG__;
   const supabaseLib = window.supabase;
   const portfolioMath = window.PCCPortfolioMath;
-  if (!config?.supabaseUrl || !config?.supabasePublishableKey || !supabaseLib?.createClient || !portfolioMath?.portfolioValuation) {
+  const fxLedger = window.PCCFxLedger;
+  if (!config?.supabaseUrl || !config?.supabasePublishableKey || !supabaseLib?.createClient || !portfolioMath?.portfolioValuation || !fxLedger?.calculate) {
     document.body.innerHTML = '<main style="padding:40px;color:#fff;font-family:sans-serif">Dashboard configuration could not be loaded.</main>';
     return;
   }
@@ -34,6 +35,10 @@
   const compactMoney = (value) => new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1
   }).format(num(value));
+  const baht = (value, digits = 2) => new Intl.NumberFormat("th-TH", {
+    style: "currency", currency: "THB", minimumFractionDigits: digits, maximumFractionDigits: digits
+  }).format(num(value));
+  const fxRate = (value) => `${num(value).toFixed(4)} THB/USD`;
   const percent = (value, digits = 1) => `${num(value).toFixed(digits)}%`;
   const today = () => new Date().toISOString().slice(0, 10);
   const localDateTime = (value = Date.now()) => {
@@ -61,6 +66,7 @@
   const state = {
     user: null, member: null,
     portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [], executions: [], cashMovements: [],
+    fxProfiles: [], fxEntries: [], fxRate: null, fxReady: true, fxRateBusy: false,
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
@@ -616,6 +622,27 @@
       return [];
     }
     throw new Error(`Crypto Pulse: ${error.message}`);
+  }
+
+  async function optionalFxDataQuery() {
+    if (localPreviewEnabled) {
+      return { profiles: state.fxProfiles, entries: state.fxEntries, rate: state.fxRate };
+    }
+    const [{ data: profiles, error: profileError }, { data: entries, error: entryError }, { data: rates, error: rateError }] = await Promise.all([
+      db.from("portfolio_fx_profiles").select("*").order("effective_at"),
+      db.from("portfolio_fx_entries").select("*").order("occurred_at"),
+      db.from("fx_market_rates").select("*").eq("pair", "USDTHB").limit(1)
+    ]);
+    const error = profileError || entryError || rateError;
+    if (!error) {
+      state.fxReady = true;
+      return { profiles: profiles || [], entries: entries || [], rate: rates?.[0] || null };
+    }
+    if (/portfolio_fx_|fx_market_rates|schema cache|does not exist/i.test(error.message)) {
+      state.fxReady = false;
+      return { profiles: [], entries: [], rate: null };
+    }
+    throw new Error(`FX ledger: ${error.message}`);
   }
 
   async function optionalSmartMoneyQuery() {
@@ -1249,9 +1276,37 @@
     }
   }
 
+  async function refreshFxRate({ force = false, notify = false } = {}) {
+    if (!state.user || state.fxRateBusy || !state.fxReady) return null;
+    state.fxRateBusy = true;
+    try {
+      if (localPreviewEnabled) return { rate: state.fxRate, cached: true };
+      const { data, error } = await db.functions.invoke("refresh-fx-rate", { body: { force } });
+      if (error) {
+        let detail = error.message;
+        try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(data.error);
+      if (data?.rate) state.fxRate = data.rate;
+      if (notify) toast(data?.cached ? "USD/THB rate is already current" : "USD/THB rate updated");
+      return data;
+    } catch (error) {
+      console.warn(error);
+      if (notify) toast(`FX rate: ${friendlyError(error)}`, true);
+      return null;
+    } finally {
+      state.fxRateBusy = false;
+      if (dialog.open && dialog.classList.contains("dialog--history") && state.tradeHistoryView === "fx") {
+        refreshHistoryDialog(currentPortfolio());
+      }
+    }
+  }
+
   async function refreshDashboard() {
     await loadData();
     await refreshStockPrices({ force: true, notify: true });
+    await refreshFxRate({ force: true });
     if (state.watchlistView === "market") await refreshMarketPulse({ force: true, notify: true });
     if (state.watchlistView === "crypto") await refreshCryptoPulse({ force: true, notify: true });
     await refreshVisibleWatchlistChart();
@@ -1262,7 +1317,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, fxData, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -1271,6 +1326,7 @@
         query("Position capacity", db.from("position_capacity").select("*")),
         query("Transaction history", db.from("executions").select("id,portfolio_id,instrument_id,side,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").order("executed_at", { ascending: false }).limit(200)),
         query("Cash activity", db.from("cash_movements").select("id,portfolio_id,movement_type,amount,occurred_at,notes,metadata").order("occurred_at", { ascending: false }).limit(200)),
+        optionalFxDataQuery(),
         fetchLatestInstrumentPrices(),
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
@@ -1284,6 +1340,9 @@
         fetchBriefFeed()
       ]);
       Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents });
+      state.fxProfiles = fxData.profiles;
+      state.fxEntries = fxData.entries;
+      state.fxRate = fxData.rate;
       state.researchEntries = researchFeed.entries;
       state.researchTotal = num(researchFeed.total_count);
       applyEarningsFeed(earningsFeed);
@@ -1368,6 +1427,7 @@
     appShell.hidden = false;
     await loadData();
     await refreshStockPrices();
+    await refreshFxRate();
     if (state.route === "option-desk") await loadOptionDesk();
   }
 
@@ -2029,19 +2089,95 @@
     return `<div class="table-shell history-table-shell"><table class="cash-history-table"><thead><tr><th>Date</th><th>Movement</th><th>Cash effect</th><th>Notes</th></tr></thead><tbody>${tableRows}</tbody></table></div><div class="history-mobile-list">${mobileCards}</div><div class="pagination"><span>${start + 1}-${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} cash movements · latest 200 retained</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next</button></div></div>`;
   }
 
+  function fxProfileFor(portfolioId) {
+    return state.fxProfiles.find((profile) => profile.portfolio_id === portfolioId) || null;
+  }
+
+  function fxEntriesFor(portfolioId) {
+    return state.fxEntries.filter((entry) => entry.portfolio_id === portfolioId);
+  }
+
+  function fxSummaryFor(portfolio) {
+    return fxLedger.calculate({
+      profile: fxProfileFor(portfolio.id),
+      entries: fxEntriesFor(portfolio.id),
+      liveRate: state.fxRate?.rate
+    });
+  }
+
+  function fxHistoryDialogMarkup(portfolio) {
+    const profile = fxProfileFor(portfolio.id);
+    if (!profile) {
+      return `<section class="fx-empty-state"><p class="eyebrow">FX basis required</p><h3>Start from the dollars already here.</h3><p>Set the current USD funding balance and its average THB cost once. New deposits and withdrawals will update the weighted average automatically.</p><button class="button button--primary" type="button" data-action="fx-opening-setup">Set opening basis</button></section>`;
+    }
+
+    const summary = fxSummaryFor(portfolio);
+    const query = state.tradeHistoryQuery.trim().toLowerCase();
+    const cashById = new Map(state.cashMovements.map((movement) => [movement.id, movement]));
+    const rows = [...summary.timeline].reverse().filter((entry) => {
+      const movement = cashById.get(entry.cash_movement_id);
+      return !query || `${entry.direction} ${movement?.notes || ""}`.toLowerCase().includes(query);
+    });
+    const pages = Math.max(1, Math.ceil(rows.length / state.tradeHistoryPageSize));
+    state.tradeHistoryPage = clamp(state.tradeHistoryPage, 1, pages);
+    const start = (state.tradeHistoryPage - 1) * state.tradeHistoryPageSize;
+    const visible = rows.slice(start, start + state.tradeHistoryPageSize);
+    const liveAvailable = num(state.fxRate?.rate) > 0;
+    const unrealizedTone = summary.unrealizedPnl >= 0 ? "positive" : "negative";
+    const realizedTone = summary.realizedPnl >= 0 ? "positive" : "negative";
+    const sourceTime = state.fxRate?.source_updated_at || state.fxRate?.fetched_at;
+    const canEditOpening = fxEntriesFor(portfolio.id).length === 0;
+    const summaryMarkup = `<section class="fx-summary">
+      <div class="fx-summary__lead"><small>USD/THB LIVE</small><strong>${liveAvailable ? num(state.fxRate.rate).toFixed(4) : "—"}</strong><span>${esc(state.fxRate?.source || "Waiting for source")}${sourceTime ? ` · ${new Date(sourceTime).toLocaleDateString()}` : ""}</span></div>
+      <div><small>PORTFOLIO AVG</small><strong>${summary.averageRate.toFixed(4)}</strong><span>Weighted funding cost</span></div>
+      <div><small>TRACKED USD</small><strong>${money(summary.usdBalance)}</strong><span>Opening basis + FX activity</span></div>
+      <div><small>UNREALIZED FX P/L</small><strong class="${unrealizedTone}">${liveAvailable ? `${summary.unrealizedPnl >= 0 ? "+" : ""}${baht(summary.unrealizedPnl)}` : "—"}</strong><span>${liveAvailable ? percent(summary.unrealizedPercent, 2) : "Live rate required"}</span></div>
+      <div><small>REALIZED FX P/L</small><strong class="${realizedTone}">${summary.realizedPnl >= 0 ? "+" : ""}${baht(summary.realizedPnl)}</strong><span>Confirmed withdrawals</span></div>
+    </section>
+    <section class="fx-opening-strip"><div><small>OPENING BASIS · ${new Date(profile.effective_at).toLocaleDateString()}</small><strong>${money(profile.opening_usd_balance)} @ ${num(profile.opening_rate).toFixed(4)}</strong></div><div class="row-actions"><button class="button button--small" type="button" data-action="fx-rate-refresh" ${state.fxRateBusy ? "disabled" : ""}>${state.fxRateBusy ? "Refreshing..." : "Refresh rate"}</button>${canEditOpening ? `<button class="button button--small" type="button" data-action="fx-opening-setup">Edit basis</button>` : ""}</div></section>`;
+
+    if (!visible.length) {
+      return `${summaryMarkup}<div class="empty-state"><div><strong>No matching FX activity</strong>${query ? "Try another note or movement." : "Future deposits and withdrawals with THB amounts will appear here."}</div></div>`;
+    }
+
+    const formatted = visible.map((entry) => {
+      const movement = cashById.get(entry.cash_movement_id);
+      const occurred = new Date(entry.occurred_at);
+      const withdrawal = entry.direction === "withdrawal";
+      return {
+        entry,
+        withdrawal,
+        date: occurred.toLocaleDateString(),
+        time: occurred.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        note: movement?.notes || "No note"
+      };
+    });
+    const tableRows = formatted.map(({ entry, withdrawal, date, time, note }) =>
+      `<tr><td><span class="cell-main mono">${date}</span><span class="cell-sub">${time}</span></td><td><span class="status status--${withdrawal ? "risk" : "good"}">${withdrawal ? "WITHDRAWAL" : "DEPOSIT"}</span></td><td><strong class="mono">${withdrawal ? "-" : "+"}${money(entry.usd_amount)}</strong></td><td><strong class="mono">${withdrawal ? "+" : "-"}${baht(entry.thb_amount)}</strong></td><td><strong class="mono">${num(entry.effective_rate).toFixed(4)}</strong><span class="cell-sub">AVG AFTER ${num(entry.average_after).toFixed(4)}</span></td><td><strong class="mono ${entry.realized_pnl >= 0 ? "positive" : "negative"}">${withdrawal ? `${entry.realized_pnl >= 0 ? "+" : ""}${baht(entry.realized_pnl)}` : "—"}</strong><span class="cell-sub">${esc(note)}</span></td></tr>`
+    ).join("");
+    const mobileCards = formatted.map(({ entry, withdrawal, date, time, note }) =>
+      `<article class="history-mobile-card fx-history-card"><header><div><span class="status status--${withdrawal ? "risk" : "good"}">${withdrawal ? "WITHDRAWAL" : "DEPOSIT"}</span><strong class="mono">${withdrawal ? "-" : "+"}${money(entry.usd_amount)}</strong><span class="cell-sub">${esc(note)}</span></div></header><dl><div><dt>Date</dt><dd>${date}<small>${time}</small></dd></div><div><dt>Effective rate</dt><dd>${num(entry.effective_rate).toFixed(4)}<small>AVG after ${num(entry.average_after).toFixed(4)}</small></dd></div><div><dt>THB movement</dt><dd>${withdrawal ? "+" : "-"}${baht(entry.thb_amount)}</dd></div><div><dt>Realized FX P/L</dt><dd class="${entry.realized_pnl >= 0 ? "positive" : "negative"}">${withdrawal ? `${entry.realized_pnl >= 0 ? "+" : ""}${baht(entry.realized_pnl)}` : "—"}</dd></div></dl></article>`
+    ).join("");
+    return `${summaryMarkup}<div class="table-shell history-table-shell"><table class="fx-history-table"><thead><tr><th>Date</th><th>Movement</th><th>USD</th><th>THB</th><th>Rate</th><th>FX P/L / note</th></tr></thead><tbody>${tableRows}</tbody></table></div><div class="history-mobile-list">${mobileCards}</div><div class="pagination"><span>${start + 1}-${Math.min(start + state.tradeHistoryPageSize, rows.length)} of ${rows.length} FX movements</span><div><button class="button button--small" type="button" data-action="trade-history-prev" ${state.tradeHistoryPage <= 1 ? "disabled" : ""}>Prev</button> <span class="pagination__page">Page ${state.tradeHistoryPage} / ${pages}</span> <button class="button button--small" type="button" data-action="trade-history-next" ${state.tradeHistoryPage >= pages ? "disabled" : ""}>Next</button></div></div>`;
+  }
+
   function historyDialogMarkup(portfolio) {
-    return state.tradeHistoryView === "cash" ? cashHistoryDialogMarkup(portfolio) : tradeHistoryDialogMarkup(portfolio);
+    if (state.tradeHistoryView === "cash") return cashHistoryDialogMarkup(portfolio);
+    if (state.tradeHistoryView === "fx") return fxHistoryDialogMarkup(portfolio);
+    return tradeHistoryDialogMarkup(portfolio);
   }
 
   function historyTabsMarkup(portfolio) {
     const tradeCount = state.executions.filter((item) => item.portfolio_id === portfolio.id).length;
     const cashCount = state.cashMovements.filter((item) => item.portfolio_id === portfolio.id).length;
-    return `<nav class="history-tabs" aria-label="Transaction history views" role="tablist"><button class="${state.tradeHistoryView === "trades" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "trades"}" data-action="trade-history-view" data-history-view="trades"><span>01</span>Trades<strong>${tradeCount}</strong></button><button class="${state.tradeHistoryView === "cash" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "cash"}" data-action="trade-history-view" data-history-view="cash"><span>02</span>Cash activity<strong>${cashCount}</strong></button></nav>`;
+    const fxCount = state.fxEntries.filter((item) => item.portfolio_id === portfolio.id).length;
+    return `<nav class="history-tabs" aria-label="Transaction history views" role="tablist"><button class="${state.tradeHistoryView === "trades" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "trades"}" data-action="trade-history-view" data-history-view="trades"><span>01</span>Trades<strong>${tradeCount}</strong></button><button class="${state.tradeHistoryView === "cash" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "cash"}" data-action="trade-history-view" data-history-view="cash"><span>02</span>Cash activity<strong>${cashCount}</strong></button><button class="${state.tradeHistoryView === "fx" ? "is-active" : ""}" type="button" role="tab" aria-selected="${state.tradeHistoryView === "fx"}" data-action="trade-history-view" data-history-view="fx"><span>03</span>FX<strong>${fxCount}</strong></button></nav>`;
   }
 
   function refreshHistoryDialog(portfolio) {
     const body = $("#dialog-body");
     const cashView = state.tradeHistoryView === "cash";
+    const fxView = state.tradeHistoryView === "fx";
     $$("[data-history-view]", body).forEach((button) => {
       const active = button.dataset.historyView === state.tradeHistoryView;
       button.classList.toggle("is-active", active);
@@ -2050,32 +2186,57 @@
     const label = $("[data-history-search-label]", body);
     const search = $("[data-trade-history-search]", body);
     const retention = $("[data-history-retention]", body);
-    if (label) label.textContent = cashView ? "Search cash activity" : "Search ticker";
+    if (label) label.textContent = fxView ? "Search FX activity" : cashView ? "Search cash activity" : "Search ticker";
     if (search) {
       search.value = state.tradeHistoryQuery;
-      search.placeholder = cashView ? "Dividend, deposit, note..." : "RKLB, NVDA...";
+      search.placeholder = fxView ? "Deposit, withdrawal, note..." : cashView ? "Dividend, deposit, note..." : "RKLB, NVDA...";
     }
-    if (retention) retention.textContent = cashView ? "Loads the latest 200 cash movements" : "Loads the latest 200 trades";
+    if (retention) retention.textContent = fxView ? "Weighted-average USD/THB funding ledger" : cashView ? "Loads the latest 200 cash movements" : "Loads the latest 200 trades";
     const region = $("#trade-history-region", body);
     if (region) region.innerHTML = historyDialogMarkup(portfolio);
   }
 
-  function openExecutionHistoryDialog() {
+  function openExecutionHistoryDialog(initialView = "trades") {
     const portfolio = currentPortfolio();
     state.tradeHistoryPage = 1;
     state.tradeHistoryQuery = "";
-    state.tradeHistoryView = "trades";
+    state.tradeHistoryView = ["trades", "cash", "fx"].includes(initialView) ? initialView : "trades";
     openDialog({
       kicker: `${portfolio.name} · Audit trail`, title: "Transaction history", cancelLabel: "Done", wide: true, variant: "history",
       body: `${historyTabsMarkup(portfolio)}<div class="history-commandbar"><label class="field"><span data-history-search-label>Search ticker</span><input type="search" autocomplete="off" data-trade-history-search placeholder="RKLB, NVDA..."></label><span class="meta" data-history-retention>Loads the latest 200 trades</span></div><div id="trade-history-region">${historyDialogMarkup(portfolio)}</div>`,
       onSubmit: null
     });
+    refreshHistoryDialog(portfolio);
     const search = $("[data-trade-history-search]", $("#dialog-body"));
     search?.addEventListener("input", () => {
       state.tradeHistoryQuery = search.value;
       state.tradeHistoryPage = 1;
       const region = $("#trade-history-region", $("#dialog-body"));
       if (region) region.innerHTML = historyDialogMarkup(portfolio);
+    });
+  }
+
+  function openFxOpeningDialog() {
+    const portfolio = currentPortfolio();
+    const existing = fxProfileFor(portfolio.id);
+    const currentBookCapital = portfolioStats(portfolio).capital;
+    openDialog({
+      kicker: `${portfolio.name} · FX opening basis`,
+      title: existing ? "Edit FX basis" : "Set FX basis",
+      submitLabel: existing ? "Update basis" : "Start tracking",
+      body: `<div class="field-row"><label class="field"><span>Tracked USD balance</span><input name="opening_usd" type="number" min="0" step="0.01" value="${existing ? num(existing.opening_usd_balance).toFixed(2) : currentBookCapital.toFixed(2)}" required></label><label class="field"><span>Average USD/THB cost</span><input name="opening_rate" type="number" min="0.0001" step="0.0001" value="${existing ? num(existing.opening_rate).toFixed(4) : ""}" placeholder="33.8080" required></label></div><label class="field"><span>Effective from</span><input name="effective_at" type="datetime-local" value="${localDateTime(existing?.effective_at || Date.now())}" required></label><div class="warning-box">This is an opening snapshot, not a deposit. It does not change portfolio cash. Once a new FX-linked cash movement is confirmed, the opening basis locks to preserve the audit trail.</div>`,
+      onSubmit: async (form) => {
+        await rpc("api_set_fx_opening_basis", {
+          p_portfolio_id: portfolio.id,
+          p_opening_usd_balance: num(form.get("opening_usd")),
+          p_opening_rate: num(form.get("opening_rate")),
+          p_effective_at: new Date(form.get("effective_at")).toISOString()
+        });
+        closeDialog();
+        await loadData({ quiet: true });
+        openExecutionHistoryDialog("fx");
+        toast("FX opening basis saved");
+      }
     });
   }
 
@@ -4572,11 +4733,15 @@
   function previewCells(preview) {
     const labels = {
       movement_type: "Movement", amount: "Amount", cash_before: "Cash before", cash_effect: "Cash effect", cash_after: "Cash after",
+      thb_amount: "THB paid / received", fx_rate: "Effective FX rate",
       side: "Side", quantity: "Quantity", price: "Price", gross_amount: "Gross amount", fee: "Fees",
       deployed_before: "Deployed before", deployed_after: "Deployed after", allocation_limit_percent: "Allocation limit", notional_after: "Notional after"
     };
     const moneyKeys = new Set(["amount", "cash_before", "cash_effect", "cash_after", "price", "gross_amount", "fee", "deployed_before", "deployed_after", "notional_after"]);
-    return Object.entries(preview).filter(([key, value]) => labels[key] && value != null).map(([key, value]) => `<div class="preview-cell"><small>${labels[key]}</small><strong>${moneyKeys.has(key) ? money(value, key === "price" ? 4 : 2) : key.includes("percent") ? percent(value) : esc(value)}</strong></div>`).join("");
+    return Object.entries(preview).filter(([key, value]) => labels[key] && value != null).map(([key, value]) => {
+      const formatted = key === "thb_amount" ? baht(value) : key === "fx_rate" ? fxRate(value) : moneyKeys.has(key) ? money(value, key === "price" ? 4 : 2) : key.includes("percent") ? percent(value) : esc(value);
+      return `<div class="preview-cell"><small>${labels[key]}</small><strong>${formatted}</strong></div>`;
+    }).join("");
   }
 
   function openDraftConfirmation(kind, draft, confirmFn) {
@@ -4600,15 +4765,47 @@
     const portfolio = currentPortfolio();
     openDialog({
       kicker: `${portfolio.name} · Draft → Confirm`, title: "Record cash movement", submitLabel: "Preview movement",
-      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required></label></div><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
+      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required></label></div><section class="cash-fx-fields" data-cash-fx-fields><div class="field-row"><label class="field"><span>Net amount (THB)</span><input name="thb_amount" type="number" min="0.01" step="0.01" required></label><div class="cash-fx-rate"><small>EFFECTIVE FX RATE</small><strong data-cash-fx-rate>—</strong><span>Calculated from THB ÷ USD</span></div></div><p class="form-hint">Enter the exact net THB paid or received. Your broker charges no separate FX fee, so PCC derives the effective rate directly.</p></section><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
       onSubmit: async (form) => {
+        const movementType = String(form.get("type") || "");
+        const usdAmount = num(form.get("amount"));
+        const usesFx = ["deposit", "withdrawal", "initial_funding"].includes(movementType);
+        const thbAmount = usesFx ? num(form.get("thb_amount")) : 0;
+        const idempotencyKey = uid("web-cash");
         const draft = await rpc("api_create_cash_draft", {
-          p_portfolio_id: portfolio.id, p_movement_type: form.get("type"), p_amount: num(form.get("amount")),
-          p_idempotency_key: uid("web-cash"), p_occurred_at: new Date(form.get("occurred")).toISOString(), p_notes: form.get("notes") || null
+          p_portfolio_id: portfolio.id, p_movement_type: movementType, p_amount: usdAmount,
+          p_idempotency_key: idempotencyKey, p_occurred_at: new Date(form.get("occurred")).toISOString(), p_notes: form.get("notes") || null
         });
+        if (usesFx) {
+          const prepared = await rpc("api_prepare_cash_fx", {
+            p_portfolio_id: portfolio.id,
+            p_movement_type: movementType,
+            p_usd_amount: usdAmount,
+            p_thb_amount: thbAmount,
+            p_idempotency_key: idempotencyKey
+          });
+          draft.preview = { ...(draft.preview || {}), thb_amount: prepared.thb_amount, fx_rate: prepared.effective_rate };
+        }
         openDraftConfirmation("cash movement", draft, (id, token) => rpc("api_confirm_cash_draft", { p_draft_id: id, p_confirmation_token: token }));
       }
     });
+    const body = $("#dialog-body");
+    const type = $('[name="type"]', body);
+    const usd = $('[name="amount"]', body);
+    const thb = $('[name="thb_amount"]', body);
+    const fxFields = $("[data-cash-fx-fields]", body);
+    const rate = $("[data-cash-fx-rate]", body);
+    const syncFxFields = () => {
+      const enabled = ["deposit", "withdrawal", "initial_funding"].includes(type.value);
+      fxFields.hidden = !enabled;
+      thb.required = enabled;
+      const calculated = num(usd.value) > 0 && num(thb.value) > 0 ? num(thb.value) / num(usd.value) : 0;
+      rate.textContent = calculated > 0 ? fxRate(calculated) : "—";
+    };
+    type.addEventListener("change", syncFxFields);
+    usd.addEventListener("input", syncFxFields);
+    thb.addEventListener("input", syncFxFields);
+    syncFxFields();
   }
 
   function optionFields() {
@@ -5354,11 +5551,13 @@
     else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
     else if (action === "execution-history") openExecutionHistoryDialog();
     else if (action === "trade-history-view") {
-      state.tradeHistoryView = target.dataset.historyView === "cash" ? "cash" : "trades";
+      state.tradeHistoryView = ["trades", "cash", "fx"].includes(target.dataset.historyView) ? target.dataset.historyView : "trades";
       state.tradeHistoryPage = 1;
       state.tradeHistoryQuery = "";
       refreshHistoryDialog(currentPortfolio());
     }
+    else if (action === "fx-opening-setup") openFxOpeningDialog();
+    else if (action === "fx-rate-refresh") await refreshFxRate({ force: true, notify: true });
     else if (action === "trade-history-edit") openExecutionEditDialog(target.dataset.executionId);
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
@@ -5655,6 +5854,16 @@
       { id: "cm-3", portfolio_id: "p-long", movement_type: "tax", amount: 6.39, occurred_at: "2026-08-13T13:00:00Z", notes: "Dividend withholding tax", metadata: {} },
       { id: "cm-4", portfolio_id: "p-swing", movement_type: "withdrawal", amount: 250, occurred_at: "2026-08-09T09:15:00Z", notes: "Cash withdrawal", metadata: {} }
     ];
+    const fxProfiles = [
+      { portfolio_id: "p-long", opening_usd_balance: 10500, opening_thb_basis: 354984, opening_rate: 33.808, effective_at: "2026-08-01T00:00:00Z", source: "preview" },
+      { portfolio_id: "p-swing", opening_usd_balance: 9950, opening_thb_basis: 311573.305, opening_rate: 31.3139, effective_at: "2026-08-01T00:00:00Z", source: "preview" },
+      { portfolio_id: "p-opt", opening_usd_balance: 6300, opening_thb_basis: 199435.32, opening_rate: 31.6564, effective_at: "2026-08-01T00:00:00Z", source: "preview" }
+    ];
+    const fxEntries = [
+      { id: "fx-1", portfolio_id: "p-long", cash_movement_id: "cm-2", direction: "deposit", usd_amount: 1000, thb_amount: 32950, effective_rate: 32.95, occurred_at: "2026-08-08T10:30:00Z" },
+      { id: "fx-2", portfolio_id: "p-swing", cash_movement_id: "cm-4", direction: "withdrawal", usd_amount: 250, thb_amount: 8250, effective_rate: 33, occurred_at: "2026-08-09T09:15:00Z" }
+    ];
+    const fxMarketRate = { pair: "USDTHB", rate: 32.9536, source: "open.er-api.com", source_updated_at: "2026-08-20T00:00:00Z", fetched_at: "2026-08-20T02:00:00Z" };
     const capacities = targets.map((target) => {
       const portfolio = portfolios.find((p) => p.id === target.portfolio_id);
       const position = positions.find((p) => p.portfolio_id === target.portfolio_id && p.instrument_id === target.instrument_id);
@@ -5865,7 +6074,7 @@
       { id: "notice-smart", notification_type: "smart_money_brief", title: "Smart Money Brief", preview: smartMoneyBriefs[0].summary, route: "smart-money-briefs", entity_id: "smart-brief-preview", created_at: new Date().toISOString(), read_at: null },
       { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, route: "briefs", entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, executions, cashMovements, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, smartMoneyBriefs, notifications, selectedBriefId: "brief-preview", selectedSmartMoneyBriefId: "smart-brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda", cryptoPulse: previewCryptoPulseRows() });
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, executions, cashMovements, fxProfiles, fxEntries, fxRate: fxMarketRate, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, smartMoneyBriefs, notifications, selectedBriefId: "brief-preview", selectedSmartMoneyBriefId: "smart-brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda", cryptoPulse: previewCryptoPulseRows() });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;

@@ -69,6 +69,7 @@
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "15M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
     cryptoPulse: [], cryptoPulseReady: true, cryptoPulseBusy: false,
+    cryptoChartBars: [], cryptoChartSymbol: "BTCUSDT", cryptoChartTimeframe: "1D", cryptoChartBusy: false, cryptoChartMeta: null,
     marketPulseMode: "rotation", marketPulseWindow: "1D", expandedRotationSymbol: null,
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
     smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
@@ -103,8 +104,11 @@
   let toastTimer = null;
   let researchSearchTimer = null;
   let watchlistChart = null;
+  let cryptoChart = null;
   let watchlistBarsRequestId = 0;
+  let cryptoChartRequestId = 0;
   let watchlistChartRenderId = 0;
+  let cryptoChartRenderId = 0;
   let optionDeskRequestId = 0;
   const watchlistChartRefreshes = new Set();
   let authEntryPromise = null;
@@ -116,6 +120,12 @@
     watchlistChart = null;
   }
 
+  function destroyCryptoChart() {
+    if (!cryptoChart) return;
+    cryptoChart.remove();
+    cryptoChart = null;
+  }
+
   function invalidateWatchlistBarsRequest() {
     watchlistBarsRequestId += 1;
     state.watchlistChartBusy = false;
@@ -123,7 +133,9 @@
 
   function invalidateWatchlistChartRender() {
     watchlistChartRenderId += 1;
+    cryptoChartRenderId += 1;
     destroyWatchlistChart();
+    destroyCryptoChart();
   }
 
   function toast(message, isError = false) {
@@ -1213,6 +1225,11 @@
       }
       if (data?.error) throw new Error(data.error);
       state.cryptoPulse = Array.isArray(data?.rows) ? data.rows : await optionalCryptoPulseQuery();
+      if (!state.cryptoPulse.some((row) => row.symbol === state.cryptoChartSymbol)) {
+        state.cryptoChartSymbol = state.cryptoPulse[0]?.symbol || "BTCUSDT";
+        state.cryptoChartBars = [];
+        state.cryptoChartMeta = null;
+      }
       if (notify) {
         const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
         toast(failed
@@ -3244,6 +3261,78 @@
     return `${parsed > 0 ? "+" : ""}${parsed.toFixed(digits)}%`;
   }
 
+  const cryptoChartConfigs = {
+    "15M": { interval: "15m", range: "3D", count: 320 },
+    "1H": { interval: "1h", range: "2W", count: 320 },
+    "4H": { interval: "4h", range: "2M", count: 320 },
+    "1D": { interval: "1d", range: "10M", count: 320 }
+  };
+
+  function currentCryptoChartConfig(timeframe = state.cryptoChartTimeframe) {
+    return cryptoChartConfigs[timeframe] || cryptoChartConfigs["1D"];
+  }
+
+  function cryptoChartRow() {
+    return state.cryptoPulse.find((row) => row.symbol === state.cryptoChartSymbol) || state.cryptoPulse[0] || null;
+  }
+
+  async function loadCryptoChart(symbol = state.cryptoChartSymbol, timeframe = state.cryptoChartTimeframe, { force = false } = {}) {
+    const selectedSymbol = state.cryptoPulse.some((row) => row.symbol === symbol) ? symbol : state.cryptoPulse[0]?.symbol;
+    if (!selectedSymbol) return;
+    const requestedTimeframe = cryptoChartConfigs[timeframe] ? timeframe : "1D";
+    const config = currentCryptoChartConfig(requestedTimeframe);
+    const requestId = ++cryptoChartRequestId;
+    const changed = state.cryptoChartSymbol !== selectedSymbol || state.cryptoChartMeta?.interval !== config.interval;
+    state.cryptoChartSymbol = selectedSymbol;
+    state.cryptoChartTimeframe = requestedTimeframe;
+    state.cryptoChartBusy = true;
+    if (changed) {
+      state.cryptoChartBars = [];
+      state.cryptoChartMeta = null;
+    }
+    if (state.route === "watchlist" && state.watchlistView === "crypto") renderWatchlist();
+    try {
+      let data;
+      if (localPreviewEnabled) {
+        data = {
+          bars: previewBars(selectedSymbol, config.count, requestedTimeframe),
+          cached: true,
+          stale: false,
+          fetched_at: new Date().toISOString(),
+          source: "binance_public",
+          interval: config.interval
+        };
+      } else {
+        const result = await db.functions.invoke("refresh-crypto-pulse", {
+          body: { action: "chart", symbol: selectedSymbol, interval: config.interval, force }
+        });
+        if (result.error) {
+          let detail = result.error.message;
+          try { detail = (await result.error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+          throw new Error(detail);
+        }
+        data = result.data;
+        if (data?.error) throw new Error(data.error);
+      }
+      if (requestId !== cryptoChartRequestId) return;
+      state.cryptoChartBars = Array.isArray(data?.bars) ? data.bars : [];
+      state.cryptoChartMeta = {
+        interval: data?.interval || config.interval,
+        cached: data?.cached === true,
+        stale: data?.stale === true,
+        fetchedAt: data?.fetched_at || null,
+        source: data?.source || "binance_public"
+      };
+      if (!state.cryptoChartBars.length) throw new Error(`${selectedSymbol.replace("USDT", "")} chart returned no bars`);
+    } catch (error) {
+      if (requestId === cryptoChartRequestId) toast(`Crypto chart: ${friendlyError(error)}`, true);
+    } finally {
+      if (requestId !== cryptoChartRequestId) return;
+      state.cryptoChartBusy = false;
+      if (state.route === "watchlist" && state.watchlistView === "crypto") renderWatchlist();
+    }
+  }
+
   function marketPulseFreshness(rows = state.marketPulse) {
     const latest = rows.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
     if (!latest.length) return "Waiting for first sync";
@@ -3307,14 +3396,25 @@
     const btcFunding = cryptoFundingRead(btc.funding_rate);
     const rangePosition = cryptoRangePosition(btc);
     const nextFunding = btc.next_funding_time ? new Date(btc.next_funding_time) : null;
+    const chartRow = cryptoChartRow() || btc;
+    const chartConfig = currentCryptoChartConfig();
+    const chartBars = state.cryptoChartBars;
+    const chartFirst = chartBars[0];
+    const chartLast = chartBars[chartBars.length - 1];
+    const chartMove = chartFirst && chartLast && num(chartFirst.close) ? (num(chartLast.close) / num(chartFirst.close) - 1) * 100 : 0;
+    const chartLevels = chartTechnicalLevels(chartBars, state.cryptoChartTimeframe);
+    const chartFetchedAt = state.cryptoChartMeta?.fetchedAt ? new Date(state.cryptoChartMeta.fetchedAt) : null;
+    const chartFreshness = chartFetchedAt && Number.isFinite(chartFetchedAt.getTime())
+      ? `${state.cryptoChartMeta?.stale ? "STALE CACHE" : state.cryptoChartMeta?.cached ? "CACHED" : "REFRESHED"} · ${chartFetchedAt.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+      : `WAITING FOR ${state.cryptoChartTimeframe} CACHE`;
     const assetRows = rows.map((row, index) => {
       const change = num(row.price_change_percent_24h);
       const funding = cryptoFundingRead(row.funding_rate);
       const basis = num(row.index_price) ? (num(row.mark_price) - num(row.index_price)) / num(row.index_price) * 100 : null;
       const openInterestNotional = num(row.open_interest) * (num(row.mark_price) || num(row.price));
-      return `<article class="crypto-asset-row">
+      return `<article class="crypto-asset-row ${row.symbol === chartRow.symbol ? "is-active" : ""}">
         <span class="crypto-asset-row__rank mono">${String(index + 1).padStart(2, "0")}</span>
-        <div class="crypto-asset-row__identity">${cryptoAssetMark(row)}<span><strong>${esc(row.display_symbol)}</strong><small>${esc(row.display_name)}</small></span></div>
+        <button class="crypto-asset-row__identity" type="button" data-action="crypto-chart-symbol" data-symbol="${row.symbol}" aria-label="Open ${esc(row.display_symbol)} chart">${cryptoAssetMark(row)}<span><strong>${esc(row.display_symbol)}</strong><small>${esc(row.display_name)}</small></span></button>
         <div><small>SPOT</small><strong class="mono">${cryptoPrice(row.price)}</strong></div>
         <div><small>24H</small><strong class="mono ${change >= 0 ? "positive" : "negative"}">${signedPercent(change)}</strong></div>
         <div><small>QUOTE VOLUME</small><strong class="mono">${num(row.quote_volume_24h) ? `$${compactNumber(row.quote_volume_24h)}` : "—"}</strong></div>
@@ -3344,13 +3444,31 @@
           <div><small>NEXT FUNDING</small><strong class="mono">${nextFunding && Number.isFinite(nextFunding.getTime()) ? nextFunding.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</strong><span>Bangkok time</span></div>
         </div>
       </section>
+      <section class="crypto-chart-desk" aria-label="Crypto candlestick chart">
+        <header class="crypto-chart-head">
+          <div><span class="section-index">02 / BINANCE CHART DESK</span><h2>${esc(chartRow.display_symbol)} on the tape.</h2><p>${esc(chartRow.display_name)} · 24/7 spot market</p></div>
+          <div class="crypto-chart-quote"><strong class="mono">${cryptoPrice(chartRow.price)}</strong><span class="mono ${num(chartRow.price_change_percent_24h) >= 0 ? "positive" : "negative"}">${signedPercent(chartRow.price_change_percent_24h)} / 24H</span></div>
+        </header>
+        <div class="crypto-chart-command">
+          <nav class="crypto-symbol-switch" aria-label="Crypto chart asset">${rows.map((row) => `<button type="button" class="${row.symbol === chartRow.symbol ? "is-active" : ""}" data-action="crypto-chart-symbol" data-symbol="${row.symbol}" aria-pressed="${row.symbol === chartRow.symbol}">${esc(row.display_symbol)}</button>`).join("")}</nav>
+          <div class="chart-switches"><nav class="range-switch" aria-label="Crypto chart timeframe">${Object.keys(cryptoChartConfigs).map((frame) => `<button type="button" class="${frame === state.cryptoChartTimeframe ? "is-active" : ""}" data-action="crypto-chart-timeframe" data-timeframe="${frame}" aria-pressed="${frame === state.cryptoChartTimeframe}">${frame}</button>`).join("")}</nav><span class="chart-range-label">${chartConfig.range} · ${chartConfig.count} bars</span></div>
+          <div class="chart-toolbar-meta"><span class="chart-cache-status">${state.cryptoChartBusy && chartBars.length ? "Refreshing behind cache" : chartFreshness}</span><div class="chart-legend"><span class="ma20">EMA20</span><span class="ma50">EMA50</span><span class="ma200">EMA200</span></div></div>
+        </div>
+        ${chartBars.length ? `<div id="crypto-chart" role="img" tabindex="0" aria-label="${esc(chartRow.display_symbol)} interactive ${state.cryptoChartTimeframe} Binance candlestick chart with volume and exponential moving averages"></div>${chartLevelMarkup(chartLevels, state.cryptoChartTimeframe)}` : state.cryptoChartBusy ? `<div class="watchlist-chart-state"><span></span><p>Opening ${esc(chartRow.display_symbol)} ${state.cryptoChartTimeframe} from the shared cache…</p></div>` : `<div class="watchlist-chart-state"><p>${state.cryptoChartTimeframe} chart unavailable. Try refresh again.</p></div>`}
+        <footer class="crypto-chart-foot">
+          <div><small>${chartConfig.range} MOVE</small><strong class="mono ${chartMove >= 0 ? "positive" : "negative"}">${signedPercent(chartMove)}</strong></div>
+          <div><small>LATEST VOLUME</small><strong class="mono">${chartLast ? compactNumber(chartLast.volume) : "—"}</strong></div>
+          <div><small>DATA SOURCE</small><strong class="mono">BINANCE PUBLIC · ${state.cryptoChartTimeframe}</strong></div>
+          <button class="button button--small" type="button" data-action="crypto-chart-refresh" ${state.cryptoChartBusy ? "disabled" : ""}>Refresh chart</button>
+        </footer>
+      </section>
       <section class="crypto-tape">
-        <div class="section-head crypto-section-head"><div><span class="section-index">02 / CORE TAPE</span><h2>Majors, not the whole casino.</h2></div><p>Your list is private. Market snapshots are shared so every member reads the same public tape without duplicating requests.</p></div>
+        <div class="section-head crypto-section-head"><div><span class="section-index">03 / CORE TAPE</span><h2>Majors, not the whole casino.</h2></div><p>Your list is private. Market snapshots are shared so every member reads the same public tape without duplicating requests.</p></div>
         <div class="crypto-asset-head"><span>#</span><span>ASSET</span><span>SPOT</span><span>24H</span><span>QUOTE VOLUME</span><span>LEVERAGE</span><span>POSITIONING</span><span></span></div>
         <div class="crypto-assets">${assetRows}</div>
       </section>
       <section class="crypto-method">
-        <span>03 / HOW TO READ IT</span>
+        <span>04 / HOW TO READ IT</span>
         <div><strong>Price</strong><p>24-hour direction and range answer what the market is doing.</p></div>
         <div><strong>Funding</strong><p>Positive means longs pay shorts. High positive funding can make a rally more fragile.</p></div>
         <div><strong>Open interest</strong><p>Approximate outstanding futures exposure. It measures participation, not bullishness by itself.</p></div>
@@ -3719,9 +3837,118 @@
     watchlistChart.timeScale().fitContent();
   }
 
+  function drawCryptoChart() {
+    const container = $("#crypto-chart");
+    if (!container || !state.cryptoChartBars.length) return;
+    destroyCryptoChart();
+    container.replaceChildren();
+    const charts = window.LightweightCharts;
+    if (!charts?.createChart) {
+      container.innerHTML = '<p class="chart-load-error">Interactive chart library could not be loaded.</p>';
+      return;
+    }
+    const bars = [...new Map(state.cryptoChartBars.map((bar) => {
+      const stamp = new Date(bar.time).getTime();
+      return [Number.isFinite(stamp) ? Math.floor(stamp / 1000) : String(bar.time), bar];
+    })).entries()].map(([time, bar]) => ({
+      time,
+      open: num(bar.open),
+      high: num(bar.high),
+      low: num(bar.low),
+      close: num(bar.close),
+      volume: num(bar.volume)
+    })).sort((a, b) => Number(a.time) - Number(b.time));
+
+    cryptoChart = charts.createChart(container, {
+      autoSize: true,
+      layout: {
+        background: { type: charts.ColorType.Solid, color: "#0b0b0b" },
+        textColor: "#77746d",
+        fontFamily: '"JetBrains Mono", monospace',
+        fontSize: 10,
+        attributionLogo: true
+      },
+      grid: {
+        vertLines: { color: "rgba(245,245,245,.055)" },
+        horzLines: { color: "rgba(245,245,245,.075)" }
+      },
+      rightPriceScale: {
+        borderColor: "rgba(245,245,245,.16)",
+        scaleMargins: { top: .07, bottom: .24 }
+      },
+      timeScale: {
+        borderColor: "rgba(245,245,245,.16)",
+        rightOffset: 4,
+        barSpacing: 8,
+        minBarSpacing: 2,
+        timeVisible: state.cryptoChartTimeframe !== "1D",
+        secondsVisible: false
+      },
+      crosshair: {
+        mode: charts.CrosshairMode.Normal,
+        vertLine: { color: "rgba(212,175,55,.55)", width: 1, labelBackgroundColor: "#a50000" },
+        horzLine: { color: "rgba(212,175,55,.38)", width: 1, labelBackgroundColor: "#a50000" }
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: { axisPressedMouseMove: { time: true, price: true }, mouseWheel: true, pinch: true },
+      kineticScroll: { mouse: true, touch: true }
+    });
+
+    const candleSeries = cryptoChart.addSeries(charts.CandlestickSeries, {
+      upColor: "#2b9e70",
+      downColor: "#d32323",
+      wickUpColor: "#55b98d",
+      wickDownColor: "#ed3b3b",
+      borderVisible: false,
+      priceLineColor: "#d4af37",
+      priceLineWidth: 1,
+      lastValueVisible: true
+    });
+    candleSeries.setData(bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
+
+    const volumeSeries = cryptoChart.addSeries(charts.HistogramSeries, {
+      priceScaleId: "volume",
+      priceFormat: { type: "volume" },
+      lastValueVisible: false,
+      priceLineVisible: false
+    });
+    volumeSeries.setData(bars.map((bar) => ({
+      time: bar.time,
+      value: bar.volume,
+      color: bar.close >= bar.open ? "rgba(43,158,112,.44)" : "rgba(211,35,35,.42)"
+    })));
+    cryptoChart.priceScale("volume").applyOptions({ visible: false, scaleMargins: { top: .82, bottom: 0 } });
+
+    [[20, "#d4af37", 2], [50, "#f5f5f5", 1], [200, "#a50000", 2]].forEach(([period, color, lineWidth]) => {
+      const series = cryptoChart.addSeries(charts.LineSeries, {
+        color,
+        lineWidth,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false
+      });
+      const values = exponentialMovingAverage(bars, period);
+      series.setData(values.flatMap((value, index) => value == null ? [] : [{ time: bars[index].time, value }]));
+    });
+
+    const levels = chartTechnicalLevels(bars, state.cryptoChartTimeframe);
+    [
+      ["R1", levels.resistances[0], "#e04b4b", charts.LineStyle.Solid],
+      ["R2", levels.resistances[1], "#8f2727", charts.LineStyle.Dashed],
+      ["S1", levels.supports[0], "#55b98d", charts.LineStyle.Solid],
+      ["S2", levels.supports[1], "#24765b", charts.LineStyle.Dashed]
+    ].forEach(([title, level, color, lineStyle]) => {
+      if (!level) return;
+      candleSeries.createPriceLine({ price: level.price, color, lineWidth: 1, lineStyle, axisLabelVisible: true, title });
+    });
+    cryptoChart.timeScale().fitContent();
+  }
+
   function renderWatchlist() {
     const chartRenderId = ++watchlistChartRenderId;
+    const cryptoRenderId = ++cryptoChartRenderId;
     destroyWatchlistChart();
+    destroyCryptoChart();
     if (state.watchlistView === "crypto") {
       viewRoot.innerHTML = `
         ${pageHead(
@@ -3733,6 +3960,11 @@
         ${marketPulseTabs()}
         ${!state.cryptoPulseReady ? `<div class="warning-box watchlist-setup"><strong>One setup step remains.</strong> Apply migration <code>20260821010000_crypto_pulse.sql</code>, then refresh this page.</div>` : ""}
         ${state.cryptoPulseBusy && !state.cryptoPulse.length ? `<div class="pulse-loading"><span></span><p>Reading Binance public spot and futures data…</p></div>` : renderCryptoPulse()}`;
+      requestAnimationFrame(() => {
+        if (cryptoRenderId !== cryptoChartRenderId) return;
+        if (state.route !== "watchlist" || state.watchlistView !== "crypto") return;
+        drawCryptoChart();
+      });
       return;
     }
     if (state.watchlistView === "market") {
@@ -3812,7 +4044,8 @@
       const open = close;
       close = Math.max(open + change, 2);
       const date = new Date();
-      if (timeframe === "1H") date.setUTCHours(date.getUTCHours() - index);
+      if (timeframe === "15M") date.setUTCMinutes(date.getUTCMinutes() - index * 15);
+      else if (timeframe === "1H") date.setUTCHours(date.getUTCHours() - index);
       else if (timeframe === "4H") date.setUTCHours(date.getUTCHours() - index * 4);
       else date.setUTCDate(date.getUTCDate() - index);
       rows.push({ time: date.toISOString(), open, close, high: Math.max(open, close) * 1.012, low: Math.min(open, close) * .988, volume: 800000 + seed * 70 });
@@ -3986,7 +4219,14 @@
         await rpc("api_remove_crypto_watchlist_item", { p_symbol: symbol });
         closeDialog();
         state.cryptoPulse = await optionalCryptoPulseQuery();
-        renderWatchlist();
+        if (state.cryptoChartSymbol === symbol) {
+          state.cryptoChartSymbol = state.cryptoPulse[0]?.symbol || "BTCUSDT";
+          state.cryptoChartBars = [];
+          state.cryptoChartMeta = null;
+          await loadCryptoChart();
+        } else {
+          renderWatchlist();
+        }
         toast(`${row?.display_symbol || symbol.replace("USDT", "")} removed from Crypto Pulse`);
       }
     });
@@ -4880,8 +5120,9 @@
           await loadWatchlistBars();
         } else if (state.route === "watchlist" && state.watchlistView === "market" && !state.marketPulse.length) {
           await refreshMarketPulse();
-        } else if (state.route === "watchlist" && state.watchlistView === "crypto" && !state.cryptoPulse.length) {
-          await refreshCryptoPulse();
+        } else if (state.route === "watchlist" && state.watchlistView === "crypto") {
+          if (!state.cryptoPulse.length) await refreshCryptoPulse();
+          if (!state.cryptoChartBars.length) await loadCryptoChart();
         }
       }
       return;
@@ -4968,12 +5209,16 @@
         const latest = state.cryptoPulse.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
         const stale = !latest.length || Date.now() - Math.max(...latest) >= 2 * 60_000;
         if (stale) await refreshCryptoPulse();
+        if (!state.cryptoChartBars.length) await loadCryptoChart();
       } else if (state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
         await loadWatchlistBars();
       }
     }
     else if (action === "market-pulse-refresh") await refreshMarketPulse({ force: true, notify: true });
     else if (action === "crypto-pulse-refresh") await refreshCryptoPulse({ force: true, notify: true });
+    else if (action === "crypto-chart-symbol") await loadCryptoChart(target.dataset.symbol, state.cryptoChartTimeframe);
+    else if (action === "crypto-chart-timeframe") await loadCryptoChart(state.cryptoChartSymbol, target.dataset.timeframe);
+    else if (action === "crypto-chart-refresh") await loadCryptoChart(state.cryptoChartSymbol, state.cryptoChartTimeframe, { force: true });
     else if (action === "crypto-add") openCryptoDialog();
     else if (action === "crypto-remove") openRemoveCryptoDialog(target.dataset.symbol);
     else if (action === "market-pulse-mode") {

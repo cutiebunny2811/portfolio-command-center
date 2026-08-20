@@ -15,6 +15,13 @@ const defaultAssets = [
 
 type Asset = typeof defaultAssets[number];
 type Snapshot = Record<string, unknown> & { symbol: string; fetched_at?: string };
+type ChartBar = { time: string; open: number; high: number; low: number; close: number; volume: number };
+const chartIntervals = {
+  "15m": { count: 320, cacheMs: 60_000 },
+  "1h": { count: 320, cacheMs: 2 * 60_000 },
+  "4h": { count: 320, cacheMs: 5 * 60_000 },
+  "1d": { count: 320, cacheMs: 10 * 60_000 },
+} as const;
 
 function finite(value: unknown): number | null {
   const parsed = Number(value);
@@ -39,6 +46,29 @@ async function fetchJson(url: string, timeoutMs = 8_000) {
 
 async function fetchSpot(symbol: string) {
   return await fetchJson(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`);
+}
+
+async function fetchChartBars(symbol: string, interval: keyof typeof chartIntervals): Promise<ChartBar[]> {
+  const limit = chartIntervals[interval].count;
+  const payload = await fetchJson(
+    `https://data-api.binance.vision/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,
+  );
+  if (!Array.isArray(payload)) throw new Error(`${symbol}: Binance returned no chart rows`);
+  const bars = payload.flatMap((row): ChartBar[] => {
+    if (!Array.isArray(row)) return [];
+    const timeValue = finite(row[0]);
+    const open = finite(row[1]);
+    const high = finite(row[2]);
+    const low = finite(row[3]);
+    const close = finite(row[4]);
+    const volume = finite(row[5]);
+    if (timeValue == null || open == null || high == null || low == null || close == null || volume == null) return [];
+    const time = new Date(timeValue).toISOString();
+    if (![open, high, low, close].every((value) => value > 0)) return [];
+    return [{ time, open, high, low, close, volume: Math.max(volume, 0) }];
+  });
+  if (!bars.length) throw new Error(`${symbol}: Binance returned no usable ${interval} bars`);
+  return bars.sort((a, b) => a.time.localeCompare(b.time));
 }
 
 async function fetchDerivatives(symbol: string) {
@@ -124,6 +154,82 @@ Deno.serve(async (request) => {
 
     const assets = watchlist as Asset[];
     const symbols = assets.map((asset) => asset.symbol);
+
+    if (body?.action === "chart") {
+      const symbol = String(body?.symbol || "").trim().toUpperCase();
+      const interval = String(body?.interval || "1d") as keyof typeof chartIntervals;
+      if (!symbols.includes(symbol)) {
+        return new Response(JSON.stringify({ error: "Add this asset to Crypto Pulse before opening its chart." }), { status: 403, headers: jsonHeaders });
+      }
+      if (!chartIntervals[interval]) {
+        return new Response(JSON.stringify({ error: "Unsupported crypto chart interval." }), { status: 400, headers: jsonHeaders });
+      }
+
+      const { data: cachedRow, error: cachedError } = await admin
+        .from("crypto_chart_cache")
+        .select("*")
+        .eq("symbol", symbol)
+        .eq("interval", interval)
+        .maybeSingle();
+      if (cachedError) throw cachedError;
+      const cachedBars = Array.isArray(cachedRow?.bars) ? cachedRow.bars as ChartBar[] : [];
+      const cacheAge = Date.now() - new Date(cachedRow?.fetched_at || 0).getTime();
+      const force = body?.force === true;
+      if (!force && cachedBars.length && cacheAge < chartIntervals[interval].cacheMs) {
+        return new Response(JSON.stringify({
+          symbol, interval, bars: cachedBars, cached: true, stale: false,
+          fetched_at: cachedRow.fetched_at, source: cachedRow.source,
+        }), { headers: jsonHeaders });
+      }
+
+      const { data: claimed, error: claimError } = await admin.rpc("api_claim_crypto_chart_refresh", {
+        p_symbol: symbol,
+        p_interval: interval,
+        p_lease_seconds: 45,
+      });
+      if (claimError) throw claimError;
+      if (!claimed && cachedBars.length) {
+        return new Response(JSON.stringify({
+          symbol, interval, bars: cachedBars, cached: true, stale: true,
+          fetched_at: cachedRow.fetched_at, source: cachedRow.source,
+        }), { headers: jsonHeaders });
+      }
+
+      try {
+        const bars = await fetchChartBars(symbol, interval);
+        const fetchedAt = new Date().toISOString();
+        const { error: writeError } = await admin.from("crypto_chart_cache").upsert({
+          symbol,
+          interval,
+          bars,
+          source: "binance_public",
+          fetched_at: fetchedAt,
+          refresh_started_at: null,
+          last_error: null,
+          updated_at: fetchedAt,
+        }, { onConflict: "symbol,interval" });
+        if (writeError) throw writeError;
+        return new Response(JSON.stringify({
+          symbol, interval, bars, cached: false, stale: false,
+          fetched_at: fetchedAt, source: "binance_public",
+        }), { headers: jsonHeaders });
+      } catch (error) {
+        await admin.from("crypto_chart_cache").update({
+          refresh_started_at: null,
+          last_error: error instanceof Error ? error.message : String(error),
+          updated_at: new Date().toISOString(),
+        }).eq("symbol", symbol).eq("interval", interval);
+        if (cachedBars.length) {
+          return new Response(JSON.stringify({
+            symbol, interval, bars: cachedBars, cached: true, stale: true,
+            fetched_at: cachedRow.fetched_at, source: cachedRow.source,
+            warning: error instanceof Error ? error.message : String(error),
+          }), { headers: jsonHeaders });
+        }
+        throw error;
+      }
+    }
+
     const { data: cachedRows, error: cacheError } = await admin
       .from("crypto_market_snapshots")
       .select("*")

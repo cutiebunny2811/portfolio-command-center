@@ -6,6 +6,7 @@ const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const edge = readFileSync(new URL("../supabase/functions/refresh-crypto-pulse/index.ts", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../supabase/migrations/20260821010000_crypto_pulse.sql", import.meta.url), "utf8");
+const chartMigration = readFileSync(new URL("../supabase/migrations/20260821030000_crypto_chart_cache.sql", import.meta.url), "utf8");
 
 test("Crypto Pulse is a third Watchlist view, not a new primary route", () => {
   assert.match(app, /data-view="crypto"><span>03<\/span>Crypto Pulse/);
@@ -34,4 +35,22 @@ test("responsive Crypto Pulse recomposes instead of preserving the desktop table
   assert.match(css, /\.crypto-asset-head \{ display: none; \}/);
   assert.match(css, /\.crypto-asset-row \{ grid-template-columns: 28px minmax\(0, 1fr\) auto 24px/);
   assert.match(css, /\.crypto-btc \{ grid-template-columns: 1fr; \}/);
+});
+
+test("Crypto Pulse chart uses Binance public klines through a shared authenticated cache", () => {
+  assert.match(edge, /data-api\.binance\.vision\/api\/v3\/klines/);
+  assert.match(edge, /body\?\.action === "chart"/);
+  assert.match(edge, /api_claim_crypto_chart_refresh/);
+  assert.match(chartMigration, /create table if not exists public\.crypto_chart_cache/);
+  assert.match(chartMigration, /crypto_chart_cache_authenticated_read[\s\S]*using \(true\)/);
+  assert.match(chartMigration, /interval in \('15m', '1h', '4h', '1d'\)/);
+});
+
+test("Crypto chart is selectable, technical, and responsive without adding another primary route", () => {
+  assert.match(app, /data-action="crypto-chart-symbol"/);
+  assert.match(app, /data-action="crypto-chart-timeframe"/);
+  assert.match(app, /function drawCryptoChart\(\)/);
+  assert.match(app, /EMA20[\s\S]*EMA50[\s\S]*EMA200/);
+  assert.match(css, /#crypto-chart[\s\S]*height:/);
+  assert.match(css, /\.crypto-chart-command \{ grid-template-columns: 1fr; \}/);
 });

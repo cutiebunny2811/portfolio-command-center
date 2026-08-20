@@ -34,6 +34,7 @@ test("member crypto lists are isolated while market snapshots are shared", () =>
 test("responsive Crypto Pulse recomposes instead of preserving the desktop table", () => {
   assert.match(css, /\.crypto-asset-head \{ display: none; \}/);
   assert.match(css, /\.crypto-asset-row \{ grid-template-columns: 28px minmax\(0, 1fr\) auto 24px/);
+  assert.match(css, /\.crypto-asset-row__rank \{[^}]*padding-left: 10px/);
   assert.match(css, /\.crypto-btc \{ grid-template-columns: 1fr; \}/);
 });
 
@@ -53,4 +54,5 @@ test("Crypto chart is selectable, technical, and responsive without adding anoth
   assert.match(app, /EMA20[\s\S]*EMA50[\s\S]*EMA200/);
   assert.match(css, /#crypto-chart[\s\S]*height:/);
   assert.match(css, /\.crypto-chart-command \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.crypto-chart-desk \.chart-levels \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
 });

@@ -68,6 +68,7 @@
     watchlist: [], watchlistReady: true, watchlistBars: [], watchlistBarsInstrumentId: null, watchlistBarsTimespan: null, watchlistLivePrice: null, watchlistChartBusy: false, watchlistChartMeta: null,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "15M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
+    cryptoPulse: [], cryptoPulseReady: true, cryptoPulseBusy: false,
     marketPulseMode: "rotation", marketPulseWindow: "1D", expandedRotationSymbol: null,
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
     smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
@@ -584,6 +585,25 @@
       return [];
     }
     throw new Error(`Market Pulse: ${error.message}`);
+  }
+
+  async function optionalCryptoPulseQuery() {
+    if (localPreviewEnabled) return state.cryptoPulse;
+    const [{ data: watchlist, error: watchlistError }, { data: snapshots, error: snapshotError }] = await Promise.all([
+      db.from("crypto_watchlist_items").select("symbol,display_symbol,display_name,sort_order").order("sort_order"),
+      db.from("crypto_market_snapshots").select("*")
+    ]);
+    const error = watchlistError || snapshotError;
+    if (!error) {
+      state.cryptoPulseReady = true;
+      const bySymbol = new Map((snapshots || []).map((row) => [row.symbol, row]));
+      return (watchlist || []).map((item) => ({ ...item, ...(bySymbol.get(item.symbol) || {}) }));
+    }
+    if (/crypto_watchlist_items|crypto_market_snapshots|schema cache|does not exist/i.test(error.message)) {
+      state.cryptoPulseReady = false;
+      return [];
+    }
+    throw new Error(`Crypto Pulse: ${error.message}`);
   }
 
   async function optionalSmartMoneyQuery() {
@@ -1176,10 +1196,47 @@
     }
   }
 
+  async function refreshCryptoPulse({ force = false, notify = false } = {}) {
+    if (!state.user || state.cryptoPulseBusy || !state.cryptoPulseReady) return null;
+    state.cryptoPulseBusy = true;
+    if (state.route === "watchlist" && state.watchlistView === "crypto") renderWatchlist();
+    try {
+      if (localPreviewEnabled) {
+        state.cryptoPulse = previewCryptoPulseRows();
+        return { rows: state.cryptoPulse, updated: state.cryptoPulse.length };
+      }
+      const { data, error } = await db.functions.invoke("refresh-crypto-pulse", { body: { force } });
+      if (error) {
+        let detail = error.message;
+        try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+        throw new Error(detail);
+      }
+      if (data?.error) throw new Error(data.error);
+      state.cryptoPulse = Array.isArray(data?.rows) ? data.rows : await optionalCryptoPulseQuery();
+      if (notify) {
+        const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
+        toast(failed
+          ? `${state.cryptoPulse.length} crypto quotes loaded; ${failed} source${failed === 1 ? "" : "s"} used cache`
+          : data?.cached ? "Crypto Pulse is already current" : `${data?.updated || 0} Binance public snapshots updated`, failed > 0);
+      }
+      return data;
+    } catch (error) {
+      console.warn(error);
+      const cached = await optionalCryptoPulseQuery().catch(() => []);
+      if (cached.length) state.cryptoPulse = cached;
+      if (notify) toast(`Crypto Pulse: ${friendlyError(error)}`, true);
+      return null;
+    } finally {
+      state.cryptoPulseBusy = false;
+      if (state.route === "watchlist" && state.watchlistView === "crypto") renderWatchlist();
+    }
+  }
+
   async function refreshDashboard() {
     await loadData();
     await refreshStockPrices({ force: true, notify: true });
     if (state.watchlistView === "market") await refreshMarketPulse({ force: true, notify: true });
+    if (state.watchlistView === "crypto") await refreshCryptoPulse({ force: true, notify: true });
     await refreshVisibleWatchlistChart();
   }
 
@@ -1188,7 +1245,7 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
@@ -1201,6 +1258,7 @@
         fetchJournalView({ page: 1, pageSize: 6 }),
         optionalWatchlistQuery(),
         optionalMarketPulseQuery(),
+        optionalCryptoPulseQuery(),
         initialSmartMoneyQuery(),
         fetchResearchFeed(),
         fetchEarningsFeed(),
@@ -1208,7 +1266,7 @@
         fetchMacroRiskFeed(),
         fetchBriefFeed()
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, smartMoneyEvents });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents });
       state.researchEntries = researchFeed.entries;
       state.researchTotal = num(researchFeed.total_count);
       applyEarningsFeed(earningsFeed);
@@ -3170,6 +3228,7 @@
     return `<nav class="research-tabs" aria-label="Watchlist research views">
       <button type="button" class="${state.watchlistView === "charts" ? "is-active" : ""}" data-action="watchlist-view" data-view="charts"><span>01</span>Charts</button>
       <button type="button" class="${state.watchlistView === "market" ? "is-active" : ""}" data-action="watchlist-view" data-view="market"><span>02</span>Market Pulse</button>
+      <button type="button" class="${state.watchlistView === "crypto" ? "is-active" : ""}" data-action="watchlist-view" data-view="crypto"><span>03</span>Crypto Pulse</button>
     </nav>`;
   }
 
@@ -3192,6 +3251,112 @@
     if (minutes < 1) return "Updated just now";
     if (minutes === 1) return "Updated 1 minute ago";
     return `Updated ${minutes} minutes ago`;
+  }
+
+  function cryptoPrice(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return "—";
+    const digits = parsed >= 1000 ? 2 : parsed >= 1 ? 3 : 5;
+    return `$${parsed.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  }
+
+  function cryptoPulseFreshness(rows = state.cryptoPulse) {
+    const latest = rows.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
+    if (!latest.length) return "Waiting for first Binance snapshot";
+    const minutes = Math.max(Math.floor((Date.now() - Math.max(...latest)) / 60_000), 0);
+    if (minutes < 1) return "Public market data updated just now";
+    return `Public market data updated ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+
+  function cryptoFundingRead(rate) {
+    const percentValue = num(rate) * 100;
+    if (percentValue >= .03) return { label: "Longs crowded", tone: "negative" };
+    if (percentValue <= -.02) return { label: "Shorts crowded", tone: "positive" };
+    return { label: "Balanced", tone: "positive" };
+  }
+
+  function cryptoPulseRegime(rows = state.cryptoPulse) {
+    const changes = rows.map((row) => Number(row.price_change_percent_24h)).filter(Number.isFinite);
+    const average = changes.length ? changes.reduce((sum, value) => sum + value, 0) / changes.length : 0;
+    const btc = rows.find((row) => row.symbol === "BTCUSDT");
+    const btcChange = num(btc?.price_change_percent_24h);
+    const hottestFunding = Math.max(...rows.map((row) => Math.abs(num(row.funding_rate) * 100)), 0);
+    if (btcChange <= -5 || average <= -4) return { label: "RISK-OFF PRESSURE", detail: "Selling is broad across the core tape. Read funding before assuming the flush is finished.", tone: "risk" };
+    if (average >= 2 && hottestFunding >= .03) return { label: "LEVERAGE WARM", detail: "Price is advancing with expensive long positioning. Momentum is positive, but the trade is getting crowded.", tone: "warn" };
+    if (average >= 1) return { label: "RISK APPETITE", detail: "The core tape is positive without an obvious leverage extreme.", tone: "good" };
+    if (average <= -1) return { label: "CAUTIOUS", detail: "The core tape is soft, but funding does not yet show a full stress event.", tone: "warn" };
+    return { label: "BALANCED", detail: "Price and leverage are mixed. Direction needs confirmation from BTC and the broader core tape.", tone: "neutral" };
+  }
+
+  function cryptoRangePosition(row) {
+    const low = num(row?.low_24h), high = num(row?.high_24h), price = num(row?.price);
+    return high > low ? clamp((price - low) / (high - low) * 100, 0, 100) : 50;
+  }
+
+  function cryptoAssetMark(row) {
+    const symbol = String(row?.display_symbol || row?.symbol || "?").replace("USDT", "");
+    return `<span class="crypto-mark crypto-mark--${symbol.toLowerCase()}" aria-hidden="true">${esc(symbol.slice(0, 1))}</span>`;
+  }
+
+  function renderCryptoPulse() {
+    const rows = state.cryptoPulse;
+    if (!rows.length) return `<div class="pulse-empty"><span>03 / CRYPTO PULSE</span><h2>No crypto tape yet.</h2><p>Refresh once to seed BTC, ETH and SOL and read Binance public market data through the shared Supabase cache.</p><button class="button button--primary" type="button" data-action="crypto-pulse-refresh">Load crypto pulse</button></div>`;
+    const btc = rows.find((row) => row.symbol === "BTCUSDT") || rows[0];
+    const regime = cryptoPulseRegime(rows);
+    const btcChange = num(btc.price_change_percent_24h);
+    const btcFunding = cryptoFundingRead(btc.funding_rate);
+    const rangePosition = cryptoRangePosition(btc);
+    const nextFunding = btc.next_funding_time ? new Date(btc.next_funding_time) : null;
+    const assetRows = rows.map((row, index) => {
+      const change = num(row.price_change_percent_24h);
+      const funding = cryptoFundingRead(row.funding_rate);
+      const basis = num(row.index_price) ? (num(row.mark_price) - num(row.index_price)) / num(row.index_price) * 100 : null;
+      const openInterestNotional = num(row.open_interest) * (num(row.mark_price) || num(row.price));
+      return `<article class="crypto-asset-row">
+        <span class="crypto-asset-row__rank mono">${String(index + 1).padStart(2, "0")}</span>
+        <div class="crypto-asset-row__identity">${cryptoAssetMark(row)}<span><strong>${esc(row.display_symbol)}</strong><small>${esc(row.display_name)}</small></span></div>
+        <div><small>SPOT</small><strong class="mono">${cryptoPrice(row.price)}</strong></div>
+        <div><small>24H</small><strong class="mono ${change >= 0 ? "positive" : "negative"}">${signedPercent(change)}</strong></div>
+        <div><small>QUOTE VOLUME</small><strong class="mono">${num(row.quote_volume_24h) ? `$${compactNumber(row.quote_volume_24h)}` : "—"}</strong></div>
+        <div><small>FUNDING / 8H</small><strong class="mono ${funding.tone}">${Number.isFinite(Number(row.funding_rate)) ? signedPercent(num(row.funding_rate) * 100, 3) : "—"}</strong><span>${funding.label}</span></div>
+        <div><small>OPEN INTEREST</small><strong class="mono">${openInterestNotional ? `~$${compactNumber(openInterestNotional)}` : "—"}</strong><span>${Number.isFinite(basis) ? `${signedPercent(basis, 3)} basis` : "Futures cache pending"}</span></div>
+        <button class="crypto-remove" type="button" data-action="crypto-remove" data-symbol="${row.symbol}" aria-label="Remove ${esc(row.display_symbol)} from Crypto Pulse">×</button>
+      </article>`;
+    }).join("");
+
+    return `<section class="crypto-pulse" aria-label="Crypto Pulse">
+      <div class="crypto-regime crypto-regime--${regime.tone}">
+        <div><small>DETERMINISTIC / CORE CRYPTO TAPE</small><strong>${regime.label}</strong></div>
+        <p>${regime.detail}</p>
+        <span class="mono">${cryptoPulseFreshness(rows)}</span>
+      </div>
+      <section class="crypto-btc" aria-label="Bitcoin market command">
+        <div class="crypto-btc__lead">
+          <span class="section-index">01 / MARKET ANCHOR</span>
+          <div class="crypto-btc__title">${cryptoAssetMark(btc)}<div><h2>Bitcoin sets the weather.</h2><p>Read price first. Use leverage only to judge how fragile the move may be.</p></div></div>
+          <div class="crypto-btc__quote"><strong class="mono">${cryptoPrice(btc.price)}</strong><span class="mono ${btcChange >= 0 ? "positive" : "negative"}">${signedPercent(btcChange)} / 24H</span></div>
+          <div class="crypto-range"><div style="--crypto-range:${rangePosition}%"><i></i></div><span>${cryptoPrice(btc.low_24h)} LOW</span><span>${cryptoPrice(btc.high_24h)} HIGH</span></div>
+        </div>
+        <div class="crypto-btc__metrics">
+          <div><small>24H TURNOVER</small><strong class="mono">${num(btc.quote_volume_24h) ? `$${compactNumber(btc.quote_volume_24h)}` : "—"}</strong><span>Binance spot quote volume</span></div>
+          <div><small>FUNDING / 8H</small><strong class="mono ${btcFunding.tone}">${Number.isFinite(Number(btc.funding_rate)) ? signedPercent(num(btc.funding_rate) * 100, 3) : "—"}</strong><span>${btcFunding.label}</span></div>
+          <div><small>OPEN INTEREST</small><strong class="mono">${num(btc.open_interest) ? `~$${compactNumber(num(btc.open_interest) * (num(btc.mark_price) || num(btc.price)))}` : "—"}</strong><span>Approx. USD notional</span></div>
+          <div><small>NEXT FUNDING</small><strong class="mono">${nextFunding && Number.isFinite(nextFunding.getTime()) ? nextFunding.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</strong><span>Bangkok time</span></div>
+        </div>
+      </section>
+      <section class="crypto-tape">
+        <div class="section-head crypto-section-head"><div><span class="section-index">02 / CORE TAPE</span><h2>Majors, not the whole casino.</h2></div><p>Your list is private. Market snapshots are shared so every member reads the same public tape without duplicating requests.</p></div>
+        <div class="crypto-asset-head"><span>#</span><span>ASSET</span><span>SPOT</span><span>24H</span><span>QUOTE VOLUME</span><span>LEVERAGE</span><span>POSITIONING</span><span></span></div>
+        <div class="crypto-assets">${assetRows}</div>
+      </section>
+      <section class="crypto-method">
+        <span>03 / HOW TO READ IT</span>
+        <div><strong>Price</strong><p>24-hour direction and range answer what the market is doing.</p></div>
+        <div><strong>Funding</strong><p>Positive means longs pay shorts. High positive funding can make a rally more fragile.</p></div>
+        <div><strong>Open interest</strong><p>Approximate outstanding futures exposure. It measures participation, not bullishness by itself.</p></div>
+        <small>Research only · Binance public endpoints · no API key · no orders</small>
+      </section>
+    </section>`;
   }
 
   function pulseLeaderRow(row, metric = "change") {
@@ -3335,6 +3500,21 @@
         </div>
         ${state.marketPulseMode === "themes" ? renderThemeTape(rows) : renderSectorRotation(rows)}
       </section>`;
+  }
+
+  function previewCryptoPulseRows() {
+    const now = new Date().toISOString();
+    const nextFunding = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
+    return [
+      ["BTCUSDT", "BTC", "Bitcoin", 113842.42, 2.18, 116220, 110918, 52800000000, .000108, 582430, 113856.1],
+      ["ETHUSDT", "ETH", "Ethereum", 4388.71, 3.04, 4471, 4219, 26100000000, .000184, 7312400, 4389.4],
+      ["SOLUSDT", "SOL", "Solana", 217.46, -1.27, 224.8, 211.3, 6900000000, -.000042, 18240000, 217.38]
+    ].map(([symbol, display_symbol, display_name, price, price_change_percent_24h, high_24h, low_24h, quote_volume_24h, funding_rate, open_interest, mark_price], index) => ({
+      symbol, display_symbol, display_name, price, price_change_percent_24h, high_24h, low_24h,
+      quote_volume_24h, funding_rate, open_interest, mark_price, index_price: num(mark_price) * .9998,
+      next_funding_time: nextFunding, source: "binance_public", fetched_at: now, spot_fetched_at: now,
+      derivatives_fetched_at: now, sort_order: (index + 1) * 10
+    }));
   }
 
   function previewMarketPulseRows() {
@@ -3542,6 +3722,19 @@
   function renderWatchlist() {
     const chartRenderId = ++watchlistChartRenderId;
     destroyWatchlistChart();
+    if (state.watchlistView === "crypto") {
+      viewRoot.innerHTML = `
+        ${pageHead(
+          "Binance public market data · 24/7 research",
+          "Crypto without the casino.",
+          "BTC leads the read. ETH, SOL and a short curated list add context; none of this changes your portfolios or places an order.",
+          `<div class="page-actions"><button class="button button--ghost" type="button" data-action="crypto-add">+ Add major</button><button class="button button--primary" type="button" data-action="crypto-pulse-refresh" ${state.cryptoPulseBusy ? "disabled" : ""}>${state.cryptoPulseBusy ? "Refreshing…" : "Refresh crypto"}</button></div>`
+        )}
+        ${marketPulseTabs()}
+        ${!state.cryptoPulseReady ? `<div class="warning-box watchlist-setup"><strong>One setup step remains.</strong> Apply migration <code>20260821010000_crypto_pulse.sql</code>, then refresh this page.</div>` : ""}
+        ${state.cryptoPulseBusy && !state.cryptoPulse.length ? `<div class="pulse-loading"><span></span><p>Reading Binance public spot and futures data…</p></div>` : renderCryptoPulse()}`;
+      return;
+    }
     if (state.watchlistView === "market") {
       viewRoot.innerHTML = `
         ${pageHead(
@@ -3753,6 +3946,48 @@
         closeDialog(); state.watchlistBars = []; toast(`${instrument?.symbol || "Ticker"} removed from watchlist`); await loadData({ quiet: true });
         await refreshMarketPulse();
         if (state.selectedWatchlistInstrumentId) await loadWatchlistBars();
+      }
+    });
+  }
+
+  function openCryptoDialog() {
+    const catalog = [
+      ["BTCUSDT", "BTC", "Bitcoin · market anchor"],
+      ["ETHUSDT", "ETH", "Ethereum · smart-contract benchmark"],
+      ["SOLUSDT", "SOL", "Solana · high-beta major"],
+      ["BNBUSDT", "BNB", "BNB · exchange ecosystem"],
+      ["XRPUSDT", "XRP", "XRP · payments network"],
+      ["LINKUSDT", "LINK", "Chainlink · oracle infrastructure"],
+      ["AVAXUSDT", "AVAX", "Avalanche · smart-contract network"]
+    ];
+    const owned = new Set(state.cryptoPulse.map((row) => row.symbol));
+    const available = catalog.filter(([symbol]) => !owned.has(symbol));
+    if (!available.length) { toast("Every curated major is already on this Crypto Pulse"); return; }
+    openDialog({
+      kicker: "Crypto Pulse · Curated majors", title: "Add market context", submitLabel: "Add to Crypto Pulse",
+      body: `<label class="field"><span>Crypto asset</span><select name="symbol">${available.map(([symbol, ticker, detail]) => `<option value="${symbol}">${ticker} · ${detail}</option>`).join("")}</select></label><p class="form-hint">The list stays deliberately short. Adding a symbol only changes your research view; it does not create a portfolio position or enable trading.</p>`,
+      onSubmit: async (form) => {
+        const symbol = String(form.get("symbol") || "");
+        await rpc("api_add_crypto_watchlist_item", { p_symbol: symbol });
+        closeDialog();
+        state.cryptoPulse = await optionalCryptoPulseQuery();
+        await refreshCryptoPulse({ force: true });
+        toast(`${symbol.replace("USDT", "")} added to Crypto Pulse`);
+      }
+    });
+  }
+
+  function openRemoveCryptoDialog(symbol) {
+    const row = state.cryptoPulse.find((item) => item.symbol === symbol);
+    openDialog({
+      kicker: "Crypto Pulse · Research only", title: `Remove ${row?.display_symbol || symbol.replace("USDT", "")}?`, submitLabel: "Remove", danger: true,
+      body: `<div class="warning-box">This only changes your Crypto Pulse list. Shared market data, stock Watchlist, portfolios and trades remain untouched.</div>`,
+      onSubmit: async () => {
+        await rpc("api_remove_crypto_watchlist_item", { p_symbol: symbol });
+        closeDialog();
+        state.cryptoPulse = await optionalCryptoPulseQuery();
+        renderWatchlist();
+        toast(`${row?.display_symbol || symbol.replace("USDT", "")} removed from Crypto Pulse`);
       }
     });
   }
@@ -4645,6 +4880,8 @@
           await loadWatchlistBars();
         } else if (state.route === "watchlist" && state.watchlistView === "market" && !state.marketPulse.length) {
           await refreshMarketPulse();
+        } else if (state.route === "watchlist" && state.watchlistView === "crypto" && !state.cryptoPulse.length) {
+          await refreshCryptoPulse();
         }
       }
       return;
@@ -4721,17 +4958,24 @@
     else if (action === "refresh") await loadData();
     else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
     else if (action === "watchlist-view") {
-      state.watchlistView = target.dataset.view === "market" ? "market" : "charts";
+      state.watchlistView = ["charts", "market", "crypto"].includes(target.dataset.view) ? target.dataset.view : "charts";
       renderWatchlist();
       if (state.watchlistView === "market") {
         const latest = state.marketPulse.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
         const stale = !latest.length || Date.now() - Math.max(...latest) >= 15 * 60_000;
         if (stale) await refreshMarketPulse();
+      } else if (state.watchlistView === "crypto") {
+        const latest = state.cryptoPulse.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
+        const stale = !latest.length || Date.now() - Math.max(...latest) >= 2 * 60_000;
+        if (stale) await refreshCryptoPulse();
       } else if (state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
         await loadWatchlistBars();
       }
     }
     else if (action === "market-pulse-refresh") await refreshMarketPulse({ force: true, notify: true });
+    else if (action === "crypto-pulse-refresh") await refreshCryptoPulse({ force: true, notify: true });
+    else if (action === "crypto-add") openCryptoDialog();
+    else if (action === "crypto-remove") openRemoveCryptoDialog(target.dataset.symbol);
     else if (action === "market-pulse-mode") {
       state.marketPulseMode = target.dataset.mode === "themes" ? "themes" : "rotation";
       state.expandedRotationSymbol = null;
@@ -5101,6 +5345,7 @@
   async function refreshMarketData() {
     await refreshStockPrices();
     if (state.route === "watchlist" && state.watchlistView === "market") await refreshMarketPulse();
+    if (state.route === "watchlist" && state.watchlistView === "crypto") await refreshCryptoPulse();
     await refreshVisibleWatchlistChart();
   }
 
@@ -5375,7 +5620,7 @@
       { id: "notice-smart", notification_type: "smart_money_brief", title: "Smart Money Brief", preview: smartMoneyBriefs[0].summary, route: "smart-money-briefs", entity_id: "smart-brief-preview", created_at: new Date().toISOString(), read_at: null },
       { id: "notice-brief", notification_type: "daily_brief", title: "Daily Market Brief", preview: briefs[0].summary, route: "briefs", entity_id: "brief-preview", created_at: new Date(Date.now() - 4 * 60 * 60_000).toISOString(), read_at: null }
     ];
-    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, executions, cashMovements, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, smartMoneyBriefs, notifications, selectedBriefId: "brief-preview", selectedSmartMoneyBriefId: "smart-brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda" });
+    Object.assign(state, { user: { email: "preview@local" }, portfolios, instruments, positions, targets, cash, capacities, executions, cashMovements, journalPreviewSource: journal, prices: [], watchlist, smartMoneyEvents, researchPreviewSource, earningsEntries, earningsTrackedCount: watchlist.length, earningsLastSynced: new Date().toISOString(), macroEntries, macroRiskFeed, macroLastSynced: new Date().toISOString(), briefs, smartMoneyBriefs, notifications, selectedBriefId: "brief-preview", selectedSmartMoneyBriefId: "smart-brief-preview", selectedPortfolioId: "p-long", selectedWatchlistInstrumentId: "i-nvda", cryptoPulse: previewCryptoPulseRows() });
     const researchFeed = previewResearchFeed();
     state.researchEntries = researchFeed.entries;
     state.researchTotal = researchFeed.total_count;

@@ -23,5 +23,5 @@ test("portfolio loads one latest price per instrument without a global history c
 
 test("latest price fix has a fresh client cache key", async () => {
   const index = await readFile(indexUrl, "utf8");
-  assert.match(index, /app\.js\?v=20260820-chart-session/);
+  assert.match(index, /app\.js\?v=20260821-crypto-pulse/);
 });

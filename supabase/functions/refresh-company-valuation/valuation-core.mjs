@@ -1,4 +1,7 @@
-const finite = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+const finite = (value) => {
+  if (value == null || value === "" || typeof value === "boolean") return null;
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+};
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
 function rounded(value, digits = 4) {
@@ -24,10 +27,13 @@ function scenarioRow(packet, fairValue, model, assumption) {
       revenue_growth: rounded(packet.revenue_growth, 4),
       fcf_margin_year_1: rounded(packet.fcf_margin_year_1, 4),
       fcf_margin_year_5: rounded(packet.fcf_margin_year_5, 4),
+      fcf_margin_terminal: rounded(packet.fcf_margin_terminal, 4),
+      horizon_years: packet.horizon_years,
       wacc: rounded(packet.wacc, 4),
       terminal_growth: rounded(packet.terminal_growth, 4),
       diluted_shares: rounded(packet.diluted_shares, 0),
       revenue_anchor_applied: Boolean(packet.revenue_anchor_applied),
+      terminal_margin_floor_applied: Boolean(packet.terminal_margin_floor_applied),
     },
   };
 }
@@ -44,34 +50,93 @@ function normalizedScenario(raw, common, key) {
   const revenueYearOne = clamp(Math.max(requestedRevenue, reportedFloor), 0, common.revenue_cap);
   const dilutedShares = clamp(finite(raw?.diluted_shares) ?? finite(common.diluted_shares) ?? 0, common.basic_shares, common.share_cap);
   const wacc = clamp(finite(raw?.wacc) ?? defaultWacc, 0.07, 0.2);
+  const yearFiveMargin = clamp(finite(raw?.fcf_margin_year_5) ?? finite(common.fcf_margin_year_5) ?? 0.1, -0.25, 0.55);
+  const isTransition = common.model_family === "transition_dcf";
+  const horizonYears = isTransition
+    ? Math.round(clamp(finite(raw?.horizon_years) ?? finite(common.horizon_years) ?? 10, 7, 10))
+    : 5;
+  const transitionFloor = key === "bear" ? 0 : key === "bull" ? 0.12 : 0.06;
+  const requestedTerminalMargin = finite(raw?.fcf_margin_terminal) ?? finite(common.fcf_margin_terminal) ?? yearFiveMargin;
+  const terminalMargin = clamp(isTransition ? Math.max(requestedTerminalMargin, transitionFloor) : yearFiveMargin, -0.1, 0.55);
   return {
     key,
     revenue_year_1: revenueYearOne,
     revenue_growth: clamp(finite(raw?.revenue_growth) ?? defaultGrowth, -0.25, 0.6),
     fcf_margin_year_1: clamp(finite(raw?.fcf_margin_year_1) ?? finite(common.fcf_margin_year_1) ?? 0, -0.75, 0.55),
-    fcf_margin_year_5: clamp(finite(raw?.fcf_margin_year_5) ?? finite(common.fcf_margin_year_5) ?? 0.1, -0.25, 0.55),
+    fcf_margin_year_5: yearFiveMargin,
+    fcf_margin_terminal: terminalMargin,
+    horizon_years: horizonYears,
     wacc,
     terminal_growth: Math.min(clamp(finite(raw?.terminal_growth) ?? defaultTerminal, 0, 0.04), wacc - 0.025),
     diluted_shares: dilutedShares,
     revenue_anchor_applied: reportedFloor > 0 && requestedRevenue < reportedFloor,
+    terminal_margin_floor_applied: isTransition && requestedTerminalMargin < transitionFloor,
   };
+}
+
+function economicallyOrderPackets(packets) {
+  const [bear, base, bull] = packets.map((packet) => ({ ...packet }));
+  bear.revenue_year_1 = Math.min(bear.revenue_year_1, base.revenue_year_1);
+  bull.revenue_year_1 = Math.max(bull.revenue_year_1, base.revenue_year_1);
+  bear.revenue_growth = Math.min(bear.revenue_growth, base.revenue_growth);
+  bull.revenue_growth = Math.max(bull.revenue_growth, base.revenue_growth);
+  bear.fcf_margin_year_1 = Math.min(bear.fcf_margin_year_1, base.fcf_margin_year_1);
+  bull.fcf_margin_year_1 = Math.max(bull.fcf_margin_year_1, base.fcf_margin_year_1);
+  bear.fcf_margin_year_5 = Math.min(bear.fcf_margin_year_5, base.fcf_margin_year_5);
+  bull.fcf_margin_year_5 = Math.max(bull.fcf_margin_year_5, base.fcf_margin_year_5);
+  bear.fcf_margin_terminal = Math.min(bear.fcf_margin_terminal, base.fcf_margin_terminal);
+  bull.fcf_margin_terminal = Math.max(bull.fcf_margin_terminal, base.fcf_margin_terminal);
+  bear.wacc = Math.max(bear.wacc, base.wacc);
+  bull.wacc = Math.min(bull.wacc, base.wacc);
+  bear.terminal_growth = Math.min(bear.terminal_growth, base.terminal_growth, bear.wacc - 0.025);
+  bull.terminal_growth = Math.min(Math.max(bull.terminal_growth, base.terminal_growth), bull.wacc - 0.025);
+  bear.diluted_shares = Math.max(bear.diluted_shares, base.diluted_shares);
+  bull.diluted_shares = Math.min(bull.diluted_shares, base.diluted_shares);
+  return [bear, base, bull];
 }
 
 function forwardDcf(packet, adjustedCash, adjustedDebt) {
   let presentValue = 0;
   let revenue = packet.revenue_year_1;
   let finalFcf = 0;
-  for (let year = 1; year <= 5; year += 1) {
+  const horizonYears = packet.horizon_years || 5;
+  for (let year = 1; year <= horizonYears; year += 1) {
     if (year > 1) revenue *= 1 + packet.revenue_growth;
-    const progress = (year - 1) / 4;
-    const margin = packet.fcf_margin_year_1 + (packet.fcf_margin_year_5 - packet.fcf_margin_year_1) * progress;
+    const margin = year <= 5
+      ? packet.fcf_margin_year_1 + (packet.fcf_margin_year_5 - packet.fcf_margin_year_1) * ((year - 1) / 4)
+      : packet.fcf_margin_year_5 + (packet.fcf_margin_terminal - packet.fcf_margin_year_5) * ((year - 5) / (horizonYears - 5));
     finalFcf = revenue * margin;
     presentValue += finalFcf / ((1 + packet.wacc) ** year);
   }
   const terminal = finalFcf > 0
     ? finalFcf * (1 + packet.terminal_growth) / (packet.wacc - packet.terminal_growth)
     : 0;
-  return presentValue + terminal / ((1 + packet.wacc) ** 5) + adjustedCash - adjustedDebt;
+  return presentValue + terminal / ((1 + packet.wacc) ** horizonYears) + adjustedCash - adjustedDebt;
+}
+
+function adjustedBalance(fundamentals, forward, balanceScale) {
+  const cash = Math.max(finite(fundamentals.cash) ?? 0, 0);
+  const shortTermInvestments = Math.max(finite(fundamentals.short_term_investments) ?? 0, 0);
+  const reportedDebt = Math.max(finite(fundamentals.debt) ?? 0, 0);
+  const liquidAssets = cash + shortTermInvestments;
+  const totals = { cash_inflow: 0, cash_outflow: 0, debt_increase: 0, debt_repayment: 0 };
+  const adjustments = (Array.isArray(forward.balance_adjustments) ? forward.balance_adjustments : [])
+    .flatMap((row) => {
+      const kind = String(row?.kind || "").toLowerCase();
+      const amount = finite(row?.amount);
+      if (!(kind in totals) || !(amount > 0) || amount > balanceScale * 3) return [];
+      totals[kind] += amount;
+      return [{ kind, amount, description: String(row?.description || "Documented post-period balance adjustment") }];
+    });
+  return {
+    cash,
+    shortTermInvestments,
+    liquidAssets,
+    reportedDebt,
+    adjustedCash: Math.max(liquidAssets + totals.cash_inflow - totals.cash_outflow, 0),
+    adjustedDebt: Math.max(reportedDebt + totals.debt_increase - totals.debt_repayment, 0),
+    adjustments,
+  };
 }
 
 function forwardExcessReturn(packet, equity, shares) {
@@ -115,6 +180,7 @@ export function buildValuation(input = {}) {
   const fcf = finite(fundamentals.free_cash_flow_ttm) ?? finite(fundamentals.free_cash_flow_fy) ?? 0;
   const grossProfit = finite(fundamentals.gross_profit_ttm) ?? finite(fundamentals.gross_profit_fy);
   const reportedCash = Math.max(finite(fundamentals.cash) ?? 0, 0);
+  const reportedInvestments = Math.max(finite(fundamentals.short_term_investments) ?? 0, 0);
   const reportedDebt = Math.max(finite(fundamentals.debt) ?? 0, 0);
   const equity = finite(fundamentals.stockholders_equity);
   const basicShares = finite(fundamentals.shares_outstanding);
@@ -127,13 +193,16 @@ export function buildValuation(input = {}) {
   if (!forward.model_family) throw new Error("Forward assumptions are unavailable for this company.");
   if (!sourceRows.length) throw new Error("Forward assumptions do not include a verifiable filing source.");
 
-  const balanceScale = Math.max(revenue, reportedCash, reportedDebt, 1_000_000);
-  const adjustedCash = clamp(finite(forward.adjusted_cash) ?? reportedCash, 0, balanceScale * 5);
-  const adjustedDebt = clamp(finite(forward.adjusted_debt) ?? reportedDebt, 0, balanceScale * 5);
+  const balanceScale = Math.max(revenue, reportedCash + reportedInvestments, reportedDebt, 1_000_000);
+  const balance = adjustedBalance(fundamentals, forward, balanceScale);
+  const adjustedCash = balance.adjustedCash;
+  const adjustedDebt = balance.adjustedDebt;
   const common = {
     revenue_year_1: clamp(finite(forward.revenue_year_1) ?? 0, 0, Math.max(revenue * 20, 5_000_000)),
     fcf_margin_year_1: finite(forward.fcf_margin_year_1),
     fcf_margin_year_5: finite(forward.fcf_margin_year_5),
+    fcf_margin_terminal: finite(forward.fcf_margin_terminal),
+    horizon_years: finite(forward.horizon_years),
     diluted_shares: clamp(finite(forward.diluted_shares) ?? basicShares, basicShares, basicShares * 10),
     basic_shares: basicShares,
     share_cap: basicShares * 10,
@@ -161,17 +230,17 @@ export function buildValuation(input = {}) {
       };
     });
   } else {
-    model = forward.model_family === "normalized_dcf" ? "NORMALIZED FORWARD DCF" : "REVENUE-TO-FCF DCF";
-    scenarios = keys.map((key) => {
-      const packet = normalizedScenario(rawScenarios.get(key), common, key);
-      if (!(packet.revenue_year_1 > 0)) throw new Error(`${key} case does not provide usable forward revenue.`);
-      if (!(packet.diluted_shares >= basicShares)) throw new Error(`${key} case diluted shares are below reported basic shares.`);
+    model = forward.model_family === "normalized_dcf" ? "NORMALIZED FORWARD DCF" : "LONG-HORIZON TRANSITION DCF";
+    const packets = economicallyOrderPackets(keys.map((key) => normalizedScenario(rawScenarios.get(key), common, key)));
+    scenarios = packets.map((packet) => {
+      if (!(packet.revenue_year_1 > 0)) throw new Error(`${packet.key} case does not provide usable forward revenue.`);
+      if (!(packet.diluted_shares >= basicShares)) throw new Error(`${packet.key} case diluted shares are below reported basic shares.`);
       const fairValue = perShare(forwardDcf(packet, adjustedCash, adjustedDebt), packet.diluted_shares);
       return scenarioRow(
         packet,
         fairValue,
         model,
-        `${rounded(packet.revenue_growth * 100, 1)}% growth · ${rounded(packet.fcf_margin_year_5 * 100, 1)}% year-5 FCF margin`,
+        `${rounded(packet.revenue_growth * 100, 1)}% growth · ${rounded(packet.fcf_margin_terminal * 100, 1)}% year-${packet.horizon_years} FCF margin`,
       );
     });
   }
@@ -179,8 +248,15 @@ export function buildValuation(input = {}) {
   if (scenarios.some((row) => !Number.isFinite(row.fair_value))) {
     throw new Error("Forward assumptions are not sufficient to calculate all three valuation cases.");
   }
+  let scenarioEnvelopeApplied = false;
   if (!(scenarios[0].fair_value <= scenarios[1].fair_value && scenarios[1].fair_value <= scenarios[2].fair_value)) {
-    throw new Error("Forward cases are internally inconsistent: Bear, Base and Bull are not ordered.");
+    scenarioEnvelopeApplied = true;
+    scenarios = [...scenarios].sort((left, right) => left.fair_value - right.fair_value).map((row, index) => ({
+      ...row,
+      key: keys[index],
+      label: index === 0 ? "Bear" : index === 2 ? "Bull" : "Base",
+      inputs: { ...row.inputs, source_case: row.key },
+    }));
   }
 
   const grossMargin = grossProfit != null && revenue > 0 ? grossProfit / revenue : null;
@@ -191,13 +267,18 @@ export function buildValuation(input = {}) {
   if (scenarios.some((row) => row.inputs?.revenue_anchor_applied)) {
     warnings.unshift("Year-1 revenue was anchored to the latest reported SEC revenue because the extracted forward input was materially lower.");
   }
+  if (scenarios.some((row) => row.inputs?.terminal_margin_floor_applied)) {
+    warnings.unshift("A visible long-run FCF margin floor was applied because the extracted transition case never reached sustainable cash generation.");
+  }
+  if (balance.adjustments.length) warnings.unshift(`${balance.adjustments.length} sourced post-period balance adjustment${balance.adjustments.length === 1 ? " was" : "s were"} applied to SEC liquid assets and debt.`);
+  if (scenarioEnvelopeApplied) warnings.unshift("Scenario labels were reordered by calculated value after PCC normalized inconsistent Bear/Base/Bull inputs.");
   if (sharesGrowth != null && sharesGrowth > 0.1) warnings.push(`Reported share count increased ${(sharesGrowth * 100).toFixed(1)}% year over year.`);
   if (forward.evidence_quality === "LOW") warnings.unshift("Forward evidence is incomplete; treat the range as provisional.");
 
   const baseValue = scenarios[1].fair_value;
   const baseInputs = scenarios[1].inputs || {};
   return {
-    model_version: "forward-intrinsic-v2",
+    model_version: "forward-intrinsic-v3",
     model,
     stage: String(forward.company_stage || (fcf > 0 && netIncome > 0 ? "CASH-GENERATIVE" : "FORWARD TRANSITION")).toUpperCase(),
     confidence: ["HIGH", "MEDIUM", "LOW"].includes(String(forward.evidence_quality || "").toUpperCase())
@@ -206,7 +287,7 @@ export function buildValuation(input = {}) {
     why: String(forward.rationale || "Forward assumptions are built from the latest available company filings and recalculated by PCC."),
     scenarios,
     assumptions: {
-      horizon_years: 5,
+      horizon_years: finite(baseInputs.horizon_years) ?? 5,
       adjusted_cash: adjustedCash,
       adjusted_debt: adjustedDebt,
       diluted_shares: common.diluted_shares,
@@ -214,6 +295,7 @@ export function buildValuation(input = {}) {
       base_revenue_growth: finite(baseInputs.revenue_growth),
       base_fcf_margin_year_1: finite(baseInputs.fcf_margin_year_1),
       base_fcf_margin_year_5: finite(baseInputs.fcf_margin_year_5),
+      base_fcf_margin_terminal: finite(baseInputs.fcf_margin_terminal),
       base_wacc: finite(baseInputs.wacc),
       base_terminal_growth: finite(baseInputs.terminal_growth),
     },
@@ -228,6 +310,8 @@ export function buildValuation(input = {}) {
       gross_margin: rounded(grossMargin, 4),
       free_cash_flow: fcf,
       cash: reportedCash,
+      short_term_investments: reportedInvestments,
+      liquid_assets: balance.liquidAssets,
       debt: reportedDebt,
       shares_outstanding: basicShares,
       shares_growth: rounded(sharesGrowth, 4),
@@ -236,6 +320,7 @@ export function buildValuation(input = {}) {
       diluted_shares: common.diluted_shares,
       adjusted_cash: adjustedCash,
       adjusted_debt: adjustedDebt,
+      balance_adjustments: balance.adjustments,
     },
     forward: {
       as_of: forward.as_of || fundamentals.sec_filed_at || null,

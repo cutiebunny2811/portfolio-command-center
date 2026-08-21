@@ -25,6 +25,10 @@ test("official SEC filings ground forward assumptions and PCC calculates the ran
   assert.match(edge, /coverPageSharesFromHtml/);
   assert.match(edge, /generateForwardPacket/);
   assert.match(edge, /Do not use or infer the current market price/);
+  assert.match(edge, /short_term_investments/);
+  assert.match(edge, /balance_adjustments/);
+  assert.match(edge, /Never restate total cash or debt/);
+  assert.match(edge, /eight-to-ten-year horizon/);
   assert.match(edge, /buildValuation/);
   assert.match(edge, /body\?\.action === "explain"/);
   assert.match(edge, /Do not recalculate, recommend a trade, add outside facts, or use Markdown/);
@@ -49,4 +53,10 @@ test("mobile Valuation recomposes into one-column scenarios", () => {
   assert.match(css, /\.valuation-cases \{ grid-template-columns: 1fr; \}/);
   assert.match(css, /\.valuation-source \{ grid-template-columns: 1fr; \}/);
   assert.match(css, /\.valuation-ai__points \{ grid-template-columns: 1fr; \}/);
+});
+
+test("valuation UI exposes the actual model horizon and deterministic balance basis", () => {
+  assert.match(app, /FCF margin · Y1 → Y\$\{valuationHorizon\}/);
+  assert.match(app, /Modeled liquid assets \/ debt/);
+  assert.match(edge, /forward-intrinsic-v3/);
 });

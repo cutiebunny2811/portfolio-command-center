@@ -3632,12 +3632,13 @@
       </div>`;
     }).join("");
     const baseInputs = scenarios.find((item) => item.key === "base")?.inputs || {};
+    const valuationHorizon = Number(baseInputs.horizon_years || valuation?.assumptions?.horizon_years || 5);
     const metricRows = valuation ? [
       ["Year 1 revenue", valuationMetric(baseInputs.revenue_year_1 || valuation.metrics?.forward_revenue)],
       ["Revenue growth", valuationMetric(baseInputs.revenue_growth, { percent: true })],
-      ["FCF margin · Y1 → Y5", `${valuationMetric(baseInputs.fcf_margin_year_1, { percent: true })} → ${valuationMetric(baseInputs.fcf_margin_year_5, { percent: true })}`],
+      [`FCF margin · Y1 → Y${valuationHorizon}`, `${valuationMetric(baseInputs.fcf_margin_year_1, { percent: true })} → ${valuationMetric(baseInputs.fcf_margin_terminal ?? baseInputs.fcf_margin_year_5, { percent: true })}`],
       ["WACC / terminal", `${valuationMetric(baseInputs.wacc, { percent: true })} / ${valuationMetric(baseInputs.terminal_growth, { percent: true })}`],
-      ["Adjusted cash / debt", `${valuationMetric(valuation.metrics?.adjusted_cash)} / ${valuationMetric(valuation.metrics?.adjusted_debt)}`],
+      ["Modeled liquid assets / debt", `${valuationMetric(valuation.metrics?.adjusted_cash)} / ${valuationMetric(valuation.metrics?.adjusted_debt)}`],
       ["Diluted shares", Number.isFinite(Number(valuation.metrics?.diluted_shares)) ? compactNumber(valuation.metrics.diluted_shares) : "—"],
     ] : [];
     const explanation = payload?.explanation && typeof payload.explanation === "object"

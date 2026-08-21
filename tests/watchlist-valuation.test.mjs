@@ -58,5 +58,5 @@ test("mobile Valuation recomposes into one-column scenarios", () => {
 test("valuation UI exposes the actual model horizon and deterministic balance basis", () => {
   assert.match(app, /FCF margin · Y1 → Y\$\{valuationHorizon\}/);
   assert.match(app, /Modeled liquid assets \/ debt/);
-  assert.match(edge, /forward-intrinsic-v3/);
+  assert.match(edge, /forward-intrinsic-v4/);
 });

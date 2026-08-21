@@ -5,13 +5,13 @@ function periodDays(row) {
 
 export function preferDurationFact(candidate, current) {
   if (!current) return true;
-  const candidateDuration = periodDays(candidate);
-  const currentDuration = periodDays(current);
-  if (candidateDuration !== currentDuration) return candidateDuration > currentDuration;
-
   const candidateEnd = String(candidate?.end || "");
   const currentEnd = String(current?.end || "");
   if (candidateEnd !== currentEnd) return candidateEnd > currentEnd;
+
+  const candidateDuration = periodDays(candidate);
+  const currentDuration = periodDays(current);
+  if (candidateDuration !== currentDuration) return candidateDuration > currentDuration;
 
   return String(candidate?.filed || "") > String(current?.filed || "");
 }

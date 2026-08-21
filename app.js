@@ -66,12 +66,13 @@
   const state = {
     user: null, member: null,
     portfolios: [], cash: [], positions: [], instruments: [], targets: [], capacities: [], executions: [], cashMovements: [],
+    historyLoaded: false,
     fxProfiles: [], fxEntries: [], fxRate: null, fxReady: true, fxRateBusy: false,
     journal: [], journalPreviewSource: [], journalOverview: null, journalSummary: null,
     journalDaily: [], journalMonthly: [], journalTotal: 0, journalPage: 1, journalPageSize: 50,
     journalFilter: "all", journalOutcome: "all", journalSearch: "", journalDateFrom: "", journalDateTo: "",
     journalBusy: false, prices: [], priceRefreshBusy: false, lastWebullRefresh: null, optionPriceAccess: false,
-    watchlist: [], watchlistReady: true, watchlistBars: [], watchlistBarsInstrumentId: null, watchlistBarsTimespan: null, watchlistLivePrice: null, watchlistChartBusy: false, watchlistChartMeta: null,
+    watchlist: [], watchlistReady: true, watchlistLoaded: false, watchlistBusy: false, watchlistBars: [], watchlistBarsInstrumentId: null, watchlistBarsTimespan: null, watchlistLivePrice: null, watchlistChartBusy: false, watchlistChartMeta: null,
     selectedWatchlistInstrumentId: null, watchlistTimeframe: "1D", watchlistRange: "15M", watchlistSearch: "", watchlistRecentIds: [],
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
     cryptoPulse: [], cryptoPulseReady: true, cryptoPulseBusy: false,
@@ -86,7 +87,7 @@
     macroEntries: [], macroNextEvent: null, macroNextFomc: null, macroReady: true,
     macroView: "calendar", macroRiskFeed: null, macroRiskReady: true,
     macroBusy: false, macroSyncBusy: false, macroLastSynced: null,
-    briefs: [], smartMoneyBriefs: [], notifications: [], briefReady: true, briefBusy: false,
+    briefs: [], smartMoneyBriefs: [], notifications: [], briefReady: true, briefBusy: false, notificationFeedLoaded: false,
     selectedBriefId: null, selectedSmartMoneyBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
     agentTokens: [], agentDrafts: [],
     route: initialRoute, selectedPortfolioId: null,
@@ -119,6 +120,9 @@
   const watchlistChartRefreshes = new Set();
   let authEntryPromise = null;
   let passwordRecoveryActive = passwordRecoveryRequested;
+  let historyLoadPromise = null;
+  let watchlistLoadPromise = null;
+  let notificationFeedPromise = null;
 
   function destroyWatchlistChart() {
     if (!watchlistChart) return;
@@ -577,6 +581,80 @@
     return query("Prices", db.rpc("api_get_latest_instrument_prices"));
   }
 
+  function afterFirstPaint(callback) {
+    requestAnimationFrame(() => requestAnimationFrame(callback));
+  }
+
+  async function loadHistoryData({ force = false } = {}) {
+    if (localPreviewEnabled) {
+      state.historyLoaded = true;
+      return;
+    }
+    if (!force && state.historyLoaded) return;
+    if (historyLoadPromise) return historyLoadPromise;
+    historyLoadPromise = (async () => {
+      const [executions, cashMovements, fxData] = await Promise.all([
+        query("Transaction history", db.from("executions").select("id,portfolio_id,instrument_id,side,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").order("executed_at", { ascending: false }).limit(200)),
+        query("Cash activity", db.from("cash_movements").select("id,portfolio_id,movement_type,amount,occurred_at,notes,metadata").order("occurred_at", { ascending: false }).limit(200)),
+        optionalFxDataQuery().catch((error) => {
+          console.warn(error);
+          return { profiles: state.fxProfiles, entries: state.fxEntries, rate: state.fxRate };
+        })
+      ]);
+      state.executions = executions;
+      state.cashMovements = cashMovements;
+      state.fxProfiles = fxData.profiles;
+      state.fxEntries = fxData.entries;
+      state.fxRate = fxData.rate;
+      state.historyLoaded = true;
+      if (dialog.open && dialog.classList.contains("dialog--history")) refreshHistoryDialog(currentPortfolio());
+    })().finally(() => { historyLoadPromise = null; });
+    return historyLoadPromise;
+  }
+
+  function applyWatchlistData({ watchlist, marketPulse, cryptoPulse }) {
+    state.watchlist = watchlist;
+    state.marketPulse = marketPulse;
+    state.cryptoPulse = cryptoPulse;
+    state.watchlistLoaded = true;
+    state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
+    if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
+    if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
+      state.selectedWatchlistInstrumentId = watchlist[0]?.instrument_id || null;
+      state.watchlistBars = [];
+      state.watchlistLivePrice = null;
+    }
+  }
+
+  async function loadWatchlistPage({ force = false, renderAfter = true } = {}) {
+    if (!force && state.watchlistLoaded) {
+      if (renderAfter && state.route === "watchlist") renderWatchlist();
+      return;
+    }
+    if (watchlistLoadPromise) return watchlistLoadPromise;
+    state.watchlistBusy = true;
+    if (renderAfter && state.route === "watchlist") renderWatchlist();
+    watchlistLoadPromise = (async () => {
+      const [watchlist, marketPulse, cryptoPulse] = await Promise.all([
+        optionalWatchlistQuery(),
+        optionalMarketPulseQuery().catch((error) => { console.warn(error); return state.marketPulse; }),
+        optionalCryptoPulseQuery().catch((error) => { console.warn(error); return state.cryptoPulse; })
+      ]);
+      applyWatchlistData({ watchlist, marketPulse, cryptoPulse });
+    })().catch((error) => {
+      console.error(error);
+      toast(friendlyError(error), true);
+    }).finally(() => {
+      state.watchlistBusy = false;
+      watchlistLoadPromise = null;
+      if (renderAfter && state.route === "watchlist") renderWatchlist();
+    });
+    await watchlistLoadPromise;
+    if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
+      await loadWatchlistBars();
+    }
+  }
+
   async function optionalWatchlistQuery() {
     if (localPreviewEnabled) return state.watchlist;
     const { data, error } = await db.from("watchlist_items").select("*").order("created_at");
@@ -739,6 +817,19 @@
       if (renderAfter && state.route === "briefs") renderBriefs();
       if (renderAfter && state.route === "smart-money-briefs") renderSmartMoneyBriefs();
     }
+  }
+
+  async function loadNotificationFeed({ force = false } = {}) {
+    if (!force && state.notificationFeedLoaded) return;
+    if (notificationFeedPromise) return notificationFeedPromise;
+    notificationFeedPromise = (async () => {
+      applyBriefFeed(await fetchBriefFeed());
+      state.notificationFeedLoaded = true;
+      renderNotificationCenter();
+    })().catch((error) => {
+      console.warn(error);
+    }).finally(() => { notificationFeedPromise = null; });
+    return notificationFeedPromise;
   }
 
   function emptyResearchFeed() {
@@ -1303,10 +1394,27 @@
     }
   }
 
+  async function loadRouteData(route) {
+    if (route === "smart-money") {
+      renderSmartMoney();
+      if (!state.smartMoneyLoaded) await loadSmartMoneyPage();
+    } else if (route === "journal") await loadJournalPage();
+    else if (route === "watchlist") await loadWatchlistPage();
+    else if (route === "research") await loadResearchPage();
+    else if (route === "earnings") await loadEarningsPage();
+    else if (route === "macro") await loadMacroPage();
+    else if (["briefs", "smart-money-briefs"].includes(route)) {
+      await loadBriefPage();
+      state.notificationFeedLoaded = true;
+    } else if (route === "option-desk") await loadOptionDesk();
+    else render();
+  }
+
   async function refreshDashboard() {
     await loadData();
     await refreshStockPrices({ force: true, notify: true });
-    await refreshFxRate({ force: true });
+    await loadNotificationFeed({ force: true });
+    if (state.historyLoaded) await refreshFxRate({ force: true });
     if (state.watchlistView === "market") await refreshMarketPulse({ force: true, notify: true });
     if (state.watchlistView === "crypto") await refreshCryptoPulse({ force: true, notify: true });
     await refreshVisibleWatchlistChart();
@@ -1317,53 +1425,21 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, fxData, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents, researchFeed, earningsFeed, macroFeed, macroRiskFeed, briefFeed] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
         query("Instruments", db.from("instruments").select("*").order("symbol")),
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
         query("Position capacity", db.from("position_capacity").select("*")),
-        query("Transaction history", db.from("executions").select("id,portfolio_id,instrument_id,side,quantity,price,multiplier,fee,gross_amount,cash_effect,realized_pnl,executed_at").order("executed_at", { ascending: false }).limit(200)),
-        query("Cash activity", db.from("cash_movements").select("id,portfolio_id,movement_type,amount,occurred_at,notes,metadata").order("occurred_at", { ascending: false }).limit(200)),
-        optionalFxDataQuery(),
         fetchLatestInstrumentPrices(),
-        fetchJournalView({ page: 1, pageSize: 6 }),
-        optionalWatchlistQuery(),
-        optionalMarketPulseQuery(),
-        optionalCryptoPulseQuery(),
-        initialSmartMoneyQuery(),
-        fetchResearchFeed(),
-        fetchEarningsFeed(),
-        fetchMacroFeed(),
-        fetchMacroRiskFeed(),
-        fetchBriefFeed()
+        fetchJournalView({ page: 1, pageSize: 6 })
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, executions, cashMovements, prices, journalOverview, watchlist, marketPulse, cryptoPulse, smartMoneyEvents });
-      state.fxProfiles = fxData.profiles;
-      state.fxEntries = fxData.entries;
-      state.fxRate = fxData.rate;
-      state.researchEntries = researchFeed.entries;
-      state.researchTotal = num(researchFeed.total_count);
-      applyEarningsFeed(earningsFeed);
-      applyMacroFeed(macroFeed);
-      applyMacroRiskFeed(macroRiskFeed);
-      applyBriefFeed(briefFeed);
-      state.watchlistRecentIds = state.watchlistRecentIds.filter((id) => watchlist.some((item) => item.instrument_id === id));
-      if (!state.watchlistRecentIds.length) state.watchlistRecentIds = watchlist.slice(-6).reverse().map((item) => item.instrument_id);
-      if (!watchlist.some((item) => item.instrument_id === state.selectedWatchlistInstrumentId)) {
-        state.selectedWatchlistInstrumentId = watchlist[0]?.instrument_id || null;
-        state.watchlistBars = [];
-        state.watchlistLivePrice = null;
-      }
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview });
+      state.historyLoaded = false;
       if (!state.selectedPortfolioId || !portfolios.some((item) => item.id === state.selectedPortfolioId)) {
         state.selectedPortfolioId = portfolios[0]?.id || null;
       }
-      if (state.route === "journal") await loadJournalPage({ renderAfter: false });
-      if (state.route === "research") await loadResearchPage({ renderAfter: false });
-      if (state.route === "earnings") await loadEarningsPage({ renderAfter: false });
-      if (state.route === "macro") await loadMacroPage({ renderAfter: false });
-      if (["briefs", "smart-money-briefs"].includes(state.route)) await loadBriefPage({ renderAfter: false });
       state.lastSync = new Date();
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
@@ -1426,9 +1502,12 @@
     onboardingShell.hidden = true;
     appShell.hidden = false;
     await loadData();
-    await refreshStockPrices();
-    await refreshFxRate();
-    if (state.route === "option-desk") await loadOptionDesk();
+    afterFirstPaint(() => {
+      void refreshStockPrices();
+      void loadHistoryData().catch((error) => console.warn(error));
+      if (!["briefs", "smart-money-briefs"].includes(state.route)) void loadNotificationFeed();
+      void loadRouteData(state.route);
+    });
   }
 
   async function fetchMemberOnboarding() {
@@ -4321,6 +4400,7 @@
         await rpc("api_add_watchlist_item", { p_instrument_id: instrumentId, p_notes: form.get("notes") || null });
         closeDialog();
         await loadData({ quiet: true });
+        await loadWatchlistPage({ force: true, renderAfter: false });
         state.selectedWatchlistInstrumentId = instrumentId;
         await refreshStockPrices({ force: true });
         await refreshMarketPulse();
@@ -4338,6 +4418,7 @@
       onSubmit: async () => {
         await rpc("api_remove_watchlist_item", { p_instrument_id: instrumentId });
         closeDialog(); state.watchlistBars = []; toast(`${instrument?.symbol || "Ticker"} removed from watchlist`); await loadData({ quiet: true });
+        await loadWatchlistPage({ force: true, renderAfter: false });
         await refreshMarketPulse();
         if (state.selectedWatchlistInstrumentId) await loadWatchlistBars();
       }
@@ -5302,26 +5383,7 @@
       }
       window.scrollTo(0, 0);
       renderNav();
-      if (state.route === "smart-money") {
-        renderSmartMoney();
-        if (!state.smartMoneyLoaded) await loadSmartMoneyPage();
-      }
-      else if (state.route === "journal") await loadJournalPage();
-      else if (state.route === "research") await loadResearchPage();
-      else if (state.route === "earnings") await loadEarningsPage();
-      else if (state.route === "macro") await loadMacroPage();
-      else if (["briefs", "smart-money-briefs"].includes(state.route)) await loadBriefPage();
-      else {
-        render();
-        if (state.route === "watchlist" && state.watchlistView === "charts" && state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
-          await loadWatchlistBars();
-        } else if (state.route === "watchlist" && state.watchlistView === "market" && !state.marketPulse.length) {
-          await refreshMarketPulse();
-        } else if (state.route === "watchlist" && state.watchlistView === "crypto") {
-          if (!state.cryptoPulse.length) await refreshCryptoPulse();
-          if (!state.cryptoChartBars.length) await loadCryptoChart();
-        }
-      }
+      await loadRouteData(state.route);
       return;
     }
     const portfolioButton = event.target.closest("[data-portfolio-id]");
@@ -5549,7 +5611,10 @@
     else if (action === "holding-buy") openTradeDialog("buy", { instrumentId: target.dataset.instrumentId });
     else if (action === "holding-sell") openTradeDialog("sell", { instrumentId: target.dataset.instrumentId });
     else if (action === "buy-simulate") openBuySimulator(target.dataset.instrumentId);
-    else if (action === "execution-history") openExecutionHistoryDialog();
+    else if (action === "execution-history") {
+      await loadHistoryData();
+      openExecutionHistoryDialog();
+    }
     else if (action === "trade-history-view") {
       state.tradeHistoryView = ["trades", "cash", "fx"].includes(target.dataset.historyView) ? target.dataset.historyView : "trades";
       state.tradeHistoryPage = 1;

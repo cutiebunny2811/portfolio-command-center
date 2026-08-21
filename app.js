@@ -5661,11 +5661,12 @@
     else if (action === "watchlist-add") openWatchlistDialog();
     else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId);
     else if (action === "valuation-stock") {
-      state.selectedWatchlistInstrumentId = target.dataset.instrumentId;
+      const instrumentId = target.dataset.instrumentId;
+      state.selectedWatchlistInstrumentId = instrumentId;
       state.valuationData = null;
       state.valuationError = "";
       renderWatchlist();
-      await loadCompanyValuation({ instrumentId: target.dataset.instrumentId });
+      await loadCompanyValuation({ instrumentId });
     }
     else if (action === "valuation-refresh") await loadCompanyValuation({ force: true });
     else if (action === "valuation-explain") await explainCompanyValuation();

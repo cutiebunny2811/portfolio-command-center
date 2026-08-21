@@ -77,6 +77,7 @@
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
     cryptoPulse: [], cryptoPulseReady: true, cryptoPulseBusy: false,
     cryptoChartBars: [], cryptoChartSymbol: "BTCUSDT", cryptoChartTimeframe: "1D", cryptoChartBusy: false, cryptoChartMeta: null,
+    valuationData: null, valuationInstrumentId: null, valuationBusy: false, valuationError: "", valuationExplanationBusy: false,
     marketPulseMode: "rotation", marketPulseWindow: "1D", expandedRotationSymbol: null,
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
     smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
@@ -718,6 +719,53 @@
       return [];
     }
     throw new Error(`Crypto Pulse: ${error.message}`);
+  }
+
+  async function loadCompanyValuation({ instrumentId = state.selectedWatchlistInstrumentId, force = false } = {}) {
+    if (!instrumentId || state.valuationBusy) return;
+    if (!force && state.valuationInstrumentId === instrumentId && state.valuationData) return;
+    state.valuationBusy = true;
+    state.valuationError = "";
+    if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
+    try {
+      const { data, error } = await db.functions.invoke("refresh-company-valuation", {
+        body: { instrument_id: instrumentId, force }
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      state.valuationInstrumentId = instrumentId;
+      state.valuationData = data;
+    } catch (error) {
+      console.error(error);
+      state.valuationInstrumentId = instrumentId;
+      state.valuationData = null;
+      state.valuationError = friendlyError(error);
+    } finally {
+      state.valuationBusy = false;
+      if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
+    }
+  }
+
+  async function explainCompanyValuation() {
+    const instrumentId = state.selectedWatchlistInstrumentId;
+    if (!instrumentId || state.valuationExplanationBusy || !state.valuationData?.valuation) return;
+    state.valuationExplanationBusy = true;
+    state.valuationError = "";
+    renderWatchlist();
+    try {
+      const { data, error } = await db.functions.invoke("refresh-company-valuation", {
+        body: { instrument_id: instrumentId, action: "explain", force: false }
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      state.valuationData = { ...state.valuationData, ...data };
+    } catch (error) {
+      console.error(error);
+      state.valuationError = `AI note: ${friendlyError(error)}`;
+    } finally {
+      state.valuationExplanationBusy = false;
+      if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
+    }
   }
 
   async function optionalFxDataQuery() {
@@ -1443,6 +1491,7 @@
     if (state.historyLoaded) await refreshFxRate({ force: true });
     if (state.watchlistView === "market") await refreshMarketPulse({ force: true, notify: true });
     if (state.watchlistView === "crypto") await refreshCryptoPulse({ force: true, notify: true });
+    if (state.watchlistView === "valuation") await loadCompanyValuation({ force: true });
     await refreshVisibleWatchlistChart();
   }
 
@@ -3485,14 +3534,14 @@
     return { query: "", matchCount: rows.length, rows: ordered };
   }
 
-  function watchlistRowsMarkup(rows, selected) {
+  function watchlistRowsMarkup(rows, selected, action = "watchlist-chart") {
     const visible = watchlistVisibleRows(rows);
     const label = visible.query ? `${visible.matchCount} match${visible.matchCount === 1 ? "" : "es"}` : "Quick view";
     if (!visible.rows.length) return `<div class="watchlist-list-empty">No ticker matches “${esc(state.watchlistSearch)}”.</div>`;
     return `<div class="watchlist-list-meta"><span>${label}</span><small>${visible.query ? "Scroll matches" : "Recent first · scroll all"}</small></div><div class="watchlist-list">${visible.rows.map((item) => {
       const isSelected = item.instrument_id === selected?.instrument_id;
       return `<div class="watchlist-row ${isSelected ? "is-active" : ""}">
-        <button type="button" class="watchlist-row__open" data-action="watchlist-chart" data-instrument-id="${item.instrument_id}">
+        <button type="button" class="watchlist-row__open" data-action="${action}" data-instrument-id="${item.instrument_id}">
           ${assetIdentity(item.instrument)}
           <span><strong class="mono">${item.price ? money(item.price.price, 4) : "—"}</strong><small>${item.price?.source === "webull" ? "WEBULL" : "WAITING FOR PRICE"}</small></span>
           <i aria-hidden="true">↗</i>
@@ -3511,7 +3560,79 @@
       <button type="button" class="${state.watchlistView === "charts" ? "is-active" : ""}" data-action="watchlist-view" data-view="charts"><span>01</span>Charts</button>
       <button type="button" class="${state.watchlistView === "market" ? "is-active" : ""}" data-action="watchlist-view" data-view="market"><span>02</span>Market Pulse</button>
       <button type="button" class="${state.watchlistView === "crypto" ? "is-active" : ""}" data-action="watchlist-view" data-view="crypto"><span>03</span>Crypto Pulse</button>
+      <button type="button" class="${state.watchlistView === "valuation" ? "is-active" : ""}" data-action="watchlist-view" data-view="valuation"><span>04</span>Valuation</button>
     </nav>`;
+  }
+
+  function valuationMetric(value, { percent: isPercent = false, compact = true } = {}) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return "—";
+    if (isPercent) return `${parsed >= 0 ? "+" : ""}${(parsed * 100).toFixed(1)}%`;
+    return compact ? compactMoney(parsed) : money(parsed, 2);
+  }
+
+  function renderValuationDesk(rows, selected) {
+    const payload = state.valuationInstrumentId === selected?.instrument_id ? state.valuationData : null;
+    const valuation = payload?.valuation || null;
+    const scenarios = valuation?.scenarios || [];
+    const marketPrice = num(valuation?.market?.price) || num(selected?.price?.price);
+    const scenarioMarkup = scenarios.map((item) => {
+      const fairValue = num(item.fair_value);
+      const spread = marketPrice > 0 ? (fairValue / marketPrice - 1) * 100 : null;
+      return `<div class="valuation-case valuation-case--${item.key}">
+        <span>${esc(item.label)}</span>
+        <strong>${money(fairValue)}</strong>
+        <small class="${spread == null || spread >= 0 ? "positive" : "negative"}">${spread == null ? "NO MARKET COMPARISON" : `${spread >= 0 ? "+" : ""}${spread.toFixed(1)}% vs market`}</small>
+        <em>${esc(item.assumption || item.method)}</em>
+      </div>`;
+    }).join("");
+    const metricRows = valuation ? [
+      ["Revenue", valuationMetric(valuation.metrics?.revenue)],
+      ["Revenue growth", valuationMetric(valuation.metrics?.revenue_growth, { percent: true })],
+      ["Gross margin", valuationMetric(valuation.metrics?.gross_margin, { percent: true })],
+      ["Free cash flow", valuationMetric(valuation.metrics?.free_cash_flow)],
+      ["Cash / debt", `${valuationMetric(valuation.metrics?.cash)} / ${valuationMetric(valuation.metrics?.debt)}`],
+      ["Cash runway", valuation.metrics?.runway_months == null ? "N/A" : `${num(valuation.metrics.runway_months).toFixed(1)} months`],
+    ] : [];
+    const explanation = String(payload?.explanation || "").trim();
+    const status = state.valuationBusy ? "READING SEC" : payload?.cached ? "CACHED" : payload ? "REFRESHED" : "WAITING";
+
+    return `<section class="valuation-workbench" aria-label="Watchlist company valuation">
+      <aside class="watchlist-rail valuation-rail">
+        <div class="watchlist-rail__head"><div><span class="section-index">01 / WATCHLIST</span><h2>Choose a company.</h2></div><span class="meta">${rows.length} symbols</span></div>
+        ${rows.length ? `<label class="watchlist-search"><span>Search all ${rows.length} symbols</span><input type="search" autocomplete="off" data-watchlist-search placeholder="Ticker or company" value="${esc(state.watchlistSearch)}"></label><div id="watchlist-list-region">${watchlistRowsMarkup(rows, selected, "valuation-stock")}</div>` : `<div class="empty-state"><div><strong>Your watchlist is empty</strong>Add a US stock before opening its valuation.</div></div>`}
+      </aside>
+      <article class="valuation-sheet">
+        ${selected ? `<header class="valuation-head">
+          <div>${assetIdentity(selected.instrument)}<span class="section-index">02 / DETERMINISTIC FAIR VALUE</span></div>
+          <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span></div>
+        </header>` : ""}
+        ${state.valuationBusy && !valuation ? `<div class="valuation-loading"><span></span><strong>Reading ${esc(selected?.instrument?.symbol || "company")} filings.</strong><p>SEC facts first. No AI is involved in the fair-value calculation.</p></div>` : ""}
+        ${state.valuationError && !valuation ? `<div class="valuation-unavailable"><span>VALUATION / 00</span><h2>No clean range yet.</h2><p>${esc(state.valuationError)}</p><button class="button button--primary" type="button" data-action="valuation-refresh">Try again</button></div>` : ""}
+        ${valuation ? `<div class="valuation-verdict">
+          <div><span>MODEL SELECTED</span><strong>${esc(valuation.model)}</strong></div>
+          <div><span>COMPANY STAGE</span><strong>${esc(valuation.stage)}</strong></div>
+          <div><span>CONFIDENCE</span><strong>${esc(valuation.confidence)}</strong></div>
+          <div><span>SEC BASIS</span><strong>${esc(valuation.data_quality?.period_basis || "—")}</strong></div>
+        </div>
+        <section class="valuation-range">
+          <header><div><span class="section-index">03 / FAIR VALUE RANGE</span><h2>Three prices. One visible method.</h2></div><p>${esc(valuation.why)}</p></header>
+          <div class="valuation-cases">${scenarioMarkup}</div>
+        </section>
+        <section class="valuation-evidence">
+          <header><span class="section-index">04 / REPORTED INPUTS</span><h2>Numbers before narrative.</h2></header>
+          <dl>${metricRows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
+          <div class="valuation-flags">${valuation.warnings?.length ? valuation.warnings.map((item) => `<p>${esc(item)}</p>`).join("") : `<p>No high-priority model warning was triggered by the reported facts.</p>`}</div>
+        </section>
+        <section class="valuation-ai">
+          <div><span class="section-index">05 / OPTIONAL AI NOTE</span><h2>Explain only when asked.</h2><p>The model cannot change Bear, Base or Bull. It can only translate the same canonical numbers into a short Thai note.</p></div>
+          <button class="button button--primary" type="button" data-action="valuation-explain" ${state.valuationExplanationBusy ? "disabled" : ""}>${state.valuationExplanationBusy ? "Asking Gemini…" : explanation ? "Read AI explanation" : "Explain with AI"}</button>
+          ${explanation ? `<div class="valuation-ai__note"><small>${esc(payload.explanation_model || "GEMINI")}</small><p>${esc(explanation).replace(/\n/g, "<br>")}</p></div>` : ""}
+          ${state.valuationError ? `<p class="valuation-ai__error">${esc(state.valuationError)}</p>` : ""}
+        </section>
+        <footer class="valuation-source"><span>SEC COMPANY FACTS · ${esc(valuation.data_quality?.sec_form || "FILING")}</span><span>FILED ${esc(valuation.data_quality?.sec_filed_at || "—")}</span><span>MODEL OUTPUT, NOT A PRICE TARGET</span></footer>` : !state.valuationBusy && !state.valuationError ? `<div class="valuation-loading"><strong>Select a US stock.</strong><p>ETFs and options do not use this company-fundamentals router.</p></div>` : ""}
+      </article>
+    </section>`;
   }
 
   function marketPulseValue(row, window = state.marketPulseWindow) {
@@ -4214,6 +4335,20 @@
     const cryptoRenderId = ++cryptoChartRenderId;
     destroyWatchlistChart();
     destroyCryptoChart();
+    if (state.watchlistView === "valuation") {
+      const rows = watchlistRows();
+      const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
+      viewRoot.innerHTML = `
+        ${pageHead(
+          "SEC company facts · Rules-based valuation",
+          "Fair value, without the fog.",
+          "Bear, Base and Bull come from reported fundamentals and a visible model router. AI never sets the price.",
+          `<button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || !selected ? "disabled" : ""}>${state.valuationBusy ? "Reading filings…" : "Refresh valuation"}</button>`
+        )}
+        ${marketPulseTabs()}
+        ${renderValuationDesk(rows, selected)}`;
+      return;
+    }
     if (state.watchlistView === "crypto") {
       viewRoot.innerHTML = `
         ${pageHead(
@@ -5483,7 +5618,7 @@
     else if (action === "refresh") await loadData();
     else if (action === "price-refresh") await refreshStockPrices({ force: true, notify: true });
     else if (action === "watchlist-view") {
-      state.watchlistView = ["charts", "market", "crypto"].includes(target.dataset.view) ? target.dataset.view : "charts";
+      state.watchlistView = ["charts", "market", "crypto", "valuation"].includes(target.dataset.view) ? target.dataset.view : "charts";
       renderWatchlist();
       if (state.watchlistView === "market") {
         const latest = state.marketPulse.map((row) => new Date(row.fetched_at).getTime()).filter(Number.isFinite);
@@ -5494,6 +5629,8 @@
         const stale = !latest.length || Date.now() - Math.max(...latest) >= 2 * 60_000;
         if (stale) await refreshCryptoPulse();
         if (!state.cryptoChartBars.length) await loadCryptoChart();
+      } else if (state.watchlistView === "valuation") {
+        await loadCompanyValuation();
       } else if (state.selectedWatchlistInstrumentId && !state.watchlistBars.length) {
         await loadWatchlistBars();
       }
@@ -5523,6 +5660,15 @@
     }
     else if (action === "watchlist-add") openWatchlistDialog();
     else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId);
+    else if (action === "valuation-stock") {
+      state.selectedWatchlistInstrumentId = target.dataset.instrumentId;
+      state.valuationData = null;
+      state.valuationError = "";
+      renderWatchlist();
+      await loadCompanyValuation({ instrumentId: target.dataset.instrumentId });
+    }
+    else if (action === "valuation-refresh") await loadCompanyValuation({ force: true });
+    else if (action === "valuation-explain") await explainCompanyValuation();
     else if (action === "watchlist-timeframe") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.timeframe);
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "smart-money-side") { state.smartMoneySide = target.dataset.side || "all"; renderSmartMoney(); }

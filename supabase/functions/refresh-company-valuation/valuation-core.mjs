@@ -15,6 +15,14 @@ function perShare(equityValue, shares) {
   return rounded(Math.max(equityValue / shares, 0));
 }
 
+function selectModelFamily(fundamentals, forward, netIncome, fcf, equity) {
+  const sic = finite(fundamentals.sic);
+  const isFinancial = sic != null && sic >= 6000 && sic < 6800;
+  if (forward.model_family === "excess_return" && isFinancial && equity > 0) return "excess_return";
+  if (netIncome <= 0 || fcf <= 0 || forward.model_family === "transition_dcf") return "transition_dcf";
+  return "normalized_dcf";
+}
+
 function scenarioRow(packet, fairValue, model, assumption) {
   return {
     key: packet.key,
@@ -52,8 +60,9 @@ function normalizedScenario(raw, common, key) {
   const wacc = clamp(finite(raw?.wacc) ?? defaultWacc, 0.07, 0.2);
   const yearFiveMargin = clamp(finite(raw?.fcf_margin_year_5) ?? finite(common.fcf_margin_year_5) ?? 0.1, -0.25, 0.55);
   const isTransition = common.model_family === "transition_dcf";
+  const requestedHorizon = finite(raw?.horizon_years) ?? finite(common.horizon_years);
   const horizonYears = isTransition
-    ? Math.round(clamp(finite(raw?.horizon_years) ?? finite(common.horizon_years) ?? 10, 7, 10))
+    ? Math.round(requestedHorizon != null && requestedHorizon >= 7 ? clamp(requestedHorizon, 7, 10) : 10)
     : 5;
   const transitionFloor = key === "bear" ? 0 : key === "bull" ? 0.12 : 0.06;
   const requestedTerminalMargin = finite(raw?.fcf_margin_terminal) ?? finite(common.fcf_margin_terminal) ?? yearFiveMargin;
@@ -197,6 +206,7 @@ export function buildValuation(input = {}) {
   const balance = adjustedBalance(fundamentals, forward, balanceScale);
   const adjustedCash = balance.adjustedCash;
   const adjustedDebt = balance.adjustedDebt;
+  const modelFamily = selectModelFamily(fundamentals, forward, netIncome, fcf, equity);
   const common = {
     revenue_year_1: clamp(finite(forward.revenue_year_1) ?? 0, 0, Math.max(revenue * 20, 5_000_000)),
     fcf_margin_year_1: finite(forward.fcf_margin_year_1),
@@ -208,14 +218,14 @@ export function buildValuation(input = {}) {
     share_cap: basicShares * 10,
     revenue_cap: Math.max(revenue * 20, 5_000_000),
     reported_revenue: revenue,
-    model_family: forward.model_family,
+    model_family: modelFamily,
   };
   const rawScenarios = new Map((Array.isArray(forward.scenarios) ? forward.scenarios : []).map((row) => [String(row?.key || "").toLowerCase(), row]));
   const keys = ["bear", "base", "bull"];
   let scenarios;
   let model;
 
-  if (forward.model_family === "excess_return") {
+  if (modelFamily === "excess_return") {
     if (!(equity > 0)) throw new Error("A forward excess-return model requires positive reported equity.");
     model = "FORWARD EXCESS RETURN";
     scenarios = keys.map((key) => {
@@ -230,7 +240,7 @@ export function buildValuation(input = {}) {
       };
     });
   } else {
-    model = forward.model_family === "normalized_dcf" ? "NORMALIZED FORWARD DCF" : "LONG-HORIZON TRANSITION DCF";
+    model = modelFamily === "normalized_dcf" ? "NORMALIZED FORWARD DCF" : "LONG-HORIZON TRANSITION DCF";
     const packets = economicallyOrderPackets(keys.map((key) => normalizedScenario(rawScenarios.get(key), common, key)));
     scenarios = packets.map((packet) => {
       if (!(packet.revenue_year_1 > 0)) throw new Error(`${packet.key} case does not provide usable forward revenue.`);
@@ -261,6 +271,9 @@ export function buildValuation(input = {}) {
 
   const grossMargin = grossProfit != null && revenue > 0 ? grossProfit / revenue : null;
   const warnings = Array.isArray(forward.risks) ? forward.risks.filter(Boolean).slice(0, 5) : [];
+  if (modelFamily !== forward.model_family) {
+    warnings.unshift(`PCC selected ${model.replaceAll(" ", "-")} from reported SEC profitability and industry facts instead of the generated model family.`);
+  }
   if (common.diluted_shares > basicShares * 1.05) {
     warnings.unshift(`Known dilution increases the modeled share count by ${rounded((common.diluted_shares / basicShares - 1) * 100, 1)}%.`);
   }
@@ -277,10 +290,16 @@ export function buildValuation(input = {}) {
 
   const baseValue = scenarios[1].fair_value;
   const baseInputs = scenarios[1].inputs || {};
+  const generatedStage = String(forward.company_stage || "").toUpperCase();
+  const stage = modelFamily === "excess_return"
+    ? "FINANCIAL"
+    : modelFamily === "transition_dcf"
+      ? (/LOSS|TRANSITION/.test(generatedStage) ? generatedStage : "LOSS-MAKING TRANSITION")
+      : "CASH-GENERATIVE";
   return {
-    model_version: "forward-intrinsic-v3",
+    model_version: "forward-intrinsic-v4",
     model,
-    stage: String(forward.company_stage || (fcf > 0 && netIncome > 0 ? "CASH-GENERATIVE" : "FORWARD TRANSITION")).toUpperCase(),
+    stage,
     confidence: ["HIGH", "MEDIUM", "LOW"].includes(String(forward.evidence_quality || "").toUpperCase())
       ? String(forward.evidence_quality).toUpperCase()
       : "LOW",

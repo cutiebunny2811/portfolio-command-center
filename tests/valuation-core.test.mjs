@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildValuation } from "../supabase/functions/refresh-company-valuation/valuation-core.mjs";
+import { buildFallbackForwardPacket, buildValuation } from "../supabase/functions/refresh-company-valuation/valuation-core.mjs";
 
 function baseFacts(overrides = {}) {
   return {
@@ -53,7 +53,7 @@ function forwardPacket(overrides = {}) {
 
 test("cash generators use a sourced normalized forward DCF", () => {
   const result = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 12 } });
-  assert.equal(result.model_version, "forward-intrinsic-v4");
+  assert.equal(result.model_version, "forward-intrinsic-v5");
   assert.equal(result.model, "NORMALIZED FORWARD DCF");
   assert.equal(result.confidence, "HIGH");
   assert.deepEqual(result.scenarios.map((item) => item.key), ["bear", "base", "bull"]);
@@ -238,4 +238,21 @@ test("inconsistent generated scenarios are normalized or enveloped instead of fa
   assert.deepEqual(result.scenarios.map((row) => row.key), ["bear", "base", "bull"]);
   assert.ok(result.scenarios[0].fair_value <= result.scenarios[1].fair_value);
   assert.ok(result.scenarios[1].fair_value <= result.scenarios[2].fair_value);
+});
+
+test("SEC facts produce an ordered fallback range when document synthesis is unavailable", () => {
+  const documents = [{ title: "10-Q filed 2026-08-10", url: "https://www.sec.gov/example", date: "2026-08-10", form: "10-Q" }];
+  const forward = buildFallbackForwardPacket(baseFacts({
+    net_income_ttm: -15_000_000,
+    free_cash_flow_ttm: -20_000_000,
+    shares_growth: 0.12,
+  }), documents);
+  const result = buildValuation({ fundamentals: baseFacts({ net_income_ttm: -15_000_000, free_cash_flow_ttm: -20_000_000, shares_growth: 0.12 }), forward, market: { price: 8 } });
+
+  assert.equal(forward.generated_model, "deterministic-sec-fallback");
+  assert.equal(result.model, "LONG-HORIZON TRANSITION DCF");
+  assert.equal(result.assumptions.horizon_years, 10);
+  assert.ok(result.scenarios[0].fair_value <= result.scenarios[1].fair_value);
+  assert.ok(result.scenarios[1].fair_value <= result.scenarios[2].fair_value);
+  assert.match(result.warnings.join(" "), /SEC-facts fallback/);
 });

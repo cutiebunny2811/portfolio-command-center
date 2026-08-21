@@ -54,7 +54,7 @@ function forwardPacket(overrides = {}) {
 
 test("cash generators use a sourced normalized forward DCF", () => {
   const result = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 12 } });
-  assert.equal(result.model_version, "forward-intrinsic-v1");
+  assert.equal(result.model_version, "forward-intrinsic-v2");
   assert.equal(result.model, "NORMALIZED FORWARD DCF");
   assert.equal(result.confidence, "HIGH");
   assert.deepEqual(result.scenarios.map((item) => item.key), ["bear", "base", "bull"]);
@@ -107,6 +107,23 @@ test("forward intrinsic values never change with the current quote", () => {
   const highQuote = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 40 } });
   assert.deepEqual(lowQuote.scenarios, highQuote.scenarios);
   assert.notEqual(lowQuote.market.upside_to_base_percent, highQuote.market.upside_to_base_percent);
+});
+
+test("extracted forward revenue cannot silently fall below the reported SEC base", () => {
+  const lowRevenueScenarios = forwardPacket().scenarios.map((scenario) => ({
+    ...scenario,
+    revenue_year_1: 10_000_000,
+  }));
+  const result = buildValuation({
+    fundamentals: baseFacts({ revenue_ttm: 100_000_000 }),
+    forward: forwardPacket({ revenue_year_1: 10_000_000, scenarios: lowRevenueScenarios }),
+    market: { price: 12 },
+  });
+
+  assert.equal(result.scenarios[0].inputs.revenue_year_1, 80_000_000);
+  assert.equal(result.scenarios[1].inputs.revenue_year_1, 95_000_000);
+  assert.equal(result.scenarios[2].inputs.revenue_year_1, 105_000_000);
+  assert.match(result.warnings.join(" "), /anchored to the latest reported SEC revenue/);
 });
 
 test("the model rejects unsourced assumptions", () => {

@@ -374,9 +374,11 @@ ${documentText}`;
   const selectedIds = new Set((Array.isArray(packet.source_ids) ? packet.source_ids : []).filter((id: string) => allowedSourceIds.has(id)));
   const sources = documents.filter((row) => selectedIds.has(row.id)).map(({ title, url, date, form }) => ({ title, url, date, form }));
   if (!sources.length) throw new Error("Forward assumptions did not cite a supplied SEC filing.");
+  const sourceAsOf = sources.map((row) => row.date).filter(Boolean).sort().at(-1) || fundamentals.sec_filed_at || null;
   const scenarios = packet.model_family === "excess_return" ? packet.financial_scenarios : packet.scenarios;
   return {
     ...packet,
+    as_of: sourceAsOf,
     scenarios: Array.isArray(scenarios) ? scenarios : [],
     sources,
     generated_model: generated.model,
@@ -464,7 +466,7 @@ Deno.serve(async (request) => {
     const cacheAge = Date.now() - new Date(cached?.fetched_at || 0).getTime();
     const needsRefresh = body?.force === true
       || !cached
-      || cached?.valuation?.model_version !== "forward-intrinsic-v1"
+      || cached?.valuation?.model_version !== "forward-intrinsic-v2"
       || cacheAge > cacheWindowMs;
 
     if (needsRefresh) {

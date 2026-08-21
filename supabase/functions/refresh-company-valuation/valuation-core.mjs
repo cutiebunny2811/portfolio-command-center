@@ -27,6 +27,7 @@ function scenarioRow(packet, fairValue, model, assumption) {
       wacc: rounded(packet.wacc, 4),
       terminal_growth: rounded(packet.terminal_growth, 4),
       diluted_shares: rounded(packet.diluted_shares, 0),
+      revenue_anchor_applied: Boolean(packet.revenue_anchor_applied),
     },
   };
 }
@@ -35,7 +36,12 @@ function normalizedScenario(raw, common, key) {
   const defaultGrowth = key === "bear" ? 0.04 : key === "bull" ? 0.16 : 0.1;
   const defaultWacc = key === "bear" ? 0.12 : key === "bull" ? 0.085 : 0.1;
   const defaultTerminal = key === "bear" ? 0.015 : key === "bull" ? 0.03 : 0.025;
-  const revenueYearOne = clamp(finite(raw?.revenue_year_1) ?? finite(common.revenue_year_1) ?? 0, 0, common.revenue_cap);
+  const requestedRevenue = finite(raw?.revenue_year_1) ?? finite(common.revenue_year_1) ?? 0;
+  const floorTable = common.model_family === "normalized_dcf"
+    ? { bear: 0.8, base: 0.95, bull: 1.05 }
+    : { bear: 0.5, base: 0.8, bull: 1 };
+  const reportedFloor = Math.max(finite(common.reported_revenue) ?? 0, 0) * floorTable[key];
+  const revenueYearOne = clamp(Math.max(requestedRevenue, reportedFloor), 0, common.revenue_cap);
   const dilutedShares = clamp(finite(raw?.diluted_shares) ?? finite(common.diluted_shares) ?? 0, common.basic_shares, common.share_cap);
   const wacc = clamp(finite(raw?.wacc) ?? defaultWacc, 0.07, 0.2);
   return {
@@ -47,6 +53,7 @@ function normalizedScenario(raw, common, key) {
     wacc,
     terminal_growth: Math.min(clamp(finite(raw?.terminal_growth) ?? defaultTerminal, 0, 0.04), wacc - 0.025),
     diluted_shares: dilutedShares,
+    revenue_anchor_applied: reportedFloor > 0 && requestedRevenue < reportedFloor,
   };
 }
 
@@ -131,6 +138,8 @@ export function buildValuation(input = {}) {
     basic_shares: basicShares,
     share_cap: basicShares * 10,
     revenue_cap: Math.max(revenue * 20, 5_000_000),
+    reported_revenue: revenue,
+    model_family: forward.model_family,
   };
   const rawScenarios = new Map((Array.isArray(forward.scenarios) ? forward.scenarios : []).map((row) => [String(row?.key || "").toLowerCase(), row]));
   const keys = ["bear", "base", "bull"];
@@ -179,13 +188,16 @@ export function buildValuation(input = {}) {
   if (common.diluted_shares > basicShares * 1.05) {
     warnings.unshift(`Known dilution increases the modeled share count by ${rounded((common.diluted_shares / basicShares - 1) * 100, 1)}%.`);
   }
+  if (scenarios.some((row) => row.inputs?.revenue_anchor_applied)) {
+    warnings.unshift("Year-1 revenue was anchored to the latest reported SEC revenue because the extracted forward input was materially lower.");
+  }
   if (sharesGrowth != null && sharesGrowth > 0.1) warnings.push(`Reported share count increased ${(sharesGrowth * 100).toFixed(1)}% year over year.`);
   if (forward.evidence_quality === "LOW") warnings.unshift("Forward evidence is incomplete; treat the range as provisional.");
 
   const baseValue = scenarios[1].fair_value;
   const baseInputs = scenarios[1].inputs || {};
   return {
-    model_version: "forward-intrinsic-v1",
+    model_version: "forward-intrinsic-v2",
     model,
     stage: String(forward.company_stage || (fcf > 0 && netIncome > 0 ? "CASH-GENERATIVE" : "FORWARD TRANSITION")).toUpperCase(),
     confidence: ["HIGH", "MEDIUM", "LOW"].includes(String(forward.evidence_quality || "").toUpperCase())

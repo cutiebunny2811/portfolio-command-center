@@ -363,6 +363,15 @@ Return strict JSON with this shape:
   "risks": ["plain English risk", "plain English risk"]
 }
 
+async function generateForwardPacket(fundamentals: any, documents: any[]) {
+  try {
+    return await generateAiForwardPacket(fundamentals, documents);
+  } catch (error) {
+    console.warn("Forward synthesis unavailable; using deterministic SEC fallback.", error);
+    return buildFallbackForwardPacket(fundamentals, documents);
+  }
+}
+
 Rules:
 - Choose normalized_dcf for established cash generators, transition_dcf for companies moving from losses toward cash generation, and excess_return only for banks/insurers where debt is operating funding.
 - For normalized DCF use a five-year horizon. For transition DCF use an eight-to-ten-year horizon so a scale-up that is still cash-flow negative in year five is not assigned a false zero value. Provide the sustainable FCF margin at the selected horizon as fcf_margin_terminal. It is a visible model assumption, not a reported fact.

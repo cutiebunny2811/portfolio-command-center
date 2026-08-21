@@ -14,11 +14,13 @@ test("Valuation is the fourth Watchlist view with a compact three-case read", ()
   assert.match(app, /Explain with AI/);
   assert.match(app, /const requestId = \+\+valuationRequestId/);
   assert.match(app, /requestId !== valuationRequestId/);
+  assert.match(app, /await edgeFunctionError\(error\)/);
 });
 
 test("official SEC facts are the deterministic source and Gemini only explains", () => {
   assert.match(edge, /data\.sec\.gov\/api\/xbrl\/companyfacts/);
   assert.match(edge, /data\.sec\.gov\/submissions/);
+  assert.match(edge, /coverPageSharesFromHtml/);
   assert.match(edge, /buildValuation/);
   assert.match(edge, /body\?\.action === "explain"/);
   assert.match(edge, /Do not recalculate, recommend, or invent facts/);

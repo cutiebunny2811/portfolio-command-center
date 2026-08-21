@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildValuation } from "./valuation-core.mjs";
 import { preferDurationFact } from "./sec-fact-selection.mjs";
+import { coverPageSharesFromHtml, latestPrimaryFilingUrl } from "./sec-cover-shares.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -52,6 +53,25 @@ async function fetchJson(url: string, timeoutMs = 12_000) {
     const payload = await result.json().catch(() => null);
     if (!result.ok) throw new Error(`SEC HTTP ${result.status}`);
     return payload;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchText(url: string, timeoutMs = 12_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const result = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Encoding": "gzip, deflate",
+        "User-Agent": secUserAgent,
+      },
+    });
+    if (!result.ok) throw new Error(`SEC filing HTTP ${result.status}`);
+    return await result.text();
   } finally {
     clearTimeout(timer);
   }
@@ -309,6 +329,12 @@ Deno.serve(async (request) => {
         fetchJson(`https://data.sec.gov/submissions/CIK${cik}.json`),
       ]);
       const fundamentals = extractFundamentals(companyFacts, submission, symbol);
+      if (!(fundamentals.shares_outstanding > 0)) {
+        const filingUrl = latestPrimaryFilingUrl(submission, cik);
+        if (filingUrl) {
+          fundamentals.shares_outstanding = coverPageSharesFromHtml(await fetchText(filingUrl));
+        }
+      }
       const valuation = buildValuation({
         fundamentals,
         market: { symbol, price: finite(priceRow?.price), price_as_of: priceRow?.market_time || priceRow?.fetched_at || null },

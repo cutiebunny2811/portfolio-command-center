@@ -221,6 +221,20 @@
     return message.replace(/^JSON object requested, multiple \(or no\) rows returned$/, "Expected portfolio data was not found.");
   }
 
+  async function edgeFunctionError(error) {
+    const response = error?.context;
+    if (response && typeof response.clone === "function") {
+      try {
+        const payload = await response.clone().json();
+        const detail = payload?.error || payload?.message;
+        if (detail) return friendlyError(new Error(detail));
+      } catch {
+        // The generic SDK message remains the fallback when the body is not JSON.
+      }
+    }
+    return friendlyError(error);
+  }
+
   function currentPortfolio() {
     return state.portfolios.find((p) => p.id === state.selectedPortfolioId) || state.portfolios[0] || null;
   }
@@ -743,7 +757,7 @@
       console.error(error);
       state.valuationInstrumentId = instrumentId;
       state.valuationData = null;
-      state.valuationError = friendlyError(error);
+      state.valuationError = await edgeFunctionError(error);
     } finally {
       if (requestId === valuationRequestId) {
         state.valuationBusy = false;
@@ -768,7 +782,7 @@
       state.valuationData = { ...state.valuationData, ...data };
     } catch (error) {
       console.error(error);
-      state.valuationError = `AI note: ${friendlyError(error)}`;
+      state.valuationError = `AI note: ${await edgeFunctionError(error)}`;
     } finally {
       state.valuationExplanationBusy = false;
       if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();

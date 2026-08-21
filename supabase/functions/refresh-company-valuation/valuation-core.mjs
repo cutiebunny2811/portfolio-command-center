@@ -46,7 +46,7 @@ export function buildValuation(input = {}) {
   const companyText = `${fundamentals.company_name || ""} ${fundamentals.sic_description || ""}`.toLowerCase();
   const price = finite(market.price);
 
-  if (!(shares > 0)) throw new Error("SEC did not provide a usable diluted share count for this company.");
+  if (!(shares > 0)) throw new Error("SEC did not provide a usable common-share count for this company.");
 
   const grossMargin = grossProfit != null && revenue > 0 ? grossProfit / revenue : null;
   const netMargin = revenue > 0 ? netIncome / revenue : null;

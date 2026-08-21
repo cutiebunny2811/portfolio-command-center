@@ -12,6 +12,8 @@ test("Valuation is the fourth Watchlist view with a compact three-case read", ()
   assert.match(app, /03 \/ FAIR VALUE RANGE/);
   assert.match(app, /valuation-case--\$\{item\.key\}/);
   assert.match(app, /Explain with AI/);
+  assert.match(app, /const requestId = \+\+valuationRequestId/);
+  assert.match(app, /requestId !== valuationRequestId/);
 });
 
 test("official SEC facts are the deterministic source and Gemini only explains", () => {

@@ -115,6 +115,7 @@
   let cryptoChart = null;
   let watchlistBarsRequestId = 0;
   let cryptoChartRequestId = 0;
+  let valuationRequestId = 0;
   let watchlistChartRenderId = 0;
   let cryptoChartRenderId = 0;
   let optionDeskRequestId = 0;
@@ -722,8 +723,9 @@
   }
 
   async function loadCompanyValuation({ instrumentId = state.selectedWatchlistInstrumentId, force = false } = {}) {
-    if (!instrumentId || state.valuationBusy) return;
+    if (!instrumentId) return;
     if (!force && state.valuationInstrumentId === instrumentId && state.valuationData) return;
+    const requestId = ++valuationRequestId;
     state.valuationBusy = true;
     state.valuationError = "";
     if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
@@ -733,16 +735,20 @@
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
+      if (requestId !== valuationRequestId) return;
       state.valuationInstrumentId = instrumentId;
       state.valuationData = data;
     } catch (error) {
+      if (requestId !== valuationRequestId) return;
       console.error(error);
       state.valuationInstrumentId = instrumentId;
       state.valuationData = null;
       state.valuationError = friendlyError(error);
     } finally {
-      state.valuationBusy = false;
-      if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
+      if (requestId === valuationRequestId) {
+        state.valuationBusy = false;
+        if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
+      }
     }
   }
 
@@ -758,6 +764,7 @@
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
+      if (instrumentId !== state.selectedWatchlistInstrumentId || instrumentId !== state.valuationInstrumentId) return;
       state.valuationData = { ...state.valuationData, ...data };
     } catch (error) {
       console.error(error);

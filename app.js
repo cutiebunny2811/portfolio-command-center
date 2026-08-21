@@ -762,7 +762,14 @@
     state.smartMoneyError = "";
     if (renderAfter && state.route === "smart-money") renderSmartMoney();
     try {
-      state.smartMoneyEvents = await optionalSmartMoneyQuery();
+      const [events, watchlist] = await Promise.all([
+        optionalSmartMoneyQuery(),
+        state.watchlistLoaded ? Promise.resolve(state.watchlist) : optionalWatchlistQuery()
+      ]);
+      state.smartMoneyEvents = events;
+      if (!state.watchlistLoaded) {
+        applyWatchlistData({ watchlist, marketPulse: state.marketPulse, cryptoPulse: state.cryptoPulse });
+      }
     } catch (error) {
       console.warn(error);
       state.smartMoneyError = friendlyError(error);

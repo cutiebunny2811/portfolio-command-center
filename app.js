@@ -744,6 +744,30 @@
     state.valuationError = "";
     if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
     try {
+      if (localPreviewEnabled) {
+        const item = state.watchlist.find((row) => row.instrument_id === instrumentId) || state.watchlist[0];
+        const marketPrice = num(item?.price?.price) || 217.02;
+        state.valuationInstrumentId = instrumentId;
+        state.valuationData = {
+          cached: false,
+          valuation: {
+            model_version: "forward-intrinsic-v1", model: "NORMALIZED FORWARD DCF", stage: "CASH-GENERATIVE", confidence: "MEDIUM",
+            why: "Forward revenue, normalized cash conversion and dilution are built from the latest filing evidence before PCC calculates each case.",
+            market: { price: marketPrice },
+            scenarios: [
+              { key: "bear", label: "Bear", fair_value: marketPrice * 0.68, assumption: "5.0% growth · 14.0% year-5 FCF margin", inputs: { revenue_year_1: 118_000_000_000, revenue_growth: 0.05, fcf_margin_year_1: 0.11, fcf_margin_year_5: 0.14, wacc: 0.12, terminal_growth: 0.015 } },
+              { key: "base", label: "Base", fair_value: marketPrice * 1.08, assumption: "10.0% growth · 18.0% year-5 FCF margin", inputs: { revenue_year_1: 126_000_000_000, revenue_growth: 0.1, fcf_margin_year_1: 0.14, fcf_margin_year_5: 0.18, wacc: 0.1, terminal_growth: 0.025 } },
+              { key: "bull", label: "Bull", fair_value: marketPrice * 1.46, assumption: "16.0% growth · 22.0% year-5 FCF margin", inputs: { revenue_year_1: 134_000_000_000, revenue_growth: 0.16, fcf_margin_year_1: 0.16, fcf_margin_year_5: 0.22, wacc: 0.085, terminal_growth: 0.03 } },
+            ],
+            metrics: { adjusted_cash: 42_000_000_000, adjusted_debt: 11_000_000_000, diluted_shares: 2_480_000_000 },
+            forward: { as_of: "2026-08-21", sources: [{ title: "10-Q filed 2026-08-01", form: "10-Q", date: "2026-08-01", url: "https://www.sec.gov/" }, { title: "8-K filed 2026-08-12", form: "8-K", date: "2026-08-12", url: "https://www.sec.gov/" }] },
+            warnings: ["Infrastructure spending must convert into durable free-cash-flow growth.", "The range remains sensitive to the year-5 cash-flow margin."],
+            data_quality: { sec_filed_at: "2026-08-01" },
+          },
+          explanation: { headline: "ฐานมูลค่าขึ้นอยู่กับการแปลงรายได้เป็นเงินสด", summary: "กรณีฐานให้ธุรกิจรักษาการเติบโตพร้อมฟื้นอัตรากระแสเงินสดภายในห้าปี จึงต้องดูผลลัพธ์จริงเทียบกับสมมติฐานทั้งสองด้าน", points: [{ label: "กรณีฐาน", text: "รายได้ปีแรกและ margin ระยะยาวเป็นตัวขับมูลค่าหลัก" }, { label: "ตัวแปรสำคัญ", text: "CapEx ต้องสร้างรายได้และกระแสเงินสดได้ตามแผน" }, { label: "ความเสี่ยง", text: "การเติบโตช้าหรือ margin ฟื้นไม่ถึงเป้าจะกดมูลค่าลง" }], watch_metric: "ติดตาม guidance รายได้, CapEx และ Free Cash Flow ในงบถัดไป" },
+        };
+        return;
+      }
       const { data, error } = await db.functions.invoke("refresh-company-valuation", {
         body: { instrument_id: instrumentId, force }
       });
@@ -774,7 +798,7 @@
     renderWatchlist();
     try {
       const { data, error } = await db.functions.invoke("refresh-company-valuation", {
-        body: { instrument_id: instrumentId, action: "explain", force: false }
+        body: { instrument_id: instrumentId, action: "explain", refresh_explanation: Boolean(state.valuationData?.explanation) }
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
@@ -782,7 +806,7 @@
       state.valuationData = { ...state.valuationData, ...data };
     } catch (error) {
       console.error(error);
-      state.valuationError = `AI note: ${await edgeFunctionError(error)}`;
+      state.valuationError = `Valuation brief: ${await edgeFunctionError(error)}`;
     } finally {
       state.valuationExplanationBusy = false;
       if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
@@ -3607,15 +3631,27 @@
         <em>${esc(item.assumption || item.method)}</em>
       </div>`;
     }).join("");
+    const baseInputs = scenarios.find((item) => item.key === "base")?.inputs || {};
     const metricRows = valuation ? [
-      ["Revenue", valuationMetric(valuation.metrics?.revenue)],
-      ["Revenue growth", valuationMetric(valuation.metrics?.revenue_growth, { percent: true })],
-      ["Gross margin", valuationMetric(valuation.metrics?.gross_margin, { percent: true })],
-      ["Free cash flow", valuationMetric(valuation.metrics?.free_cash_flow)],
-      ["Cash / debt", `${valuationMetric(valuation.metrics?.cash)} / ${valuationMetric(valuation.metrics?.debt)}`],
-      ["Cash runway", valuation.metrics?.runway_months == null ? "N/A" : `${num(valuation.metrics.runway_months).toFixed(1)} months`],
+      ["Year 1 revenue", valuationMetric(baseInputs.revenue_year_1 || valuation.metrics?.forward_revenue)],
+      ["Revenue growth", valuationMetric(baseInputs.revenue_growth, { percent: true })],
+      ["FCF margin · Y1 → Y5", `${valuationMetric(baseInputs.fcf_margin_year_1, { percent: true })} → ${valuationMetric(baseInputs.fcf_margin_year_5, { percent: true })}`],
+      ["WACC / terminal", `${valuationMetric(baseInputs.wacc, { percent: true })} / ${valuationMetric(baseInputs.terminal_growth, { percent: true })}`],
+      ["Adjusted cash / debt", `${valuationMetric(valuation.metrics?.adjusted_cash)} / ${valuationMetric(valuation.metrics?.adjusted_debt)}`],
+      ["Diluted shares", Number.isFinite(Number(valuation.metrics?.diluted_shares)) ? compactNumber(valuation.metrics.diluted_shares) : "—"],
     ] : [];
-    const explanation = String(payload?.explanation || "").trim();
+    const explanation = payload?.explanation && typeof payload.explanation === "object"
+      ? payload.explanation
+      : payload?.explanation
+        ? { headline: "Valuation read-through", summary: String(payload.explanation).replace(/\*\*/g, ""), points: [], watch_metric: "" }
+        : null;
+    const explanationMarkup = explanation ? `<div class="valuation-ai__note">
+      <header><span>VALUATION READ</span><h3>${esc(explanation.headline || "Forward valuation brief")}</h3><p>${esc(explanation.summary || "")}</p></header>
+      ${Array.isArray(explanation.points) && explanation.points.length ? `<div class="valuation-ai__points">${explanation.points.slice(0, 4).map((point) => `<div><small>${esc(point.label || "READ")}</small><p>${esc(point.text || "")}</p></div>`).join("")}</div>` : ""}
+      ${explanation.watch_metric ? `<footer><small>NEXT CHECK</small><p>${esc(explanation.watch_metric)}</p></footer>` : ""}
+    </div>` : "";
+    const sourceRows = Array.isArray(valuation?.forward?.sources) ? valuation.forward.sources : [];
+    const sourceMarkup = sourceRows.length ? `<section class="valuation-citations"><span class="section-index">06 / SOURCE LEDGER</span><div>${sourceRows.map((source, index) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer"><small>${String(index + 1).padStart(2, "0")} · ${esc(source.form || "SEC")}</small><strong>${esc(source.title)}</strong><span>${esc(source.date || "")}</span></a>`).join("")}</div></section>` : "";
     const status = state.valuationBusy ? "READING SEC" : payload?.cached ? "CACHED" : payload ? "REFRESHED" : "WAITING";
 
     return `<section class="valuation-workbench" aria-label="Watchlist company valuation">
@@ -3625,33 +3661,34 @@
       </aside>
       <article class="valuation-sheet">
         ${selected ? `<header class="valuation-head">
-          <div>${assetIdentity(selected.instrument)}<span class="section-index">02 / DETERMINISTIC FAIR VALUE</span></div>
+          <div>${assetIdentity(selected.instrument)}<span class="section-index">02 / FORWARD INTRINSIC VALUE</span></div>
           <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span></div>
         </header>` : ""}
-        ${state.valuationBusy && !valuation ? `<div class="valuation-loading"><span></span><strong>Reading ${esc(selected?.instrument?.symbol || "company")} filings.</strong><p>SEC facts first. No AI is involved in the fair-value calculation.</p></div>` : ""}
+        ${state.valuationBusy && !valuation ? `<div class="valuation-loading"><span></span><strong>Building ${esc(selected?.instrument?.symbol || "company")} forward cases.</strong><p>Reading recent SEC filings, normalizing forward assumptions and validating the model before calculating the range.</p></div>` : ""}
         ${state.valuationError && !valuation ? `<div class="valuation-unavailable"><span>VALUATION / 00</span><h2>No clean range yet.</h2><p>${esc(state.valuationError)}</p><button class="button button--primary" type="button" data-action="valuation-refresh">Try again</button></div>` : ""}
         ${valuation ? `<div class="valuation-verdict">
           <div><span>MODEL SELECTED</span><strong>${esc(valuation.model)}</strong></div>
           <div><span>COMPANY STAGE</span><strong>${esc(valuation.stage)}</strong></div>
           <div><span>CONFIDENCE</span><strong>${esc(valuation.confidence)}</strong></div>
-          <div><span>SEC BASIS</span><strong>${esc(valuation.data_quality?.period_basis || "—")}</strong></div>
+          <div><span>FORWARD AS OF</span><strong>${esc(valuation.forward?.as_of || "—")}</strong></div>
         </div>
         <section class="valuation-range">
-          <header><div><span class="section-index">03 / FAIR VALUE RANGE</span><h2>Three prices. One visible method.</h2></div><p>${esc(valuation.why)}</p></header>
+          <header><div><span class="section-index">03 / FORWARD VALUE RANGE</span><h2>Three cases. Assumptions exposed.</h2></div><p>${esc(valuation.why)}</p></header>
           <div class="valuation-cases">${scenarioMarkup}</div>
         </section>
         <section class="valuation-evidence">
-          <header><span class="section-index">04 / REPORTED INPUTS</span><h2>Numbers before narrative.</h2></header>
+          <header><span class="section-index">04 / BASE CASE INPUTS</span><h2>What the model must deliver.</h2></header>
           <dl>${metricRows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
-          <div class="valuation-flags">${valuation.warnings?.length ? valuation.warnings.map((item) => `<p>${esc(item)}</p>`).join("") : `<p>No high-priority model warning was triggered by the reported facts.</p>`}</div>
+          <div class="valuation-flags">${valuation.warnings?.length ? valuation.warnings.map((item) => `<p>${esc(item)}</p>`).join("") : `<p>No high-priority model warning was triggered by the sourced forward assumptions.</p>`}</div>
         </section>
         <section class="valuation-ai">
-          <div><span class="section-index">05 / OPTIONAL AI NOTE</span><h2>Explain only when asked.</h2><p>The model cannot change Bear, Base or Bull. It can only translate the same canonical numbers into a short Thai note.</p></div>
-          <button class="button button--primary" type="button" data-action="valuation-explain" ${state.valuationExplanationBusy ? "disabled" : ""}>${state.valuationExplanationBusy ? "Asking Gemini…" : explanation ? "Read AI explanation" : "Explain with AI"}</button>
-          ${explanation ? `<div class="valuation-ai__note"><small>${esc(payload.explanation_model || "GEMINI")}</small><p>${esc(explanation).replace(/\n/g, "<br>")}</p></div>` : ""}
+          <div><span class="section-index">05 / VALUATION BRIEF</span><h2>Read the range in plain Thai.</h2><p>A concise interpretation of the same sourced assumptions and PCC calculation. It does not change Bear, Base or Bull.</p></div>
+          <button class="button button--primary" type="button" data-action="valuation-explain" ${state.valuationExplanationBusy ? "disabled" : ""}>${state.valuationExplanationBusy ? "Building brief…" : explanation ? "Refresh brief" : "Explain the range"}</button>
+          ${explanationMarkup}
           ${state.valuationError ? `<p class="valuation-ai__error">${esc(state.valuationError)}</p>` : ""}
         </section>
-        <footer class="valuation-source"><span>SEC COMPANY FACTS · ${esc(valuation.data_quality?.sec_form || "FILING")}</span><span>FILED ${esc(valuation.data_quality?.sec_filed_at || "—")}</span><span>MODEL OUTPUT, NOT A PRICE TARGET</span></footer>` : !state.valuationBusy && !state.valuationError ? `<div class="valuation-loading"><strong>Select a US stock.</strong><p>ETFs and options do not use this company-fundamentals router.</p></div>` : ""}
+        ${sourceMarkup}
+        <footer class="valuation-source"><span>SEC FILINGS + FORWARD MODEL</span><span>BASE DATA FILED ${esc(valuation.data_quality?.sec_filed_at || "—")}</span><span>MODEL OUTPUT, NOT A PRICE TARGET</span></footer>` : !state.valuationBusy && !state.valuationError ? `<div class="valuation-loading"><strong>Select a US stock.</strong><p>ETFs and options do not use this company-fundamentals router.</p></div>` : ""}
       </article>
     </section>`;
   }
@@ -4361,9 +4398,9 @@
       const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
       viewRoot.innerHTML = `
         ${pageHead(
-          "SEC company facts · Rules-based valuation",
-          "Fair value, without the fog.",
-          "Bear, Base and Bull come from reported fundamentals and a visible model router. AI never sets the price.",
+          "SEC filings · Sourced forward assumptions",
+          "Value the business ahead, not behind.",
+          "Bear, Base and Bull use forward revenue, cash-flow margins, dilution and risk inputs drawn from recent filings. PCC validates every input and calculates the range.",
           `<button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || !selected ? "disabled" : ""}>${state.valuationBusy ? "Reading filings…" : "Refresh valuation"}</button>`
         )}
         ${marketPulseTabs()}

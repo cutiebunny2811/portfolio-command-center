@@ -9,13 +9,13 @@ function baseFacts(overrides = {}) {
     revenue_ttm: 100_000_000,
     revenue_fy: 90_000_000,
     revenue_growth: 0.2,
-    net_income_ttm: -12_000_000,
-    operating_income_ttm: -8_000_000,
+    net_income_ttm: 12_000_000,
     gross_profit_ttm: 45_000_000,
-    free_cash_flow_ttm: -10_000_000,
+    free_cash_flow_ttm: 10_000_000,
     cash: 30_000_000,
     debt: 5_000_000,
     shares_outstanding: 20_000_000,
+    stockholders_equity: 80_000_000,
     period_basis: "TTM",
     sec_form: "10-Q",
     sec_filed_at: "2026-08-10",
@@ -23,83 +23,105 @@ function baseFacts(overrides = {}) {
   };
 }
 
-test("loss-making growth companies use EV/Sales instead of P/E", () => {
-  const result = buildValuation({ fundamentals: baseFacts(), market: { price: 8 } });
-  assert.equal(result.model, "EV / SALES");
-  assert.equal(result.stage, "LOSS-MAKING GROWTH");
+function source() {
+  return [{ title: "10-Q filed 2026-08-10", form: "10-Q", date: "2026-08-10", url: "https://www.sec.gov/example" }];
+}
+
+function forwardPacket(overrides = {}) {
+  return {
+    model_family: "normalized_dcf",
+    company_stage: "CASH-GENERATIVE",
+    evidence_quality: "HIGH",
+    basis: "LATEST 10-Q",
+    rationale: "Forward revenue and normalized cash conversion are supported by the latest filing.",
+    as_of: "2026-08-10",
+    adjusted_cash: 30_000_000,
+    adjusted_debt: 5_000_000,
+    diluted_shares: 21_000_000,
+    revenue_year_1: 115_000_000,
+    fcf_margin_year_1: 0.11,
+    fcf_margin_year_5: 0.14,
+    scenarios: [
+      { key: "bear", revenue_year_1: 105_000_000, revenue_growth: 0.04, fcf_margin_year_1: 0.08, fcf_margin_year_5: 0.1, wacc: 0.12, terminal_growth: 0.015, diluted_shares: 22_000_000 },
+      { key: "base", revenue_year_1: 115_000_000, revenue_growth: 0.1, fcf_margin_year_1: 0.11, fcf_margin_year_5: 0.14, wacc: 0.1, terminal_growth: 0.025, diluted_shares: 21_000_000 },
+      { key: "bull", revenue_year_1: 125_000_000, revenue_growth: 0.16, fcf_margin_year_1: 0.13, fcf_margin_year_5: 0.18, wacc: 0.085, terminal_growth: 0.03, diluted_shares: 20_500_000 },
+    ],
+    sources: source(),
+    risks: ["Margin normalization may take longer than the five-year model."],
+    ...overrides,
+  };
+}
+
+test("cash generators use a sourced normalized forward DCF", () => {
+  const result = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 12 } });
+  assert.equal(result.model_version, "forward-intrinsic-v1");
+  assert.equal(result.model, "NORMALIZED FORWARD DCF");
+  assert.equal(result.confidence, "HIGH");
   assert.deepEqual(result.scenarios.map((item) => item.key), ["bear", "base", "bull"]);
-  assert.ok(result.scenarios.every((item) => Number.isFinite(item.fair_value)));
   assert.ok(result.scenarios[0].fair_value < result.scenarios[1].fair_value);
   assert.ok(result.scenarios[1].fair_value < result.scenarios[2].fair_value);
-  assert.match(result.warnings.join(" "), /P\/E disabled/);
+  assert.equal(result.forward.sources.length, 1);
 });
 
-test("positive earnings and free cash flow route to DCF", () => {
+test("loss-making companies can use a revenue-to-FCF transition model", () => {
   const result = buildValuation({
-    fundamentals: baseFacts({
-      net_income_ttm: 18_000_000,
-      operating_income_ttm: 22_000_000,
-      free_cash_flow_ttm: 15_000_000,
+    fundamentals: baseFacts({ net_income_ttm: -15_000_000, free_cash_flow_ttm: -20_000_000 }),
+    forward: forwardPacket({
+      model_family: "transition_dcf",
+      company_stage: "LOSS-MAKING SCALE-UP",
+      fcf_margin_year_1: -0.12,
+      scenarios: [
+        { key: "bear", revenue_year_1: 105_000_000, revenue_growth: 0.03, fcf_margin_year_1: -0.18, fcf_margin_year_5: 0.03, wacc: 0.16, terminal_growth: 0.01, diluted_shares: 24_000_000 },
+        { key: "base", revenue_year_1: 120_000_000, revenue_growth: 0.14, fcf_margin_year_1: -0.12, fcf_margin_year_5: 0.1, wacc: 0.13, terminal_growth: 0.02, diluted_shares: 23_000_000 },
+        { key: "bull", revenue_year_1: 135_000_000, revenue_growth: 0.24, fcf_margin_year_1: -0.08, fcf_margin_year_5: 0.18, wacc: 0.1, terminal_growth: 0.03, diluted_shares: 22_000_000 },
+      ],
     }),
-    market: { price: 12 },
+    market: { price: 8 },
   });
-  assert.equal(result.model, "FCF DCF");
-  assert.equal(result.stage, "CASH-GENERATIVE");
-  assert.equal(result.scenarios.length, 3);
+  assert.equal(result.model, "REVENUE-TO-FCF DCF");
+  assert.equal(result.stage, "LOSS-MAKING SCALE-UP");
+  assert.ok(result.scenarios[2].fair_value > result.scenarios[1].fair_value);
 });
 
-test("financial companies use book value and ROE", () => {
+test("financial companies use a forward excess-return model", () => {
   const result = buildValuation({
-    fundamentals: baseFacts({
-      sic: 6022,
-      sic_description: "State commercial banks",
-      net_income_ttm: 24_000_000,
-      stockholders_equity: 160_000_000,
-      free_cash_flow_ttm: -2_000_000,
+    fundamentals: baseFacts({ sic: 6022, stockholders_equity: 160_000_000 }),
+    forward: forwardPacket({
+      model_family: "excess_return",
+      company_stage: "FINANCIAL",
+      scenarios: [
+        { key: "bear", roe: 0.08, cost_of_equity: 0.12, payout_ratio: 0.4, terminal_growth: 0.015 },
+        { key: "base", roe: 0.13, cost_of_equity: 0.1, payout_ratio: 0.35, terminal_growth: 0.025 },
+        { key: "bull", roe: 0.18, cost_of_equity: 0.085, payout_ratio: 0.3, terminal_growth: 0.03 },
+      ],
     }),
     market: { price: 10 },
   });
-  assert.equal(result.model, "P-B / ROE");
-  assert.equal(result.stage, "FINANCIAL");
+  assert.equal(result.model, "FORWARD EXCESS RETURN");
+  assert.ok(result.scenarios[0].fair_value < result.scenarios[1].fair_value);
+  assert.ok(result.scenarios[1].fair_value < result.scenarios[2].fair_value);
 });
 
-test("canonical fair values do not change with the current market quote", () => {
-  const lowQuote = buildValuation({ fundamentals: baseFacts(), market: { price: 4 } });
-  const highQuote = buildValuation({ fundamentals: baseFacts(), market: { price: 40 } });
+test("forward intrinsic values never change with the current quote", () => {
+  const lowQuote = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 4 } });
+  const highQuote = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 40 } });
   assert.deepEqual(lowQuote.scenarios, highQuote.scenarios);
   assert.notEqual(lowQuote.market.upside_to_base_percent, highQuote.market.upside_to_base_percent);
 });
 
-test("a debt-heavy bear case floors equity value without dropping the range", () => {
-  const result = buildValuation({
-    fundamentals: baseFacts({ debt: 900_000_000, cash: 1_000_000 }),
-    market: { price: 1 },
-  });
-  assert.equal(result.scenarios.length, 3);
-  assert.equal(result.scenarios[0].fair_value, 0);
-  assert.match(result.warnings.join(" "), /Net debt absorbs/);
+test("the model rejects unsourced assumptions", () => {
+  assert.throws(
+    () => buildValuation({ fundamentals: baseFacts(), forward: forwardPacket({ sources: [] }), market: { price: 10 } }),
+    /verifiable filing source/,
+  );
 });
 
-test("EOSE-like current fundamentals produce a differentiated EV/Sales range", () => {
+test("known dilution is modeled and surfaced as a warning", () => {
   const result = buildValuation({
-    fundamentals: baseFacts({
-      symbol: "EOSE",
-      revenue_ttm: 214_248_000,
-      revenue_fy: 114_203_000,
-      revenue_growth: 6.318,
-      gross_profit_ttm: -181_671_000,
-      cash: 305_491_000,
-      debt: 620_600_000,
-      shares_outstanding: 364_167_744,
-    }),
-    market: { price: 3.65 },
+    fundamentals: baseFacts(),
+    forward: forwardPacket({ diluted_shares: 30_000_000 }),
+    market: { price: 10 },
   });
-  assert.equal(result.model, "EV / SALES");
-  assert.ok(result.scenarios[0].fair_value > 0);
-  assert.ok(result.scenarios[0].fair_value < result.scenarios[1].fair_value);
-  assert.ok(result.scenarios[1].fair_value < result.scenarios[2].fair_value);
-  assert.equal(result.metrics.revenue_growth, 6.318);
-  assert.equal(result.assumptions.revenue_growth, 1.5);
-  assert.equal(result.confidence, "LOW");
-  assert.match(result.warnings.join(" "), /capped at 150\.0%/);
+  assert.equal(result.metrics.diluted_shares, 30_000_000);
+  assert.match(result.warnings.join(" "), /Known dilution/);
 });

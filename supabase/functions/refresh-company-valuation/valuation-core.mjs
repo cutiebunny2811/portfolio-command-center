@@ -12,175 +12,231 @@ function perShare(equityValue, shares) {
   return rounded(Math.max(equityValue / shares, 0));
 }
 
-function dcfEquityValue({ fcf, growth, wacc, terminalGrowth, cash, debt }) {
-  let presentValue = 0;
-  let projected = fcf;
-  for (let year = 1; year <= 5; year += 1) {
-    projected *= 1 + growth;
-    presentValue += projected / ((1 + wacc) ** year);
-  }
-  const terminal = projected * (1 + terminalGrowth) / Math.max(wacc - terminalGrowth, 0.025);
-  return presentValue + terminal / ((1 + wacc) ** 5) + cash - debt;
+function scenarioRow(packet, fairValue, model, assumption) {
+  return {
+    key: packet.key,
+    label: packet.key === "bear" ? "Bear" : packet.key === "bull" ? "Bull" : "Base",
+    fair_value: rounded(fairValue),
+    method: model,
+    assumption,
+    inputs: {
+      revenue_year_1: rounded(packet.revenue_year_1, 0),
+      revenue_growth: rounded(packet.revenue_growth, 4),
+      fcf_margin_year_1: rounded(packet.fcf_margin_year_1, 4),
+      fcf_margin_year_5: rounded(packet.fcf_margin_year_5, 4),
+      wacc: rounded(packet.wacc, 4),
+      terminal_growth: rounded(packet.terminal_growth, 4),
+      diluted_shares: rounded(packet.diluted_shares, 0),
+    },
+  };
 }
 
-function scenario(key, label, fairValue, method, assumption) {
-  return { key, label, fair_value: rounded(fairValue), method, assumption };
+function normalizedScenario(raw, common, key) {
+  const defaultGrowth = key === "bear" ? 0.04 : key === "bull" ? 0.16 : 0.1;
+  const defaultWacc = key === "bear" ? 0.12 : key === "bull" ? 0.085 : 0.1;
+  const defaultTerminal = key === "bear" ? 0.015 : key === "bull" ? 0.03 : 0.025;
+  const revenueYearOne = clamp(finite(raw?.revenue_year_1) ?? finite(common.revenue_year_1) ?? 0, 0, common.revenue_cap);
+  const dilutedShares = clamp(finite(raw?.diluted_shares) ?? finite(common.diluted_shares) ?? 0, common.basic_shares, common.share_cap);
+  const wacc = clamp(finite(raw?.wacc) ?? defaultWacc, 0.07, 0.2);
+  return {
+    key,
+    revenue_year_1: revenueYearOne,
+    revenue_growth: clamp(finite(raw?.revenue_growth) ?? defaultGrowth, -0.25, 0.6),
+    fcf_margin_year_1: clamp(finite(raw?.fcf_margin_year_1) ?? finite(common.fcf_margin_year_1) ?? 0, -0.75, 0.55),
+    fcf_margin_year_5: clamp(finite(raw?.fcf_margin_year_5) ?? finite(common.fcf_margin_year_5) ?? 0.1, -0.25, 0.55),
+    wacc,
+    terminal_growth: Math.min(clamp(finite(raw?.terminal_growth) ?? defaultTerminal, 0, 0.04), wacc - 0.025),
+    diluted_shares: dilutedShares,
+  };
+}
+
+function forwardDcf(packet, adjustedCash, adjustedDebt) {
+  let presentValue = 0;
+  let revenue = packet.revenue_year_1;
+  let finalFcf = 0;
+  for (let year = 1; year <= 5; year += 1) {
+    if (year > 1) revenue *= 1 + packet.revenue_growth;
+    const progress = (year - 1) / 4;
+    const margin = packet.fcf_margin_year_1 + (packet.fcf_margin_year_5 - packet.fcf_margin_year_1) * progress;
+    finalFcf = revenue * margin;
+    presentValue += finalFcf / ((1 + packet.wacc) ** year);
+  }
+  const terminal = finalFcf > 0
+    ? finalFcf * (1 + packet.terminal_growth) / (packet.wacc - packet.terminal_growth)
+    : 0;
+  return presentValue + terminal / ((1 + packet.wacc) ** 5) + adjustedCash - adjustedDebt;
+}
+
+function forwardExcessReturn(packet, equity, shares) {
+  const roe = clamp(finite(packet.roe) ?? 0.1, -0.2, 0.5);
+  const costOfEquity = clamp(finite(packet.cost_of_equity) ?? 0.1, 0.07, 0.2);
+  const payout = clamp(finite(packet.payout_ratio) ?? 0.35, 0, 0.9);
+  const terminalGrowth = Math.min(clamp(finite(packet.terminal_growth) ?? 0.025, 0, 0.04), costOfEquity - 0.025);
+  let book = equity;
+  let presentValue = 0;
+  for (let year = 1; year <= 5; year += 1) {
+    const earnings = book * roe;
+    const dividend = Math.max(earnings * payout, 0);
+    presentValue += dividend / ((1 + costOfEquity) ** year);
+    book += earnings - dividend;
+  }
+  const terminalBookMultiple = Math.max((roe - terminalGrowth) / (costOfEquity - terminalGrowth), 0);
+  const terminalValue = book * terminalBookMultiple;
+  return perShare(presentValue + terminalValue / ((1 + costOfEquity) ** 5), shares);
+}
+
+function financialScenario(raw, key) {
+  const defaultRoe = key === "bear" ? 0.08 : key === "bull" ? 0.18 : 0.13;
+  const defaultCost = key === "bear" ? 0.12 : key === "bull" ? 0.085 : 0.1;
+  const defaultTerminal = key === "bear" ? 0.015 : key === "bull" ? 0.03 : 0.025;
+  const costOfEquity = clamp(finite(raw?.cost_of_equity) ?? defaultCost, 0.07, 0.2);
+  return {
+    key,
+    roe: clamp(finite(raw?.roe) ?? defaultRoe, -0.2, 0.5),
+    cost_of_equity: costOfEquity,
+    payout_ratio: clamp(finite(raw?.payout_ratio) ?? 0.35, 0, 0.9),
+    terminal_growth: Math.min(clamp(finite(raw?.terminal_growth) ?? defaultTerminal, 0, 0.04), costOfEquity - 0.025),
+  };
 }
 
 export function buildValuation(input = {}) {
   const fundamentals = input.fundamentals || {};
+  const forward = input.forward || {};
   const market = input.market || {};
   const revenue = finite(fundamentals.revenue_ttm) ?? finite(fundamentals.revenue_fy) ?? 0;
   const netIncome = finite(fundamentals.net_income_ttm) ?? finite(fundamentals.net_income_fy) ?? 0;
-  const operatingIncome = finite(fundamentals.operating_income_ttm) ?? finite(fundamentals.operating_income_fy) ?? 0;
   const fcf = finite(fundamentals.free_cash_flow_ttm) ?? finite(fundamentals.free_cash_flow_fy) ?? 0;
   const grossProfit = finite(fundamentals.gross_profit_ttm) ?? finite(fundamentals.gross_profit_fy);
-  const cash = Math.max(finite(fundamentals.cash) ?? 0, 0);
-  const debt = Math.max(finite(fundamentals.debt) ?? 0, 0);
+  const reportedCash = Math.max(finite(fundamentals.cash) ?? 0, 0);
+  const reportedDebt = Math.max(finite(fundamentals.debt) ?? 0, 0);
   const equity = finite(fundamentals.stockholders_equity);
-  const shares = finite(fundamentals.shares_outstanding);
-  const reportedRevenueGrowth = finite(fundamentals.revenue_growth) ?? 0;
-  const revenueGrowth = clamp(reportedRevenueGrowth, -0.5, 1.5);
+  const basicShares = finite(fundamentals.shares_outstanding);
+  const reportedRevenueGrowth = finite(fundamentals.revenue_growth);
   const sharesGrowth = finite(fundamentals.shares_growth);
-  const sic = Math.trunc(finite(fundamentals.sic) ?? 0);
-  const companyText = `${fundamentals.company_name || ""} ${fundamentals.sic_description || ""}`.toLowerCase();
   const price = finite(market.price);
+  const sourceRows = Array.isArray(forward.sources) ? forward.sources.filter((row) => row?.title && row?.url) : [];
 
-  if (!(shares > 0)) throw new Error("SEC did not provide a usable common-share count for this company.");
+  if (!(basicShares > 0)) throw new Error("SEC did not provide a usable common-share count for this company.");
+  if (!forward.model_family) throw new Error("Forward assumptions are unavailable for this company.");
+  if (!sourceRows.length) throw new Error("Forward assumptions do not include a verifiable filing source.");
 
-  const grossMargin = grossProfit != null && revenue > 0 ? grossProfit / revenue : null;
-  const netMargin = revenue > 0 ? netIncome / revenue : null;
-  const cashBurn = fcf < 0 ? Math.abs(fcf) : 0;
-  const runwayMonths = cashBurn > 0 ? cash / cashBurn * 12 : null;
-  const isReit = /reit|real estate investment trust/.test(companyText);
-  const isFinancial = !isReit && sic >= 6000 && sic <= 6799;
-  const isPreRevenue = revenue <= 1_000_000;
-  const warnings = [];
-  if (netIncome <= 0) warnings.push("P/E disabled: earnings are not positive.");
-  if (fcf < 0) warnings.push("Free cash flow is negative.");
-  if (runwayMonths != null && runwayMonths < 18) warnings.push(`Cash runway is about ${Math.max(Math.round(runwayMonths), 0)} months at the latest reported burn rate.`);
-  if (sharesGrowth != null && sharesGrowth > 0.1) warnings.push(`Share count increased ${(sharesGrowth * 100).toFixed(1)}% year over year.`);
-  if (reportedRevenueGrowth > 1.5) warnings.unshift(`Reported revenue growth is ${(reportedRevenueGrowth * 100).toFixed(1)}%; the valuation input is capped at 150.0%.`);
-
-  let model;
-  let stage;
-  let why;
+  const balanceScale = Math.max(revenue, reportedCash, reportedDebt, 1_000_000);
+  const adjustedCash = clamp(finite(forward.adjusted_cash) ?? reportedCash, 0, balanceScale * 5);
+  const adjustedDebt = clamp(finite(forward.adjusted_debt) ?? reportedDebt, 0, balanceScale * 5);
+  const common = {
+    revenue_year_1: clamp(finite(forward.revenue_year_1) ?? 0, 0, Math.max(revenue * 20, 5_000_000)),
+    fcf_margin_year_1: finite(forward.fcf_margin_year_1),
+    fcf_margin_year_5: finite(forward.fcf_margin_year_5),
+    diluted_shares: clamp(finite(forward.diluted_shares) ?? basicShares, basicShares, basicShares * 10),
+    basic_shares: basicShares,
+    share_cap: basicShares * 10,
+    revenue_cap: Math.max(revenue * 20, 5_000_000),
+  };
+  const rawScenarios = new Map((Array.isArray(forward.scenarios) ? forward.scenarios : []).map((row) => [String(row?.key || "").toLowerCase(), row]));
+  const keys = ["bear", "base", "bull"];
   let scenarios;
-  const assumptions = {};
+  let model;
 
-  if ((isFinancial || isReit) && equity != null && equity > 0) {
-    const bookValuePerShare = equity / shares;
-    const roe = netIncome / equity;
-    const baseMultiple = clamp(0.85 + Math.max(roe, -0.1) * 5, 0.55, 2.4);
-    model = isReit ? "NAV PROXY / P-B" : "P-B / ROE";
-    stage = isReit ? "ASSET-BACKED" : "FINANCIAL";
-    why = isReit
-      ? "Ordinary P/E and industrial DCF are not the cleanest fit; PCC uses reported book value as a conservative NAV proxy."
-      : "Debt is part of the operating model, so PCC values reported equity through book value and ROE.";
-    assumptions.book_value_per_share = rounded(bookValuePerShare);
-    assumptions.base_price_to_book = rounded(baseMultiple, 2);
-    scenarios = [
-      scenario("bear", "Bear", bookValuePerShare * Math.max(baseMultiple * 0.7, 0.4), model, `${rounded(Math.max(baseMultiple * 0.7, 0.4), 2)}x book`),
-      scenario("base", "Base", bookValuePerShare * baseMultiple, model, `${rounded(baseMultiple, 2)}x book`),
-      scenario("bull", "Bull", bookValuePerShare * Math.min(baseMultiple * 1.35, 3.2), model, `${rounded(Math.min(baseMultiple * 1.35, 3.2), 2)}x book`),
-    ];
-  } else if (isPreRevenue) {
-    const netCashPerShare = Math.max(cash - debt, 0) / shares;
-    model = "NET CASH / RUNWAY";
-    stage = "PRE-REVENUE";
-    why = "Revenue is not established, so PCC anchors to net cash and runway instead of inventing an earnings multiple.";
-    assumptions.net_cash_per_share = rounded(netCashPerShare);
-    scenarios = [
-      scenario("bear", "Bear", Math.max(netCashPerShare * 0.55, 0.01), model, "0.55x net cash"),
-      scenario("base", "Base", Math.max(netCashPerShare, 0.01), model, "1.00x net cash"),
-      scenario("bull", "Bull", Math.max(netCashPerShare * 1.6, 0.01), model, "1.60x net cash + milestone value"),
-    ];
-  } else if (fcf > 0 && netIncome > 0) {
-    const baseGrowth = clamp(revenueGrowth, 0.03, 0.2);
-    model = "FCF DCF";
-    stage = "CASH-GENERATIVE";
-    why = "Positive earnings and free cash flow make a discounted cash-flow range usable.";
-    assumptions.base_growth = rounded(baseGrowth, 3);
-    assumptions.base_wacc = 0.1;
-    assumptions.base_terminal_growth = 0.025;
-    scenarios = [
-      scenario("bear", "Bear", perShare(dcfEquityValue({ fcf, growth: Math.max(baseGrowth - 0.06, 0), wacc: 0.12, terminalGrowth: 0.015, cash, debt }), shares), model, "12% WACC · 1.5% terminal"),
-      scenario("base", "Base", perShare(dcfEquityValue({ fcf, growth: baseGrowth, wacc: 0.1, terminalGrowth: 0.025, cash, debt }), shares), model, "10% WACC · 2.5% terminal"),
-      scenario("bull", "Bull", perShare(dcfEquityValue({ fcf, growth: Math.min(baseGrowth + 0.06, 0.28), wacc: 0.085, terminalGrowth: 0.03, cash, debt }), shares), model, "8.5% WACC · 3.0% terminal"),
-    ];
-  } else if (operatingIncome > 0) {
-    model = "EV / OPERATING INCOME";
-    stage = netIncome > 0 ? "PROFITABLE" : "EARNINGS TRANSITION";
-    why = "Operations are profitable but free cash flow is not yet stable enough for a standard DCF.";
-    assumptions.base_multiple = 12;
-    scenarios = [
-      scenario("bear", "Bear", perShare(operatingIncome * 8 + cash - debt, shares), model, "8x operating income"),
-      scenario("base", "Base", perShare(operatingIncome * 12 + cash - debt, shares), model, "12x operating income"),
-      scenario("bull", "Bull", perShare(operatingIncome * 16 + cash - debt, shares), model, "16x operating income"),
-    ];
+  if (forward.model_family === "excess_return") {
+    if (!(equity > 0)) throw new Error("A forward excess-return model requires positive reported equity.");
+    model = "FORWARD EXCESS RETURN";
+    scenarios = keys.map((key) => {
+      const packet = financialScenario(rawScenarios.get(key), key);
+      return {
+        key,
+        label: key === "bear" ? "Bear" : key === "bull" ? "Bull" : "Base",
+        fair_value: forwardExcessReturn(packet, equity, basicShares),
+        method: model,
+        assumption: `${rounded(packet.roe * 100, 1)}% ROE · ${rounded(packet.cost_of_equity * 100, 1)}% cost of equity`,
+        inputs: packet,
+      };
+    });
   } else {
-    const growthContribution = clamp(revenueGrowth * 5, -0.5, 3.5);
-    const marginContribution = grossMargin == null ? 0.5 : clamp(grossMargin * 2.25, 0, 1.75);
-    const baseMultiple = clamp(0.8 + growthContribution + marginContribution, 0.6, 7.5);
-    const bearMultiple = Math.max(baseMultiple * 0.55, 0.4);
-    const bullMultiple = Math.min(baseMultiple * 1.45, 10);
-    model = "EV / SALES";
-    stage = "LOSS-MAKING GROWTH";
-    why = "Revenue is established while earnings and cash flow are negative, so P/E and standard DCF are disabled.";
-    assumptions.base_ev_sales = rounded(baseMultiple, 2);
-    assumptions.revenue_growth = rounded(revenueGrowth, 3);
-    assumptions.gross_margin = rounded(grossMargin, 3);
-    scenarios = [
-      scenario("bear", "Bear", perShare(revenue * bearMultiple + cash - debt, shares), model, `${rounded(bearMultiple, 2)}x sales`),
-      scenario("base", "Base", perShare(revenue * baseMultiple + cash - debt, shares), model, `${rounded(baseMultiple, 2)}x sales`),
-      scenario("bull", "Bull", perShare(revenue * bullMultiple + cash - debt, shares), model, `${rounded(bullMultiple, 2)}x sales`),
-    ];
+    model = forward.model_family === "normalized_dcf" ? "NORMALIZED FORWARD DCF" : "REVENUE-TO-FCF DCF";
+    scenarios = keys.map((key) => {
+      const packet = normalizedScenario(rawScenarios.get(key), common, key);
+      if (!(packet.revenue_year_1 > 0)) throw new Error(`${key} case does not provide usable forward revenue.`);
+      if (!(packet.diluted_shares >= basicShares)) throw new Error(`${key} case diluted shares are below reported basic shares.`);
+      const fairValue = perShare(forwardDcf(packet, adjustedCash, adjustedDebt), packet.diluted_shares);
+      return scenarioRow(
+        packet,
+        fairValue,
+        model,
+        `${rounded(packet.revenue_growth * 100, 1)}% growth · ${rounded(packet.fcf_margin_year_5 * 100, 1)}% year-5 FCF margin`,
+      );
+    });
   }
 
-  const validScenarios = scenarios.filter((item) => Number.isFinite(item.fair_value));
-  if (validScenarios.length !== 3) throw new Error("The reported SEC facts are not sufficient to calculate all three valuation cases.");
-  const debtFloorCount = validScenarios.filter((item) => item.fair_value === 0).length;
-  if (debtFloorCount) warnings.unshift(`Net debt absorbs the modeled enterprise value in ${debtFloorCount} scenario${debtFloorCount === 1 ? "" : "s"}.`);
-  if (debtFloorCount === 3) why = "Reported net debt exceeds the modeled enterprise value in every case, so this method cannot support a positive common-equity value.";
-  const completeness = [revenue > 0, shares > 0, finite(fundamentals.cash) != null, finite(fundamentals.debt) != null, finite(fundamentals.revenue_growth) != null, grossMargin != null]
-    .filter(Boolean).length;
-  const confidence = debtFloorCount === 3 || (runwayMonths != null && runwayMonths < 12) || (grossMargin != null && grossMargin < 0)
-    ? "LOW"
-    : completeness >= 5 ? "MEDIUM" : "LOW";
-  const baseValue = validScenarios.find((item) => item.key === "base")?.fair_value ?? null;
+  if (scenarios.some((row) => !Number.isFinite(row.fair_value))) {
+    throw new Error("Forward assumptions are not sufficient to calculate all three valuation cases.");
+  }
+  if (!(scenarios[0].fair_value <= scenarios[1].fair_value && scenarios[1].fair_value <= scenarios[2].fair_value)) {
+    throw new Error("Forward cases are internally inconsistent: Bear, Base and Bull are not ordered.");
+  }
 
+  const grossMargin = grossProfit != null && revenue > 0 ? grossProfit / revenue : null;
+  const warnings = Array.isArray(forward.risks) ? forward.risks.filter(Boolean).slice(0, 5) : [];
+  if (common.diluted_shares > basicShares * 1.05) {
+    warnings.unshift(`Known dilution increases the modeled share count by ${rounded((common.diluted_shares / basicShares - 1) * 100, 1)}%.`);
+  }
+  if (sharesGrowth != null && sharesGrowth > 0.1) warnings.push(`Reported share count increased ${(sharesGrowth * 100).toFixed(1)}% year over year.`);
+  if (forward.evidence_quality === "LOW") warnings.unshift("Forward evidence is incomplete; treat the range as provisional.");
+
+  const baseValue = scenarios[1].fair_value;
+  const baseInputs = scenarios[1].inputs || {};
   return {
-    symbol: String(fundamentals.symbol || market.symbol || "").toUpperCase(),
-    company_name: fundamentals.company_name || null,
+    model_version: "forward-intrinsic-v1",
     model,
-    stage,
-    confidence,
-    why,
-    scenarios: validScenarios,
-    assumptions,
-    warnings: warnings.slice(0, 4),
+    stage: String(forward.company_stage || (fcf > 0 && netIncome > 0 ? "CASH-GENERATIVE" : "FORWARD TRANSITION")).toUpperCase(),
+    confidence: ["HIGH", "MEDIUM", "LOW"].includes(String(forward.evidence_quality || "").toUpperCase())
+      ? String(forward.evidence_quality).toUpperCase()
+      : "LOW",
+    why: String(forward.rationale || "Forward assumptions are built from the latest available company filings and recalculated by PCC."),
+    scenarios,
+    assumptions: {
+      horizon_years: 5,
+      adjusted_cash: adjustedCash,
+      adjusted_debt: adjustedDebt,
+      diluted_shares: common.diluted_shares,
+      base_revenue_year_1: finite(baseInputs.revenue_year_1),
+      base_revenue_growth: finite(baseInputs.revenue_growth),
+      base_fcf_margin_year_1: finite(baseInputs.fcf_margin_year_1),
+      base_fcf_margin_year_5: finite(baseInputs.fcf_margin_year_5),
+      base_wacc: finite(baseInputs.wacc),
+      base_terminal_growth: finite(baseInputs.terminal_growth),
+    },
     market: {
-      price: rounded(price),
+      price,
       price_as_of: market.price_as_of || null,
-      upside_to_base_percent: price > 0 && baseValue != null ? rounded((baseValue / price - 1) * 100, 2) : null,
+      upside_to_base_percent: price > 0 ? rounded((baseValue / price - 1) * 100, 2) : null,
     },
     metrics: {
       revenue,
       revenue_growth: rounded(reportedRevenueGrowth, 4),
       gross_margin: rounded(grossMargin, 4),
-      net_income: netIncome,
       free_cash_flow: fcf,
-      cash,
-      debt,
-      shares_outstanding: shares,
+      cash: reportedCash,
+      debt: reportedDebt,
+      shares_outstanding: basicShares,
       shares_growth: rounded(sharesGrowth, 4),
-      runway_months: rounded(runwayMonths, 1),
+      forward_revenue: finite(baseInputs.revenue_year_1),
+      forward_fcf_margin: finite(baseInputs.fcf_margin_year_5),
+      diluted_shares: common.diluted_shares,
+      adjusted_cash: adjustedCash,
+      adjusted_debt: adjustedDebt,
     },
+    forward: {
+      as_of: forward.as_of || fundamentals.sec_filed_at || null,
+      basis: String(forward.basis || "LATEST FILINGS"),
+      sources: sourceRows.slice(0, 6),
+    },
+    warnings: [...new Set(warnings)].slice(0, 6),
     data_quality: {
-      confidence,
-      period_basis: fundamentals.period_basis || "LATEST_FY",
-      sec_filed_at: fundamentals.sec_filed_at || null,
+      source: "SEC FILINGS + FORWARD ASSUMPTIONS",
+      period_basis: fundamentals.period_basis || null,
       sec_form: fundamentals.sec_form || null,
+      sec_filed_at: fundamentals.sec_filed_at || null,
+      source_count: sourceRows.length,
     },
   };
 }

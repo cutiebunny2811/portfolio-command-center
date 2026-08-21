@@ -123,6 +123,7 @@
   let historyLoadPromise = null;
   let watchlistLoadPromise = null;
   let notificationFeedPromise = null;
+  let priorityLoadPromise = null;
 
   function destroyWatchlistChart() {
     if (!watchlistChart) return;
@@ -583,6 +584,23 @@
 
   function afterFirstPaint(callback) {
     requestAnimationFrame(() => requestAnimationFrame(callback));
+  }
+
+  async function loadPriorityData({ force = false } = {}) {
+    if (priorityLoadPromise) return priorityLoadPromise;
+    if (!force && state.prices.length && state.journalOverview) return;
+    priorityLoadPromise = (async () => {
+      const [prices, journalOverview] = await Promise.all([
+        fetchLatestInstrumentPrices(),
+        fetchJournalView({ page: 1, pageSize: 6 })
+      ]);
+      state.prices = prices;
+      state.journalOverview = journalOverview;
+      if (["overview", "portfolio"].includes(state.route)) render();
+    })().catch((error) => {
+      console.warn(error);
+    }).finally(() => { priorityLoadPromise = null; });
+    return priorityLoadPromise;
   }
 
   async function loadHistoryData({ force = false } = {}) {
@@ -1412,6 +1430,7 @@
 
   async function refreshDashboard() {
     await loadData();
+    await loadPriorityData({ force: true });
     await refreshStockPrices({ force: true, notify: true });
     await loadNotificationFeed({ force: true });
     if (state.historyLoaded) await refreshFxRate({ force: true });
@@ -1425,17 +1444,15 @@
     if (!quiet) setLoading(true);
     setSync(true, "Syncing…");
     try {
-      const [portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview] = await Promise.all([
+      const [portfolios, cash, positions, instruments, targets, capacities] = await Promise.all([
         query("Portfolios", db.from("portfolios").select("*").eq("is_active", true).order("sort_order")),
         query("Cash balances", db.from("portfolio_cash_balances").select("*")),
         query("Positions", db.from("position_balances").select("*")),
         query("Instruments", db.from("instruments").select("*").order("symbol")),
         query("Allocation targets", db.from("allocation_targets").select("*").eq("is_active", true)),
-        query("Position capacity", db.from("position_capacity").select("*")),
-        fetchLatestInstrumentPrices(),
-        fetchJournalView({ page: 1, pageSize: 6 })
+        query("Position capacity", db.from("position_capacity").select("*"))
       ]);
-      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities, prices, journalOverview });
+      Object.assign(state, { portfolios, cash, positions, instruments, targets, capacities });
       state.historyLoaded = false;
       if (!state.selectedPortfolioId || !portfolios.some((item) => item.id === state.selectedPortfolioId)) {
         state.selectedPortfolioId = portfolios[0]?.id || null;
@@ -1444,6 +1461,7 @@
       setSync(true, `Synced ${state.lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       render();
       renderNotificationCenter();
+      afterFirstPaint(() => { void loadPriorityData({ force: true }); });
     } catch (error) {
       console.error(error);
       setSync(false, "Sync failed");
@@ -1503,7 +1521,7 @@
     appShell.hidden = false;
     await loadData();
     afterFirstPaint(() => {
-      void refreshStockPrices();
+      void loadPriorityData().then(() => refreshStockPrices());
       void loadHistoryData().catch((error) => console.warn(error));
       if (!["briefs", "smart-money-briefs"].includes(state.route)) void loadNotificationFeed();
       void loadRouteData(state.route);

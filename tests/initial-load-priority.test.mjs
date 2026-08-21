@@ -12,11 +12,13 @@ function functionBody(name, nextName) {
   return source.slice(start, end);
 }
 
-test("initial ledger load only waits for data needed by the first portfolio render", () => {
+test("initial ledger load only waits for the six datasets needed by the first portfolio render", () => {
   const body = functionBody("loadData", "showApp");
   assert.match(body, /portfolio_cash_balances/);
   assert.match(body, /position_balances/);
-  assert.match(body, /fetchLatestInstrumentPrices/);
+  assert.match(body, /position_capacity/);
+  assert.doesNotMatch(body, /fetchLatestInstrumentPrices/);
+  assert.doesNotMatch(body, /fetchJournalView/);
   assert.doesNotMatch(body, /executions/);
   assert.doesNotMatch(body, /cash_movements/);
   assert.doesNotMatch(body, /optionalWatchlistQuery/);
@@ -30,11 +32,18 @@ test("market desks and history hydrate after the first browser paint", () => {
   const body = functionBody("showApp", "fetchMemberOnboarding");
   assert.match(body, /await loadData\(\)/);
   assert.match(body, /afterFirstPaint/);
-  assert.match(body, /void refreshStockPrices\(\)/);
+  assert.match(body, /loadPriorityData\(\)\.then\(\(\) => refreshStockPrices\(\)\)/);
   assert.match(body, /void loadHistoryData\(\)/);
   assert.match(body, /void loadNotificationFeed\(\)/);
   assert.match(body, /void loadRouteData\(state\.route\)/);
   assert.ok(body.indexOf("await loadData()") < body.indexOf("afterFirstPaint"));
+});
+
+test("prices and overview P/L enrich the core ledger without blocking it", () => {
+  const body = functionBody("loadPriorityData", "loadHistoryData");
+  assert.match(body, /fetchLatestInstrumentPrices/);
+  assert.match(body, /fetchJournalView\(\{ page: 1, pageSize: 6 \}\)/);
+  assert.match(body, /if \(\["overview", "portfolio"\]\.includes\(state\.route\)\) render\(\)/);
 });
 
 test("watchlist and history have independent lazy loaders", () => {

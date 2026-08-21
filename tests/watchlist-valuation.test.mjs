@@ -34,6 +34,15 @@ test("official SEC filings ground forward assumptions and PCC calculates the ran
   assert.match(edge, /Do not recalculate, recommend a trade, add outside facts, or use Markdown/);
 });
 
+test("the SEC fallback wrapper is executable code, not prompt text", () => {
+  const promptEnd = edge.indexOf("const generated = await callGemini(prompt");
+  const wrapper = edge.indexOf("async function generateForwardPacket");
+  const handler = edge.indexOf("Deno.serve");
+  assert.ok(promptEnd >= 0);
+  assert.ok(wrapper > promptEnd);
+  assert.ok(handler > wrapper);
+});
+
 test("the Edge Function only values stocks on the authenticated member watchlist", () => {
   assert.match(edge, /client\.auth\.getUser\(\)/);
   assert.match(edge, /from\("watchlist_items"\)[\s\S]*eq\("user_id", authData\.user\.id\)/);

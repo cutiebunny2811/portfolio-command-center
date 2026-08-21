@@ -491,7 +491,7 @@ Deno.serve(async (request) => {
     const cacheAge = Date.now() - new Date(cached?.fetched_at || 0).getTime();
     const needsRefresh = body?.force === true
       || !cached
-      || cached?.valuation?.model_version !== "forward-intrinsic-v3"
+      || cached?.valuation?.model_version !== "forward-intrinsic-v4"
       || cacheAge > cacheWindowMs;
 
     if (needsRefresh) {

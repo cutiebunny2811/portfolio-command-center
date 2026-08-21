@@ -76,5 +76,30 @@ test("a debt-heavy bear case floors equity value without dropping the range", ()
     market: { price: 1 },
   });
   assert.equal(result.scenarios.length, 3);
-  assert.equal(result.scenarios[0].fair_value, 0.01);
+  assert.equal(result.scenarios[0].fair_value, 0);
+  assert.match(result.warnings.join(" "), /Net debt absorbs/);
+});
+
+test("EOSE-like current fundamentals produce a differentiated EV/Sales range", () => {
+  const result = buildValuation({
+    fundamentals: baseFacts({
+      symbol: "EOSE",
+      revenue_ttm: 214_248_000,
+      revenue_fy: 114_203_000,
+      revenue_growth: 6.318,
+      gross_profit_ttm: -181_671_000,
+      cash: 305_491_000,
+      debt: 620_600_000,
+      shares_outstanding: 364_167_744,
+    }),
+    market: { price: 3.65 },
+  });
+  assert.equal(result.model, "EV / SALES");
+  assert.ok(result.scenarios[0].fair_value > 0);
+  assert.ok(result.scenarios[0].fair_value < result.scenarios[1].fair_value);
+  assert.ok(result.scenarios[1].fair_value < result.scenarios[2].fair_value);
+  assert.equal(result.metrics.revenue_growth, 6.318);
+  assert.equal(result.assumptions.revenue_growth, 1.5);
+  assert.equal(result.confidence, "LOW");
+  assert.match(result.warnings.join(" "), /capped at 150\.0%/);
 });

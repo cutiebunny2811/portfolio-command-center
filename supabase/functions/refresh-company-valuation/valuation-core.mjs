@@ -9,7 +9,7 @@ function rounded(value, digits = 4) {
 
 function perShare(equityValue, shares) {
   if (!Number.isFinite(equityValue) || !(shares > 0)) return null;
-  return rounded(Math.max(equityValue / shares, 0.01));
+  return rounded(Math.max(equityValue / shares, 0));
 }
 
 function dcfEquityValue({ fcf, growth, wacc, terminalGrowth, cash, debt }) {
@@ -39,7 +39,8 @@ export function buildValuation(input = {}) {
   const debt = Math.max(finite(fundamentals.debt) ?? 0, 0);
   const equity = finite(fundamentals.stockholders_equity);
   const shares = finite(fundamentals.shares_outstanding);
-  const revenueGrowth = clamp(finite(fundamentals.revenue_growth) ?? 0, -0.5, 1.5);
+  const reportedRevenueGrowth = finite(fundamentals.revenue_growth) ?? 0;
+  const revenueGrowth = clamp(reportedRevenueGrowth, -0.5, 1.5);
   const sharesGrowth = finite(fundamentals.shares_growth);
   const sic = Math.trunc(finite(fundamentals.sic) ?? 0);
   const companyText = `${fundamentals.company_name || ""} ${fundamentals.sic_description || ""}`.toLowerCase();
@@ -59,6 +60,7 @@ export function buildValuation(input = {}) {
   if (fcf < 0) warnings.push("Free cash flow is negative.");
   if (runwayMonths != null && runwayMonths < 18) warnings.push(`Cash runway is about ${Math.max(Math.round(runwayMonths), 0)} months at the latest reported burn rate.`);
   if (sharesGrowth != null && sharesGrowth > 0.1) warnings.push(`Share count increased ${(sharesGrowth * 100).toFixed(1)}% year over year.`);
+  if (reportedRevenueGrowth > 1.5) warnings.unshift(`Reported revenue growth is ${(reportedRevenueGrowth * 100).toFixed(1)}%; the valuation input is capped at 150.0%.`);
 
   let model;
   let stage;
@@ -137,9 +139,14 @@ export function buildValuation(input = {}) {
 
   const validScenarios = scenarios.filter((item) => Number.isFinite(item.fair_value));
   if (validScenarios.length !== 3) throw new Error("The reported SEC facts are not sufficient to calculate all three valuation cases.");
+  const debtFloorCount = validScenarios.filter((item) => item.fair_value === 0).length;
+  if (debtFloorCount) warnings.unshift(`Net debt absorbs the modeled enterprise value in ${debtFloorCount} scenario${debtFloorCount === 1 ? "" : "s"}.`);
+  if (debtFloorCount === 3) why = "Reported net debt exceeds the modeled enterprise value in every case, so this method cannot support a positive common-equity value.";
   const completeness = [revenue > 0, shares > 0, finite(fundamentals.cash) != null, finite(fundamentals.debt) != null, finite(fundamentals.revenue_growth) != null, grossMargin != null]
     .filter(Boolean).length;
-  const confidence = runwayMonths != null && runwayMonths < 12 ? "LOW" : completeness >= 5 ? "MEDIUM" : "LOW";
+  const confidence = debtFloorCount === 3 || (runwayMonths != null && runwayMonths < 12) || (grossMargin != null && grossMargin < 0)
+    ? "LOW"
+    : completeness >= 5 ? "MEDIUM" : "LOW";
   const baseValue = validScenarios.find((item) => item.key === "base")?.fair_value ?? null;
 
   return {
@@ -151,7 +158,7 @@ export function buildValuation(input = {}) {
     why,
     scenarios: validScenarios,
     assumptions,
-    warnings: warnings.slice(0, 3),
+    warnings: warnings.slice(0, 4),
     market: {
       price: rounded(price),
       price_as_of: market.price_as_of || null,
@@ -159,7 +166,7 @@ export function buildValuation(input = {}) {
     },
     metrics: {
       revenue,
-      revenue_growth: rounded(revenueGrowth, 4),
+      revenue_growth: rounded(reportedRevenueGrowth, 4),
       gross_margin: rounded(grossMargin, 4),
       net_income: netIncome,
       free_cash_flow: fcf,

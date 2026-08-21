@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildValuation } from "./valuation-core.mjs";
+import { preferDurationFact } from "./sec-fact-selection.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -103,9 +104,7 @@ function periodRows(companyFacts: any, tags: string[]) {
     .forEach((row) => {
       const key = `${row.fy}|${row.fp}|${row.end}`;
       const existing = grouped.get(key);
-      const duration = daysBetween(row.start, row.end);
-      const existingDuration = daysBetween(existing?.start, existing?.end);
-      if (!existing || duration > existingDuration || (duration === existingDuration && String(row.filed || "") > String(existing.filed || ""))) {
+      if (preferDurationFact(row, existing)) {
         grouped.set(key, row);
       }
     });
@@ -120,7 +119,7 @@ function durationMetric(companyFacts: any, tags: string[]) {
     const periods = byYear.get(fy) || {};
     const fp = String(row.fp || "").toUpperCase();
     const existing = periods[fp];
-    if (!existing || daysBetween(row.start, row.end) > daysBetween(existing.start, existing.end)) periods[fp] = row;
+    if (preferDurationFact(row, existing)) periods[fp] = row;
     byYear.set(fy, periods);
   });
 

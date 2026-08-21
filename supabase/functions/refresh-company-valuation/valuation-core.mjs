@@ -23,6 +23,83 @@ function selectModelFamily(fundamentals, forward, netIncome, fcf, equity) {
   return "normalized_dcf";
 }
 
+export function buildFallbackForwardPacket(fundamentals = {}, documents = []) {
+  const revenue = finite(fundamentals.revenue_ttm) ?? finite(fundamentals.revenue_fy) ?? 0;
+  const netIncome = finite(fundamentals.net_income_ttm) ?? finite(fundamentals.net_income_fy) ?? 0;
+  const fcf = finite(fundamentals.free_cash_flow_ttm) ?? finite(fundamentals.free_cash_flow_fy) ?? 0;
+  const shares = finite(fundamentals.shares_outstanding) ?? 0;
+  const equity = finite(fundamentals.stockholders_equity) ?? 0;
+  const sic = finite(fundamentals.sic);
+  if (!(revenue > 0) || !(shares > 0)) throw new Error("SEC facts are not sufficient for a deterministic forward range.");
+
+  const isFinancial = sic != null && sic >= 6000 && sic < 6800 && equity > 0;
+  const isTransition = !isFinancial && (netIncome <= 0 || fcf <= 0);
+  const reportedGrowth = finite(fundamentals.revenue_growth);
+  const baseGrowth = clamp(reportedGrowth ?? (isTransition ? 0.1 : 0.06), isTransition ? 0.04 : -0.05, isTransition ? 0.25 : 0.18);
+  const currentMargin = clamp(fcf / revenue, -0.5, 0.4);
+  const sharesGrowth = Math.max(finite(fundamentals.shares_growth) ?? 0, 0);
+  const dilution = clamp(sharesGrowth, 0, isTransition ? 0.25 : 0.1);
+  const baseShares = shares * (1 + dilution);
+  const sourceRows = documents.slice(0, 4).map(({ title, url, date, form }) => ({ title, url, date, form })).filter((row) => row.title && row.url);
+  if (!sourceRows.length) throw new Error("SEC filing documents could not be loaded for the deterministic forward range.");
+
+  const scenarioSettings = isTransition
+    ? {
+      bear: { growth: Math.max(baseGrowth - 0.06, 0.02), year5: Math.min(currentMargin + 0.12, -0.03), terminal: 0, wacc: 0.16, tg: 0.01, shares: baseShares * 1.12 },
+      base: { growth: baseGrowth, year5: Math.max(Math.min(currentMargin + 0.22, 0.06), 0), terminal: 0.08, wacc: 0.13, tg: 0.02, shares: baseShares * 1.06 },
+      bull: { growth: Math.min(baseGrowth + 0.08, 0.35), year5: Math.max(Math.min(currentMargin + 0.32, 0.14), 0.06), terminal: 0.15, wacc: 0.1, tg: 0.025, shares: baseShares },
+    }
+    : {
+      bear: { growth: Math.max(baseGrowth - 0.05, -0.08), year5: clamp(Math.max(currentMargin * 0.75, 0.04), 0.04, 0.25), terminal: null, wacc: 0.12, tg: 0.015, shares: baseShares * 1.04 },
+      base: { growth: baseGrowth, year5: clamp(Math.max(currentMargin, 0.08), 0.08, 0.32), terminal: null, wacc: 0.1, tg: 0.025, shares: baseShares * 1.02 },
+      bull: { growth: Math.min(baseGrowth + 0.05, 0.25), year5: clamp(Math.max(currentMargin * 1.15, 0.13), 0.13, 0.4), terminal: null, wacc: 0.085, tg: 0.03, shares: baseShares },
+    };
+  const horizon = isTransition ? 10 : 5;
+  const scenarios = ["bear", "base", "bull"].map((key) => {
+    const row = scenarioSettings[key];
+    return {
+      key,
+      revenue_year_1: revenue * (1 + row.growth),
+      revenue_growth: row.growth,
+      fcf_margin_year_1: currentMargin,
+      fcf_margin_year_5: row.year5,
+      fcf_margin_terminal: row.terminal ?? row.year5,
+      horizon_years: horizon,
+      wacc: row.wacc,
+      terminal_growth: row.tg,
+      diluted_shares: Math.max(row.shares, shares),
+    };
+  });
+
+  return {
+    model_family: isFinancial ? "excess_return" : isTransition ? "transition_dcf" : "normalized_dcf",
+    company_stage: isFinancial ? "FINANCIAL" : isTransition ? "LOSS-MAKING TRANSITION" : "CASH-GENERATIVE",
+    evidence_quality: "LOW",
+    basis: "DETERMINISTIC SEC FACTS",
+    rationale: "PCC used a conservative, rules-based forward range because document synthesis was unavailable.",
+    as_of: sourceRows.map((row) => row.date).filter(Boolean).sort().at(-1) || fundamentals.sec_filed_at || null,
+    balance_adjustments: [],
+    diluted_shares: Math.max(baseShares, shares),
+    revenue_year_1: scenarios[1].revenue_year_1,
+    fcf_margin_year_1: currentMargin,
+    fcf_margin_year_5: scenarios[1].fcf_margin_year_5,
+    fcf_margin_terminal: scenarios[1].fcf_margin_terminal,
+    horizon_years: horizon,
+    scenarios,
+    financial_scenarios: [
+      { key: "bear", roe: 0.07, cost_of_equity: 0.13, payout_ratio: 0.3, terminal_growth: 0.01 },
+      { key: "base", roe: 0.11, cost_of_equity: 0.105, payout_ratio: 0.35, terminal_growth: 0.02 },
+      { key: "bull", roe: 0.16, cost_of_equity: 0.09, payout_ratio: 0.4, terminal_growth: 0.025 },
+    ],
+    sources: sourceRows,
+    risks: [
+      "Forward document synthesis was unavailable; PCC used a conservative SEC-facts fallback.",
+      isTransition ? "The range depends on achieving positive free cash flow within the modeled transition horizon." : "The range depends on sustaining reported cash conversion and revenue quality.",
+    ],
+    generated_model: "deterministic-sec-fallback",
+  };
+}
+
 function scenarioRow(packet, fairValue, model, assumption) {
   return {
     key: packet.key,
@@ -297,7 +374,7 @@ export function buildValuation(input = {}) {
       ? (/LOSS|TRANSITION/.test(generatedStage) ? generatedStage : "LOSS-MAKING TRANSITION")
       : "CASH-GENERATIVE";
   return {
-    model_version: "forward-intrinsic-v4",
+    model_version: "forward-intrinsic-v5",
     model,
     stage,
     confidence: ["HIGH", "MEDIUM", "LOW"].includes(String(forward.evidence_quality || "").toUpperCase())

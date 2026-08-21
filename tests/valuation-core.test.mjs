@@ -53,7 +53,7 @@ function forwardPacket(overrides = {}) {
 
 test("cash generators use a sourced normalized forward DCF", () => {
   const result = buildValuation({ fundamentals: baseFacts(), forward: forwardPacket(), market: { price: 12 } });
-  assert.equal(result.model_version, "forward-intrinsic-v3");
+  assert.equal(result.model_version, "forward-intrinsic-v4");
   assert.equal(result.model, "NORMALIZED FORWARD DCF");
   assert.equal(result.confidence, "HIGH");
   assert.deepEqual(result.scenarios.map((item) => item.key), ["bear", "base", "bull"]);
@@ -80,6 +80,37 @@ test("loss-making companies can use a revenue-to-FCF transition model", () => {
   assert.equal(result.model, "LONG-HORIZON TRANSITION DCF");
   assert.equal(result.stage, "LOSS-MAKING SCALE-UP");
   assert.ok(result.scenarios[2].fair_value > result.scenarios[1].fair_value);
+});
+
+test("reported losses override an incorrectly generated normalized DCF", () => {
+  const result = buildValuation({
+    fundamentals: baseFacts({
+      revenue_ttm: 171_400_000,
+      net_income_ttm: -220_000_000,
+      free_cash_flow_ttm: -180_000_000,
+      cash: 410_700_000,
+      debt: 620_600_000,
+      shares_outstanding: 364_200_000,
+    }),
+    forward: forwardPacket({
+      model_family: "normalized_dcf",
+      company_stage: "GROWTH",
+      diluted_shares: 364_200_000,
+      horizon_years: 5,
+      scenarios: [
+        { key: "bear", horizon_years: 5, revenue_year_1: 171_400_000, revenue_growth: 0.05, fcf_margin_year_1: -0.4, fcf_margin_year_5: -0.1, wacc: 0.16, terminal_growth: 0.01, diluted_shares: 400_000_000 },
+        { key: "base", horizon_years: 5, revenue_year_1: 171_400_000, revenue_growth: 0.1, fcf_margin_year_1: -0.35, fcf_margin_year_5: -0.05, wacc: 0.12, terminal_growth: 0.02, diluted_shares: 380_000_000 },
+        { key: "bull", horizon_years: 5, revenue_year_1: 180_000_000, revenue_growth: 0.15, fcf_margin_year_1: -0.3, fcf_margin_year_5: 0, wacc: 0.1, terminal_growth: 0.025, diluted_shares: 364_200_000 },
+      ],
+    }),
+    market: { price: 3.8 },
+  });
+
+  assert.equal(result.model, "LONG-HORIZON TRANSITION DCF");
+  assert.equal(result.stage, "LOSS-MAKING TRANSITION");
+  assert.equal(result.assumptions.horizon_years, 10);
+  assert.ok(result.scenarios[2].fair_value > 0);
+  assert.match(result.warnings.join(" "), /instead of the generated model family/);
 });
 
 test("financial companies use a forward excess-return model", () => {

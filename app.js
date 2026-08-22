@@ -3713,7 +3713,7 @@
       <article class="valuation-sheet">
         ${selected ? `<header class="valuation-head">
           <div>${assetIdentity(selected.instrument)}<span class="section-index">02 / FORWARD INTRINSIC VALUE</span></div>
-          <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span></div>
+          <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span><button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || valuationJobActive(job) ? "disabled" : ""}>${state.valuationBusy ? "Creating job…" : valuationJobActive(job) ? "Research in progress" : "Refresh research with Ian"}</button></div>
         </header>` : ""}
         ${jobMarkup}
         ${state.valuationBusy && !payload ? `<div class="valuation-loading"><span></span><strong>Reading saved research.</strong><p>Loading the latest Supabase revision for ${esc(selected?.instrument?.symbol || "this company")}.</p></div>` : ""}

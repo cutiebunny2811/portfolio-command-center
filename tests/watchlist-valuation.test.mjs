@@ -4,68 +4,69 @@ import test from "node:test";
 
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-const edge = readFileSync(new URL("../supabase/functions/refresh-company-valuation/index.ts", import.meta.url), "utf8");
-const migration = readFileSync(new URL("../supabase/migrations/20260822030000_watchlist_valuations.sql", import.meta.url), "utf8");
+const agentApi = readFileSync(new URL("../supabase/functions/portfolio-agent-api/index.ts", import.meta.url), "utf8");
+const migration = readFileSync(new URL("../supabase/migrations/20260822050000_valuation_research_workflow.sql", import.meta.url), "utf8");
 
-test("Valuation is the fourth Watchlist view with a sourced forward three-case read", () => {
+test("Valuation is the fourth Watchlist view and reads durable research revisions", () => {
   assert.match(app, /data-view="valuation"><span>04<\/span>Valuation/);
-  assert.match(app, /03 \/ FORWARD VALUE RANGE/);
-  assert.match(app, /02 \/ FORWARD INTRINSIC VALUE/);
-  assert.match(app, /valuation-case--\$\{item\.key\}/);
-  assert.match(app, /Explain the range/);
-  assert.doesNotMatch(app, /Asking Gemini|explanation_model/);
-  assert.match(app, /const requestId = \+\+valuationRequestId/);
-  assert.match(app, /requestId !== valuationRequestId/);
-  assert.match(app, /await edgeFunctionError\(error\)/);
+  assert.match(app, /api_get_valuation_research/);
+  assert.match(app, /api_request_valuation_research/);
+  assert.match(app, /HERMES RESEARCH BRIEF/);
+  assert.match(app, /ยังไม่มี research revision สำหรับหุ้นตัวนี้/);
+  assert.doesNotMatch(app, /Explain the range|explainCompanyValuation/);
 });
 
-test("official SEC filings ground forward assumptions and PCC calculates the range", () => {
-  assert.match(edge, /data\.sec\.gov\/api\/xbrl\/companyfacts/);
-  assert.match(edge, /data\.sec\.gov\/submissions/);
-  assert.match(edge, /coverPageSharesFromHtml/);
-  assert.match(edge, /generateForwardPacket/);
-  assert.match(edge, /Do not use or infer the current market price/);
-  assert.match(edge, /short_term_investments/);
-  assert.match(edge, /balance_adjustments/);
-  assert.match(edge, /Never restate total cash or debt/);
-  assert.match(edge, /eight-to-ten-year horizon/);
-  assert.match(edge, /buildValuation/);
-  assert.match(edge, /body\?\.action === "explain"/);
-  assert.match(edge, /Do not recalculate, recommend a trade, add outside facts, or use Markdown/);
+test("PCC creates jobs, polls active work and keeps the previous revision readable", () => {
+  assert.match(app, /\["queued", "researching"\]/);
+  assert.match(app, /scheduleValuationResearchPoll/);
+  assert.match(app, /15_000/);
+  assert.match(app, /revision\?\.valuation/);
+  assert.match(app, /Research in progress/);
+  assert.match(app, /is ready to read/);
 });
 
-test("the SEC fallback wrapper is executable code, not prompt text", () => {
-  const promptEnd = edge.indexOf("const generated = await callGemini(prompt");
-  const wrapper = edge.indexOf("async function generateForwardPacket");
-  const handler = edge.indexOf("Deno.serve");
-  assert.ok(promptEnd >= 0);
-  assert.ok(wrapper > promptEnd);
-  assert.ok(handler > wrapper);
+test("the workflow stores per-member jobs and numbered revisions", () => {
+  assert.match(migration, /create table if not exists public\.valuation_research_jobs/);
+  assert.match(migration, /create table if not exists public\.valuation_research_revisions/);
+  assert.match(migration, /where status in \('queued', 'researching'\)/);
+  assert.match(migration, /claim_expires_at = now\(\) \+ interval '45 minutes'/);
+  assert.match(migration, /revision_no/);
+  assert.match(migration, /valuation_research_revisions_select_own/);
+  assert.match(migration, /notification_type[\s\S]*valuation_research/);
 });
 
-test("the Edge Function only values stocks on the authenticated member watchlist", () => {
-  assert.match(edge, /client\.auth\.getUser\(\)/);
-  assert.match(edge, /from\("watchlist_items"\)[\s\S]*eq\("user_id", authData\.user\.id\)/);
-  assert.match(edge, /asset_type\)\.toLowerCase\(\) !== "stock"/);
+test("Ian submits assumptions while PCC alone calculates Bear, Base and Bull", () => {
+  assert.match(agentApi, /validateValuationResearchPacket/);
+  assert.match(agentApi, /buildValuation\(\{/);
+  assert.match(agentApi, /api_agent_submit_valuation_research/);
+  assert.match(agentApi, /stored_as: "draft"/);
+  assert.doesNotMatch(agentApi, /p_fair_value|body\.fair_value/);
+  assert.match(agentApi, /one Bear, Base and Bull case/);
 });
 
-test("the shared snapshot is read-only to members and explanations cannot overwrite valuation", () => {
-  assert.match(migration, /company_valuation_snapshots_authenticated_read[\s\S]*for select to authenticated/);
-  assert.match(migration, /grant select on public\.company_valuation_snapshots to authenticated/);
-  assert.doesNotMatch(migration, /grant (insert|update|delete)/i);
-  assert.match(edge, /update\(\{[\s\S]*explanation: explanation\.text/);
-  assert.doesNotMatch(edge, /update\(\{\s*valuation: explanation/i);
+test("new and existing Hermes tokens receive the narrow valuation write scope", () => {
+  assert.match(app, /"briefings:write", "valuation:write"/);
+  assert.match(migration, /'valuation:write' = any\(token\.scopes\)/);
+  assert.match(migration, /array_append\(scopes, 'valuation:write'\)/);
 });
 
-test("mobile Valuation recomposes into one-column scenarios", () => {
+test("mobile Valuation recomposes research, scenarios and source ledger into one column", () => {
   assert.match(css, /\.valuation-workbench \{ grid-template-columns: 1fr; \}/);
   assert.match(css, /\.valuation-cases \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.valuation-research \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.valuation-research__points \{ grid-column: 1; grid-template-columns: 1fr; \}/);
   assert.match(css, /\.valuation-source \{ grid-template-columns: 1fr; \}/);
-  assert.match(css, /\.valuation-ai__points \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.valuation-rail \.watchlist-list \{ height: auto; max-height: 280px; \}/);
 });
 
-test("valuation UI exposes the actual model horizon and deterministic balance basis", () => {
+test("valuation UI exposes the model horizon, balance basis and saved Thai brief", () => {
   assert.match(app, /FCF margin · Y1 → Y\$\{valuationHorizon\}/);
   assert.match(app, /Modeled liquid assets \/ debt/);
-  assert.match(edge, /forward-intrinsic-v5/);
+  assert.match(app, /Ian สรุปหลักฐานและสมมติฐาน/);
+  assert.match(app, /SAVED TO SUPABASE/);
+});
+
+test("saved valuation revisions render with an existing timestamp formatter", () => {
+  assert.match(app, /smartMoneyDate\(revision\.submitted_at, true\)/);
+  assert.doesNotMatch(app, /dateLabel\(revision\.submitted_at\)/);
 });

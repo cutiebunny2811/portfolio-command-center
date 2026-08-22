@@ -157,6 +157,40 @@ test("routes News and Earnings calls to their read-only API actions", async () =
   assert.deepEqual(earnings.request, { action: "earnings", symbol: "AXTI" });
 });
 
+test("exposes the Ian valuation queue without accepting agent-written fair values", async () => {
+  const tools = await listTools();
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const claim = byName.get("claim_valuation_research_job");
+  const submit = byName.get("submit_valuation_research_draft");
+  const fail = byName.get("fail_valuation_research_job");
+
+  assert.ok(claim);
+  assert.ok(submit);
+  assert.ok(fail);
+  assert.equal(submit.inputSchema.properties.fair_value, undefined);
+  assert.equal(submit.inputSchema.properties.research_packet.properties.forward.properties.scenarios.minItems, 3);
+  assert.deepEqual(submit.inputSchema.properties.research_packet.properties.forward.properties.model_family.enum, [
+    "normalized_dcf", "transition_dcf", "excess_return",
+  ]);
+
+  const claimed = await callTool("claim_valuation_research_job", {});
+  assert.equal(claimed.response.result.isError, false);
+  assert.deepEqual(claimed.request, { action: "claim_valuation_research" });
+
+  const failed = await callTool("fail_valuation_research_job", {
+    job_id: "11111111-1111-4111-8111-111111111111",
+    claim_token: "22222222-2222-4222-8222-222222222222",
+    message: "Latest filing could not be verified.",
+  });
+  assert.equal(failed.response.result.isError, false);
+  assert.deepEqual(failed.request, {
+    action: "fail_valuation_research",
+    job_id: "11111111-1111-4111-8111-111111111111",
+    claim_token: "22222222-2222-4222-8222-222222222222",
+    message: "Latest filing could not be verified.",
+  });
+});
+
 test("exposes and routes owner-only read-only Option Desk tools", async () => {
   const tools = await listTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));

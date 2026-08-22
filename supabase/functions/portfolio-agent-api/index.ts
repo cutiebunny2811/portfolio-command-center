@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { analyzeWatchlistSetup } from "./watchlist-setup-scanner.mjs";
 import { analyzeOptionDesk } from "./option-desk-analysis.mjs";
+import { buildValuation } from "../refresh-company-valuation/valuation-core.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -119,6 +120,65 @@ function validateStringItems(value: unknown, label: string, minLength: number, m
   }
   value.forEach((item, index) => requiredText(item, `${label}[${index}]`, 1200));
   return value.map(String);
+}
+
+function validateValuationResearchPacket(value: unknown) {
+  const packet = jsonObject(value, "research_packet");
+  const fundamentals = jsonObject(packet.fundamentals, "research_packet.fundamentals");
+  const forward = jsonObject(packet.forward, "research_packet.forward");
+  const brief = jsonObject(packet.brief, "research_packet.brief");
+  positiveNumber(fundamentals.shares_outstanding, "research_packet.fundamentals.shares_outstanding");
+  if (!(Number(fundamentals.revenue_ttm || fundamentals.revenue_fy) > 0)) {
+    throw new Error("research_packet.fundamentals requires positive revenue_ttm or revenue_fy");
+  }
+  const modelFamily = requiredText(forward.model_family, "research_packet.forward.model_family", 40);
+  if (!['normalized_dcf', 'transition_dcf', 'excess_return'].includes(modelFamily)) {
+    throw new Error("research_packet.forward.model_family is unsupported");
+  }
+  requiredText(forward.company_stage, "research_packet.forward.company_stage", 80);
+  const evidence = requiredText(forward.evidence_quality, "research_packet.forward.evidence_quality", 12).toUpperCase();
+  if (!['HIGH', 'MEDIUM', 'LOW'].includes(evidence)) {
+    throw new Error("research_packet.forward.evidence_quality must be HIGH, MEDIUM or LOW");
+  }
+  requiredText(forward.rationale, "research_packet.forward.rationale", 1600);
+  requiredText(forward.as_of, "research_packet.forward.as_of", 40);
+  const scenarios = requireArraySection(forward, "scenarios", 3, 3).map((value, index) => {
+    const scenario = jsonObject(value, `research_packet.forward.scenarios[${index}]`);
+    const key = requiredText(scenario.key, `research_packet.forward.scenarios[${index}].key`, 8).toLowerCase();
+    if (!['bear', 'base', 'bull'].includes(key)) throw new Error(`Unsupported valuation case: ${key}`);
+    if (modelFamily === "excess_return") {
+      ["roe", "cost_of_equity", "payout_ratio", "terminal_growth"].forEach((field) => {
+        if (optionalNumber(scenario[field]) == null) {
+          throw new Error(`research_packet.forward.scenarios[${index}].${field} is required`);
+        }
+      });
+    } else {
+      [
+        "revenue_year_1", "revenue_growth", "fcf_margin_year_1", "fcf_margin_year_5",
+        "fcf_margin_terminal", "horizon_years", "wacc", "terminal_growth", "diluted_shares",
+      ].forEach((field) => {
+        if (optionalNumber(scenario[field]) == null) {
+          throw new Error(`research_packet.forward.scenarios[${index}].${field} is required`);
+        }
+      });
+    }
+    return key;
+  });
+  if (new Set(scenarios).size !== 3) throw new Error("research_packet.forward.scenarios requires one Bear, Base and Bull case");
+  const sources = requireArraySection(forward, "sources", 1, 12);
+  sources.forEach((value, index) => {
+    const source = jsonObject(value, `research_packet.forward.sources[${index}]`);
+    requiredText(source.title, `research_packet.forward.sources[${index}].title`, 500);
+    const url = requiredText(source.url, `research_packet.forward.sources[${index}].url`, 2000);
+    if (!/^https:\/\//i.test(url)) throw new Error(`research_packet.forward.sources[${index}].url must use HTTPS`);
+  });
+  requiredText(brief.headline, "research_packet.brief.headline", 180);
+  requiredText(brief.summary, "research_packet.brief.summary", 1600);
+  requiredText(brief.base_case, "research_packet.brief.base_case", 1600);
+  validateStringItems(brief.conditions, "research_packet.brief.conditions", 1, 6);
+  validateStringItems(brief.risks, "research_packet.brief.risks", 1, 6);
+  requiredText(brief.watch_metric, "research_packet.brief.watch_metric", 1200);
+  return { packet, fundamentals, forward, brief };
 }
 
 function validateBriefNotes(content: Record<string, unknown>, key: string, minLength: number, maxLength: number) {
@@ -1726,6 +1786,94 @@ Deno.serve(async (request) => {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     const action = String(body.action || "").trim();
     if (!action) return response({ error: "action is required" }, 400);
+
+    if (action === "claim_valuation_research") {
+      requireScope(identity, "valuation:write");
+      const jobId = body.job_id ? String(body.job_id).trim() : null;
+      if (jobId && !/^[0-9a-f-]{36}$/i.test(jobId)) throw new Error("job_id must be a UUID");
+      const data = await must(service.rpc("api_agent_claim_valuation_research_job", {
+        p_user_id: identity.user_id,
+        p_agent_id: identity.token_id,
+        p_job_id: jobId,
+      }));
+      return response({
+        action,
+        data,
+        claimed: Boolean(data),
+        message: data ? "Research job claimed for 45 minutes." : "No valuation research job is waiting.",
+      });
+    }
+
+    if (action === "submit_valuation_research") {
+      requireScope(identity, "valuation:write");
+      const jobId = requiredText(body.job_id, "job_id", 36);
+      const claimToken = requiredText(body.claim_token, "claim_token", 36);
+      if (!/^[0-9a-f-]{36}$/i.test(jobId) || !/^[0-9a-f-]{36}$/i.test(claimToken)) {
+        throw new Error("job_id and claim_token must be UUIDs returned by claim_valuation_research");
+      }
+      const reportPeriod = requiredText(body.report_period, "report_period", 7).toUpperCase();
+      if (!/^\d{4}-Q[1-4]$/.test(reportPeriod)) throw new Error("report_period must be YYYY-QN");
+      const { packet, fundamentals, forward, brief } = validateValuationResearchPacket(body.research_packet);
+      const job = await must(service
+        .from("valuation_research_jobs")
+        .select("id,instrument_id,symbol,status,claim_token")
+        .eq("id", jobId)
+        .eq("user_id", identity.user_id)
+        .maybeSingle());
+      if (!job) throw new Error("Research job not found");
+      const market = await must(service
+        .from("instrument_prices")
+        .select("price,market_time,fetched_at,source")
+        .eq("user_id", identity.user_id)
+        .eq("instrument_id", job.instrument_id)
+        .order("fetched_at", { ascending: false })
+        .limit(1)
+        .maybeSingle());
+      const valuation = buildValuation({
+        fundamentals,
+        forward,
+        market: {
+          price: market?.price ?? null,
+          price_as_of: market?.market_time || market?.fetched_at || null,
+          source: market?.source || null,
+        },
+      });
+      const data = await must(service.rpc("api_agent_submit_valuation_research", {
+        p_user_id: identity.user_id,
+        p_agent_id: identity.token_id,
+        p_job_id: jobId,
+        p_claim_token: claimToken,
+        p_report_period: reportPeriod,
+        p_research_packet: packet,
+        p_valuation: valuation,
+        p_brief: brief,
+        p_idempotency_key: String(body.idempotency_key || `valuation-research:${jobId}`).trim(),
+      }));
+      return response({
+        action,
+        data: { ...data, valuation },
+        stored_as: "draft",
+        message: "Hermes research was stored. PCC calculated and saved the valuation range.",
+      });
+    }
+
+    if (action === "fail_valuation_research") {
+      requireScope(identity, "valuation:write");
+      const jobId = requiredText(body.job_id, "job_id", 36);
+      const claimToken = requiredText(body.claim_token, "claim_token", 36);
+      const message = requiredText(body.message, "message", 1200);
+      if (!/^[0-9a-f-]{36}$/i.test(jobId) || !/^[0-9a-f-]{36}$/i.test(claimToken)) {
+        throw new Error("job_id and claim_token must be UUIDs returned by claim_valuation_research");
+      }
+      const data = await must(service.rpc("api_agent_fail_valuation_research", {
+        p_user_id: identity.user_id,
+        p_agent_id: identity.token_id,
+        p_job_id: jobId,
+        p_claim_token: claimToken,
+        p_message: message,
+      }));
+      return response({ action, data, message: "Research job marked failed and can be requested again." });
+    }
 
     if (action === "refresh_brief_sources") {
       return response({ action, data: await refreshBriefSources(supabaseUrl) });

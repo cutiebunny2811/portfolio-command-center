@@ -77,7 +77,7 @@
     watchlistView: "charts", marketPulse: [], marketPulseReady: true, marketPulseBusy: false,
     cryptoPulse: [], cryptoPulseReady: true, cryptoPulseBusy: false,
     cryptoChartBars: [], cryptoChartSymbol: "BTCUSDT", cryptoChartTimeframe: "1D", cryptoChartBusy: false, cryptoChartMeta: null,
-    valuationData: null, valuationInstrumentId: null, valuationBusy: false, valuationError: "", valuationExplanationBusy: false,
+    valuationData: null, valuationInstrumentId: null, valuationBusy: false, valuationError: "",
     marketPulseMode: "rotation", marketPulseWindow: "1D", expandedRotationSymbol: null,
     smartMoneyEvents: [], smartMoneyReady: true, smartMoneyLoaded: false, smartMoneyBusy: false, smartMoneyError: "",
     smartMoneySearch: "", smartMoneySide: "all", smartMoneyWindow: 30,
@@ -116,6 +116,7 @@
   let watchlistBarsRequestId = 0;
   let cryptoChartRequestId = 0;
   let valuationRequestId = 0;
+  let valuationResearchPollTimer = null;
   let watchlistChartRenderId = 0;
   let cryptoChartRenderId = 0;
   let optionDeskRequestId = 0;
@@ -149,6 +150,24 @@
     cryptoChartRenderId += 1;
     destroyWatchlistChart();
     destroyCryptoChart();
+  }
+
+  function stopValuationResearchPoll() {
+    clearTimeout(valuationResearchPollTimer);
+    valuationResearchPollTimer = null;
+  }
+
+  function valuationJobActive(job) {
+    return ["queued", "researching"].includes(String(job?.status || ""));
+  }
+
+  function scheduleValuationResearchPoll(instrumentId) {
+    stopValuationResearchPoll();
+    if (!instrumentId || !valuationJobActive(state.valuationData?.job)) return;
+    valuationResearchPollTimer = setTimeout(async () => {
+      if (state.route !== "watchlist" || state.watchlistView !== "valuation" || state.selectedWatchlistInstrumentId !== instrumentId) return;
+      await loadCompanyValuation({ instrumentId, force: true, silent: true });
+    }, 15_000);
   }
 
   function toast(message, isError = false) {
@@ -736,52 +755,72 @@
     throw new Error(`Crypto Pulse: ${error.message}`);
   }
 
-  async function loadCompanyValuation({ instrumentId = state.selectedWatchlistInstrumentId, force = false } = {}) {
+  function previewValuationResearch(instrumentId) {
+    const item = state.watchlist.find((row) => row.instrument_id === instrumentId) || state.watchlist[0];
+    const marketPrice = num(item?.price?.price) || 217.02;
+    const submittedAt = new Date().toISOString();
+    return {
+      cached: true,
+      job: { id: "preview-job", job_code: `${item?.instrument?.symbol || "NVDA"}-2026-Q2`, status: "completed", completed_at: submittedAt },
+      revision: { id: "preview-revision", revision_no: 2, report_period: "2026-Q2", status: "draft", submitted_at: submittedAt },
+      valuation: {
+        model_version: "forward-intrinsic-v5", model: "NORMALIZED FORWARD DCF", stage: "CASH-GENERATIVE", confidence: "HIGH",
+        why: "Ian built the forward assumptions from the latest filings. PCC validated the packet and calculated each case.",
+        market: { price: marketPrice },
+        scenarios: [
+          { key: "bear", label: "Bear", fair_value: marketPrice * 0.68, assumption: "5.0% growth · 14.0% year-5 FCF margin", inputs: { revenue_year_1: 118_000_000_000, revenue_growth: 0.05, fcf_margin_year_1: 0.11, fcf_margin_year_5: 0.14, wacc: 0.12, terminal_growth: 0.015 } },
+          { key: "base", label: "Base", fair_value: marketPrice * 1.08, assumption: "10.0% growth · 18.0% year-5 FCF margin", inputs: { revenue_year_1: 126_000_000_000, revenue_growth: 0.1, fcf_margin_year_1: 0.14, fcf_margin_year_5: 0.18, wacc: 0.1, terminal_growth: 0.025 } },
+          { key: "bull", label: "Bull", fair_value: marketPrice * 1.46, assumption: "16.0% growth · 22.0% year-5 FCF margin", inputs: { revenue_year_1: 134_000_000_000, revenue_growth: 0.16, fcf_margin_year_1: 0.16, fcf_margin_year_5: 0.22, wacc: 0.085, terminal_growth: 0.03 } },
+        ],
+        metrics: { adjusted_cash: 42_000_000_000, adjusted_debt: 11_000_000_000, diluted_shares: 2_480_000_000 },
+        forward: { as_of: "2026-08-21", sources: [{ title: "Quarterly report", form: "10-Q", date: "2026-08-01", url: "https://www.sec.gov/" }, { title: "Material company update", form: "8-K", date: "2026-08-12", url: "https://www.sec.gov/" }] },
+        warnings: ["Infrastructure spending must convert into durable free cash flow.", "The range remains sensitive to year-5 cash-flow margin."],
+        data_quality: { sec_filed_at: "2026-08-01" },
+      },
+      brief: {
+        headline: "มูลค่าฐานขึ้นอยู่กับการเปลี่ยนการเติบโตให้เป็นเงินสด",
+        summary: "ธุรกิจยังมีพื้นที่เติบโต แต่ราคาที่เหมาะสมขึ้นอยู่กับการรักษารายได้พร้อมยกระดับกระแสเงินสดต่อหุ้น ไม่ใช่รายได้รวมเพียงอย่างเดียว",
+        base_case: "กรณีฐานให้น้ำหนักกับการเติบโตระดับกลางและ margin ที่ค่อย ๆ ฟื้น โดยยังคิด dilution ที่ทราบแล้ว",
+        conditions: ["รายได้และ guidance ต้องเดินตามสมมติฐานฐาน", "Free Cash Flow ต้องดีขึ้นเร็วกว่าการเพิ่มทุน"],
+        risks: ["CapEx สูงกว่าผลตอบแทนที่สร้างได้", "Dilution เพิ่มเร็วกว่ารายได้ต่อหุ้น"],
+        watch_metric: "งบถัดไปให้ดู Revenue growth, Free Cash Flow margin และ diluted share count พร้อมกัน",
+      },
+    };
+  }
+
+  async function loadCompanyValuation({ instrumentId = state.selectedWatchlistInstrumentId, force = false, silent = false } = {}) {
     if (!instrumentId) return;
     if (!force && state.valuationInstrumentId === instrumentId && state.valuationData) return;
+    const hadActiveJob = valuationJobActive(state.valuationData?.job);
     const requestId = ++valuationRequestId;
-    state.valuationBusy = true;
+    if (!silent) state.valuationBusy = true;
     state.valuationError = "";
-    if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
+    if (!silent && state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
     try {
-      if (localPreviewEnabled) {
-        const item = state.watchlist.find((row) => row.instrument_id === instrumentId) || state.watchlist[0];
-        const marketPrice = num(item?.price?.price) || 217.02;
-        state.valuationInstrumentId = instrumentId;
-        state.valuationData = {
-          cached: false,
-          valuation: {
-            model_version: "forward-intrinsic-v1", model: "NORMALIZED FORWARD DCF", stage: "CASH-GENERATIVE", confidence: "MEDIUM",
-            why: "Forward revenue, normalized cash conversion and dilution are built from the latest filing evidence before PCC calculates each case.",
-            market: { price: marketPrice },
-            scenarios: [
-              { key: "bear", label: "Bear", fair_value: marketPrice * 0.68, assumption: "5.0% growth · 14.0% year-5 FCF margin", inputs: { revenue_year_1: 118_000_000_000, revenue_growth: 0.05, fcf_margin_year_1: 0.11, fcf_margin_year_5: 0.14, wacc: 0.12, terminal_growth: 0.015 } },
-              { key: "base", label: "Base", fair_value: marketPrice * 1.08, assumption: "10.0% growth · 18.0% year-5 FCF margin", inputs: { revenue_year_1: 126_000_000_000, revenue_growth: 0.1, fcf_margin_year_1: 0.14, fcf_margin_year_5: 0.18, wacc: 0.1, terminal_growth: 0.025 } },
-              { key: "bull", label: "Bull", fair_value: marketPrice * 1.46, assumption: "16.0% growth · 22.0% year-5 FCF margin", inputs: { revenue_year_1: 134_000_000_000, revenue_growth: 0.16, fcf_margin_year_1: 0.16, fcf_margin_year_5: 0.22, wacc: 0.085, terminal_growth: 0.03 } },
-            ],
-            metrics: { adjusted_cash: 42_000_000_000, adjusted_debt: 11_000_000_000, diluted_shares: 2_480_000_000 },
-            forward: { as_of: "2026-08-21", sources: [{ title: "10-Q filed 2026-08-01", form: "10-Q", date: "2026-08-01", url: "https://www.sec.gov/" }, { title: "8-K filed 2026-08-12", form: "8-K", date: "2026-08-12", url: "https://www.sec.gov/" }] },
-            warnings: ["Infrastructure spending must convert into durable free-cash-flow growth.", "The range remains sensitive to the year-5 cash-flow margin."],
-            data_quality: { sec_filed_at: "2026-08-01" },
-          },
-          explanation: { headline: "ฐานมูลค่าขึ้นอยู่กับการแปลงรายได้เป็นเงินสด", summary: "กรณีฐานให้ธุรกิจรักษาการเติบโตพร้อมฟื้นอัตรากระแสเงินสดภายในห้าปี จึงต้องดูผลลัพธ์จริงเทียบกับสมมติฐานทั้งสองด้าน", points: [{ label: "กรณีฐาน", text: "รายได้ปีแรกและ margin ระยะยาวเป็นตัวขับมูลค่าหลัก" }, { label: "ตัวแปรสำคัญ", text: "CapEx ต้องสร้างรายได้และกระแสเงินสดได้ตามแผน" }, { label: "ความเสี่ยง", text: "การเติบโตช้าหรือ margin ฟื้นไม่ถึงเป้าจะกดมูลค่าลง" }], watch_metric: "ติดตาม guidance รายได้, CapEx และ Free Cash Flow ในงบถัดไป" },
-        };
-        return;
-      }
-      const { data, error } = await db.functions.invoke("refresh-company-valuation", {
-        body: { instrument_id: instrumentId, force }
-      });
-      if (error) throw error;
-      if (data?.error) throw new Error(data.error);
+      const data = localPreviewEnabled
+        ? previewValuationResearch(instrumentId)
+        : await rpc("api_get_valuation_research", { p_instrument_id: instrumentId });
       if (requestId !== valuationRequestId) return;
+      const revision = data?.revision || null;
       state.valuationInstrumentId = instrumentId;
-      state.valuationData = data;
+      state.valuationData = {
+        cached: true,
+        job: data?.job || null,
+        revision,
+        valuation: revision?.valuation || data?.valuation || null,
+        researchPacket: revision?.research_packet || data?.researchPacket || null,
+        brief: revision?.brief || data?.brief || null,
+      };
+      if (silent && hadActiveJob && data?.job?.status === "completed" && revision) {
+        toast(`${data.job.job_code || "Valuation research"} is ready to read`);
+      }
+      scheduleValuationResearchPoll(instrumentId);
     } catch (error) {
       if (requestId !== valuationRequestId) return;
       console.error(error);
       state.valuationInstrumentId = instrumentId;
-      state.valuationData = null;
-      state.valuationError = await edgeFunctionError(error);
+      state.valuationError = friendlyError(error);
+      stopValuationResearchPoll();
     } finally {
       if (requestId === valuationRequestId) {
         state.valuationBusy = false;
@@ -790,25 +829,26 @@
     }
   }
 
-  async function explainCompanyValuation() {
+  async function requestCompanyValuationResearch() {
     const instrumentId = state.selectedWatchlistInstrumentId;
-    if (!instrumentId || state.valuationExplanationBusy || !state.valuationData?.valuation) return;
-    state.valuationExplanationBusy = true;
+    if (!instrumentId || state.valuationBusy || valuationJobActive(state.valuationData?.job)) return;
+    state.valuationBusy = true;
     state.valuationError = "";
     renderWatchlist();
     try {
-      const { data, error } = await db.functions.invoke("refresh-company-valuation", {
-        body: { instrument_id: instrumentId, action: "explain", refresh_explanation: Boolean(state.valuationData?.explanation) }
-      });
-      if (error) throw error;
-      if (data?.error) throw new Error(data.error);
-      if (instrumentId !== state.selectedWatchlistInstrumentId || instrumentId !== state.valuationInstrumentId) return;
-      state.valuationData = { ...state.valuationData, ...data };
+      if (localPreviewEnabled) {
+        state.valuationData = { ...(state.valuationData || {}), job: { id: "preview-job", job_code: "PREVIEW-2026-Q2", status: "queued", requested_at: new Date().toISOString() } };
+      } else {
+        const result = await rpc("api_request_valuation_research", { p_instrument_id: instrumentId });
+        state.valuationData = { ...(state.valuationData || {}), job: result?.job || null };
+        toast(result?.created ? `Research job ${result.job.job_code} queued for Ian` : `${result?.job?.job_code || "Research job"} is already active`);
+      }
+      scheduleValuationResearchPoll(instrumentId);
     } catch (error) {
       console.error(error);
-      state.valuationError = `Valuation brief: ${await edgeFunctionError(error)}`;
+      state.valuationError = friendlyError(error);
     } finally {
-      state.valuationExplanationBusy = false;
+      state.valuationBusy = false;
       if (state.route === "watchlist" && state.watchlistView === "valuation") renderWatchlist();
     }
   }
@@ -3374,7 +3414,7 @@
     panel.innerHTML = `<header><div><span>NOTIFICATIONS</span><strong>${unread ? `${unread} unread` : "All caught up"}</strong></div>${unread ? '<button type="button" data-action="notification-read-all">Mark all read</button>' : ""}</header>
       <div class="notification-list">
         ${state.notifications.length ? state.notifications.slice(0, 12).map((notice) => `<button type="button" class="notification-item${notice.read_at ? "" : " is-unread"}" data-action="notification-open" data-notification-id="${esc(notice.id)}" data-entity-id="${esc(notice.entity_id)}" data-notice-route="${esc(notice.route || "briefs")}">
-          <span>${notice.notification_type === "smart_money_brief" ? "SMART" : notice.notification_type === "brief_continuation" ? "UPDATE" : "BRIEF"}</span><strong>${esc(notice.title)}</strong><p>${esc(notice.preview)}</p><small>${esc(briefPublishedTime(notice.created_at))} BKK</small>
+          <span>${notice.notification_type === "valuation_research" ? "VALUE" : notice.notification_type === "smart_money_brief" ? "SMART" : notice.notification_type === "brief_continuation" ? "UPDATE" : "BRIEF"}</span><strong>${esc(notice.title)}</strong><p>${esc(notice.preview)}</p><small>${esc(briefPublishedTime(notice.created_at))} BKK</small>
         </button>`).join("") : '<div class="notification-empty"><strong>No intelligence notifications yet.</strong><p>Hermes publications will appear here.</p></div>'}
       </div><footer><button type="button" data-route="briefs">Daily Briefs</button><button type="button" data-route="smart-money-briefs">Smart Money Briefs</button></footer>`;
   }
@@ -3619,6 +3659,9 @@
   function renderValuationDesk(rows, selected) {
     const payload = state.valuationInstrumentId === selected?.instrument_id ? state.valuationData : null;
     const valuation = payload?.valuation || null;
+    const revision = payload?.revision || null;
+    const job = payload?.job || null;
+    const brief = payload?.brief || null;
     const scenarios = valuation?.scenarios || [];
     const marketPrice = num(valuation?.market?.price) || num(selected?.price?.price);
     const scenarioMarkup = scenarios.map((item) => {
@@ -3641,19 +3684,19 @@
       ["Modeled liquid assets / debt", `${valuationMetric(valuation.metrics?.adjusted_cash)} / ${valuationMetric(valuation.metrics?.adjusted_debt)}`],
       ["Diluted shares", Number.isFinite(Number(valuation.metrics?.diluted_shares)) ? compactNumber(valuation.metrics.diluted_shares) : "—"],
     ] : [];
-    const explanation = payload?.explanation && typeof payload.explanation === "object"
-      ? payload.explanation
-      : payload?.explanation
-        ? { headline: "Valuation read-through", summary: String(payload.explanation).replace(/\*\*/g, ""), points: [], watch_metric: "" }
-        : null;
-    const explanationMarkup = explanation ? `<div class="valuation-ai__note">
-      <header><span>VALUATION READ</span><h3>${esc(explanation.headline || "Forward valuation brief")}</h3><p>${esc(explanation.summary || "")}</p></header>
-      ${Array.isArray(explanation.points) && explanation.points.length ? `<div class="valuation-ai__points">${explanation.points.slice(0, 4).map((point) => `<div><small>${esc(point.label || "READ")}</small><p>${esc(point.text || "")}</p></div>`).join("")}</div>` : ""}
-      ${explanation.watch_metric ? `<footer><small>NEXT CHECK</small><p>${esc(explanation.watch_metric)}</p></footer>` : ""}
-    </div>` : "";
+    const researchBriefMarkup = brief ? `<div class="valuation-research__note">
+      <header><span>IAN / DRAFT R${esc(revision?.revision_no || "—")} / ${esc(revision?.report_period || job?.request_period || "—")}</span><h3>${esc(brief.headline || "Hermes valuation research")}</h3><p>${esc(brief.summary || "")}</p></header>
+      <div class="valuation-research__base"><small>BASE CASE</small><p>${esc(brief.base_case || "")}</p></div>
+      <div class="valuation-research__points">
+        <section><small>สิ่งที่ต้องเกิด</small>${Array.isArray(brief.conditions) ? `<ul>${brief.conditions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+        <section><small>ความเสี่ยงหลัก</small>${Array.isArray(brief.risks) ? `<ul>${brief.risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+      </div>
+      <footer><small>NEXT CHECK</small><p>${esc(brief.watch_metric || "")}</p><span>${revision?.submitted_at ? `${smartMoneyDate(revision.submitted_at, true)} · SAVED TO SUPABASE` : "SAVED RESEARCH"}</span></footer>
+    </div>` : `<div class="valuation-research__empty"><span>HERMES RESEARCH / 00</span><strong>ยังไม่มี research revision สำหรับหุ้นตัวนี้</strong><p>กด Refresh research เพื่อสร้างงานให้ Ian เมื่อทำเสร็จ รายงานและราคาประเมินจะถูกเก็บใน Supabase และเปิดอ่านได้จากทุกอุปกรณ์</p></div>`;
     const sourceRows = Array.isArray(valuation?.forward?.sources) ? valuation.forward.sources : [];
     const sourceMarkup = sourceRows.length ? `<section class="valuation-citations"><span class="section-index">06 / SOURCE LEDGER</span><div>${sourceRows.map((source, index) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer"><small>${String(index + 1).padStart(2, "0")} · ${esc(source.form || "SEC")}</small><strong>${esc(source.title)}</strong><span>${esc(source.date || "")}</span></a>`).join("")}</div></section>` : "";
-    const status = state.valuationBusy ? "READING SEC" : payload?.cached ? "CACHED" : payload ? "REFRESHED" : "WAITING";
+    const status = state.valuationBusy ? "SYNCING" : valuationJobActive(job) ? String(job.status).toUpperCase() : revision ? `DRAFT R${revision.revision_no}` : "NO RESEARCH";
+    const jobMarkup = job ? `<div class="valuation-job valuation-job--${esc(job.status)}"><span>${esc(job.job_code || "RESEARCH JOB")}</span><strong>${job.status === "queued" ? "รอ Ian รับงาน" : job.status === "researching" ? "Ian กำลังทำ research" : job.status === "completed" ? "Research พร้อมอ่าน" : job.status === "failed" ? "Research ไม่สำเร็จ" : esc(job.status)}</strong><p>${job.status === "failed" ? esc(job.failure_message || "ไม่สามารถยืนยันข้อมูลที่จำเป็นได้") : valuationJobActive(job) ? "PCC จะตรวจสถานะให้อัตโนมัติ โดย revision เดิมยังเปิดอ่านได้ระหว่างรอ" : revision ? `Revision ${revision.revision_no} · ${esc(revision.report_period)}` : ""}</p></div>` : "";
 
     return `<section class="valuation-workbench" aria-label="Watchlist company valuation">
       <aside class="watchlist-rail valuation-rail">
@@ -3665,8 +3708,9 @@
           <div>${assetIdentity(selected.instrument)}<span class="section-index">02 / FORWARD INTRINSIC VALUE</span></div>
           <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span></div>
         </header>` : ""}
-        ${state.valuationBusy && !valuation ? `<div class="valuation-loading"><span></span><strong>Building ${esc(selected?.instrument?.symbol || "company")} forward cases.</strong><p>Reading recent SEC filings, normalizing forward assumptions and validating the model before calculating the range.</p></div>` : ""}
-        ${state.valuationError && !valuation ? `<div class="valuation-unavailable"><span>VALUATION / 00</span><h2>No clean range yet.</h2><p>${esc(state.valuationError)}</p><button class="button button--primary" type="button" data-action="valuation-refresh">Try again</button></div>` : ""}
+        ${jobMarkup}
+        ${state.valuationBusy && !payload ? `<div class="valuation-loading"><span></span><strong>Reading saved research.</strong><p>Loading the latest Supabase revision for ${esc(selected?.instrument?.symbol || "this company")}.</p></div>` : ""}
+        ${state.valuationError && !valuation ? `<div class="valuation-unavailable"><span>VALUATION / 00</span><h2>Research could not be read.</h2><p>${esc(state.valuationError)}</p><button class="button button--primary" type="button" data-action="valuation-reload">Try again</button></div>` : ""}
         ${valuation ? `<div class="valuation-verdict">
           <div><span>MODEL SELECTED</span><strong>${esc(valuation.model)}</strong></div>
           <div><span>COMPANY STAGE</span><strong>${esc(valuation.stage)}</strong></div>
@@ -3682,14 +3726,13 @@
           <dl>${metricRows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
           <div class="valuation-flags">${valuation.warnings?.length ? valuation.warnings.map((item) => `<p>${esc(item)}</p>`).join("") : `<p>No high-priority model warning was triggered by the sourced forward assumptions.</p>`}</div>
         </section>
-        <section class="valuation-ai">
-          <div><span class="section-index">05 / VALUATION BRIEF</span><h2>Read the range in plain Thai.</h2><p>A concise interpretation of the same sourced assumptions and PCC calculation. It does not change Bear, Base or Bull.</p></div>
-          <button class="button button--primary" type="button" data-action="valuation-explain" ${state.valuationExplanationBusy ? "disabled" : ""}>${state.valuationExplanationBusy ? "Building brief…" : explanation ? "Refresh brief" : "Explain the range"}</button>
-          ${explanationMarkup}
-          ${state.valuationError ? `<p class="valuation-ai__error">${esc(state.valuationError)}</p>` : ""}
+        <section class="valuation-research">
+          <div><span class="section-index">05 / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian สรุปหลักฐานและสมมติฐาน ส่วน PCC คำนวณ Bear, Base และ Bull จาก packet เดียวกันแล้วเก็บ revision ไว้ใน Supabase</p></div>
+          ${researchBriefMarkup}
+          ${state.valuationError ? `<p class="valuation-research__error">${esc(state.valuationError)}</p>` : ""}
         </section>
         ${sourceMarkup}
-        <footer class="valuation-source"><span>SEC FILINGS + FORWARD MODEL</span><span>BASE DATA FILED ${esc(valuation.data_quality?.sec_filed_at || "—")}</span><span>MODEL OUTPUT, NOT A PRICE TARGET</span></footer>` : !state.valuationBusy && !state.valuationError ? `<div class="valuation-loading"><strong>Select a US stock.</strong><p>ETFs and options do not use this company-fundamentals router.</p></div>` : ""}
+        <footer class="valuation-source"><span>IAN RESEARCH + PCC CALCULATION</span><span>BASE DATA FILED ${esc(valuation.data_quality?.sec_filed_at || "—")}</span><span>DRAFT REVISION · NOT A PRICE TARGET</span></footer>` : !state.valuationBusy && !state.valuationError ? researchBriefMarkup : ""}
       </article>
     </section>`;
   }
@@ -4397,12 +4440,13 @@
     if (state.watchlistView === "valuation") {
       const rows = watchlistRows();
       const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
+      const activeJob = state.valuationInstrumentId === selected?.instrument_id && valuationJobActive(state.valuationData?.job);
       viewRoot.innerHTML = `
         ${pageHead(
-          "SEC filings · Sourced forward assumptions",
-          "Value the business ahead, not behind.",
-          "Bear, Base and Bull use forward revenue, cash-flow margins, dilution and risk inputs drawn from recent filings. PCC validates every input and calculates the range.",
-          `<button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || !selected ? "disabled" : ""}>${state.valuationBusy ? "Reading filings…" : "Refresh valuation"}</button>`
+          "Hermes research · PCC calculation · Supabase revisions",
+          "Research once. Keep the revision.",
+          "Ian builds the sourced research packet in the Research room. PCC validates the assumptions, calculates Bear, Base and Bull, and keeps every completed draft available on mobile.",
+          `<button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || activeJob || !selected ? "disabled" : ""}>${state.valuationBusy ? "Creating job…" : activeJob ? "Research in progress" : "Refresh research"}</button>`
         )}
         ${marketPulseTabs()}
         ${renderValuationDesk(rows, selected)}`;
@@ -5525,7 +5569,7 @@
         const expires = permanent ? null : new Date(`${expiryDate}T23:59:59Z`).toISOString();
         const token = await rpc("api_create_agent_token", {
           p_name: form.get("name"),
-          p_scopes: ["read", "drafts:write", "watchlist:write", "briefings:write"],
+          p_scopes: ["read", "drafts:write", "watchlist:write", "briefings:write", "valuation:write"],
           p_expires_at: expires
         });
         openDialog({
@@ -5591,6 +5635,7 @@
     if (routeButton) {
       const nextRoute = routeButton.dataset.route;
       if (state.route === "watchlist" && nextRoute !== "watchlist") invalidateWatchlistBarsRequest();
+      if (state.route === "watchlist" && nextRoute !== "watchlist") stopValuationResearchPoll();
       state.route = nextRoute;
       state.notificationsOpen = false;
       state.mobileMoreOpen = false;
@@ -5634,7 +5679,10 @@
     else if (action === "notification-open") {
       const entityId = target.dataset.entityId;
       const notice = state.notifications.find((item) => item.id === target.dataset.notificationId);
-      const destination = notice?.notification_type === "smart_money_brief" || target.dataset.noticeRoute === "smart-money-briefs"
+      const isValuation = notice?.notification_type === "valuation_research" || target.dataset.noticeRoute === "watchlist";
+      const destination = isValuation
+        ? "watchlist"
+        : notice?.notification_type === "smart_money_brief" || target.dataset.noticeRoute === "smart-money-briefs"
         ? "smart-money-briefs"
         : "briefs";
       const brief = destination === "briefs"
@@ -5643,6 +5691,13 @@
       if (brief) state.selectedBriefId = brief.id;
       if (destination === "smart-money-briefs" && state.smartMoneyBriefs.some((item) => item.id === entityId)) {
         state.selectedSmartMoneyBriefId = entityId;
+      }
+      if (isValuation) {
+        state.watchlistView = "valuation";
+        if (!localPreviewEnabled && entityId) {
+          const { data: revision } = await db.from("valuation_research_revisions").select("instrument_id").eq("id", entityId).maybeSingle();
+          if (revision?.instrument_id) state.selectedWatchlistInstrumentId = revision.instrument_id;
+        }
       }
       state.route = destination;
       state.notificationsOpen = false;
@@ -5658,7 +5713,9 @@
       window.scrollTo(0, 0);
       render();
       renderNotificationCenter();
-      if (destination === "smart-money-briefs") {
+      if (isValuation) {
+        await loadCompanyValuation({ force: true });
+      } else if (destination === "smart-money-briefs") {
         requestAnimationFrame(() => $("#smart-money-brief")?.scrollIntoView({ block: "start" }));
       } else if (entityId && briefArray(brief?.updates).some((update) => update.id === entityId)) {
         requestAnimationFrame(() => $(`#brief-update-${CSS.escape(entityId)}`)?.scrollIntoView({ block: "start" }));
@@ -5721,14 +5778,15 @@
     else if (action === "watchlist-chart") await loadWatchlistBars(target.dataset.instrumentId);
     else if (action === "valuation-stock") {
       const instrumentId = target.dataset.instrumentId;
+      stopValuationResearchPoll();
       state.selectedWatchlistInstrumentId = instrumentId;
       state.valuationData = null;
       state.valuationError = "";
       renderWatchlist();
       await loadCompanyValuation({ instrumentId });
     }
-    else if (action === "valuation-refresh") await loadCompanyValuation({ force: true });
-    else if (action === "valuation-explain") await explainCompanyValuation();
+    else if (action === "valuation-refresh") await requestCompanyValuationResearch();
+    else if (action === "valuation-reload") await loadCompanyValuation({ force: true });
     else if (action === "watchlist-timeframe") await loadWatchlistBars(state.selectedWatchlistInstrumentId, target.dataset.timeframe);
     else if (action === "watchlist-remove") openRemoveWatchlistDialog(target.dataset.instrumentId);
     else if (action === "smart-money-side") { state.smartMoneySide = target.dataset.side || "all"; renderSmartMoney(); }

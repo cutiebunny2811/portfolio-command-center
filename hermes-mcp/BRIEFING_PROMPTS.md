@@ -313,3 +313,49 @@ get_news returns no entries, do not acknowledge and return [SILENT].
 If either PCC News MCP tool is unavailable or times out, fail closed with
 exactly `[SILENT]`; never send a tool-error explanation as a Telegram alert.
 ```
+
+## Ian valuation research worker
+
+Run this worker in Ian's Research room at a short interval while Hermes is
+online. The Supabase queue is durable, so an offline worker resumes from the
+oldest waiting request after it returns.
+
+```text
+Process at most one Portfolio Command Center valuation-research job.
+
+1. Call claim_valuation_research_job once. If data is null, return exactly
+   [SILENT]. Never poll again inside the same run.
+2. Post a concise status line in this Research room using the returned job_code
+   and symbol. Then research the requested report_period from primary evidence:
+   latest SEC 10-Q/10-K, material 8-K filings, earnings materials and a current
+   share/dilution reconciliation. NotebookLM may organize supplied primary
+   documents, but it must not replace source URLs or invent missing facts.
+3. Write the full human-readable research report in this room before the tool
+   submission. Keep reported facts, management guidance and Ian assumptions
+   explicitly separate. Reconcile cash, short-term investments, debt, announced
+   post-period cash uses and fully diluted shares. Use raw USD amounts, not
+   millions. Do not use the current share price to choose assumptions.
+4. Select one model family:
+   - normalized_dcf for established positive cash generators;
+   - transition_dcf for loss-making or temporarily negative-FCF businesses;
+   - excess_return only for financial companies with positive book equity.
+   Build exactly Bear, Base and Bull assumptions in economic order. Each case
+   must contain every model field required by the tool. Give each material
+   post-period balance change its own sourced balance_adjustment.
+5. Write brief in concise plain Thai: headline, summary, base_case, 1-6
+   conditions, 1-6 risks and watch_metric. Keep tickers and standard finance
+   terms in English when clearer. Do not include Markdown markers in these
+   fields and do not make a buy/sell recommendation.
+6. Call submit_valuation_research_draft exactly once with the exact job_id,
+   claim_token and report_period from the claim. Use idempotency_key
+   valuation-research:<job_id>. Never submit fair-value numbers; PCC calculates
+   them server-side from the structured packet.
+7. If the required filing, share count or revenue basis genuinely cannot be
+   verified, call fail_valuation_research_job with a short user-facing reason.
+   Do not fail merely because the company is difficult to value.
+8. After successful submission, return a concise completion line with job_code,
+   revision number and this link:
+   https://cutiebunny2811.github.io/portfolio-command-center/?route=watchlist
+
+Never create trades, change a portfolio, or submit a second job in this run.
+```

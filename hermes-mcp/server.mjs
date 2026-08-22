@@ -61,6 +61,127 @@ const briefNoteSchema = {
   additionalProperties: false,
 };
 
+const valuationSourceSchema = {
+  type: "object",
+  properties: {
+    title: { type: "string", description: "Document or primary-source title." },
+    url: { type: "string", description: "Direct HTTPS source URL." },
+    publisher: { type: "string" },
+    date: { type: ["string", "null"], description: "Publication or filing date, preferably YYYY-MM-DD." },
+    form: { type: ["string", "null"], description: "SEC form such as 10-Q or 8-K when applicable." },
+  },
+  required: ["title", "url"],
+  additionalProperties: false,
+};
+
+const valuationScenarioSchema = {
+  type: "object",
+  properties: {
+    key: { type: "string", enum: ["bear", "base", "bull"] },
+    revenue_year_1: { type: "number" },
+    revenue_growth: { type: "number", description: "Decimal annual growth, for example 0.15 for 15%." },
+    fcf_margin_year_1: { type: "number", description: "Decimal free-cash-flow margin." },
+    fcf_margin_year_5: { type: "number" },
+    fcf_margin_terminal: { type: "number" },
+    horizon_years: { type: "number", minimum: 5, maximum: 10 },
+    wacc: { type: "number", description: "Decimal WACC, for example 0.10 for 10%." },
+    terminal_growth: { type: "number" },
+    diluted_shares: { type: "number", description: "Scenario-specific fully diluted common shares." },
+    roe: { type: "number", description: "Required for excess_return financial-company cases." },
+    cost_of_equity: { type: "number", description: "Required for excess_return cases." },
+    payout_ratio: { type: "number", description: "Required for excess_return cases." },
+  },
+  required: ["key"],
+  additionalProperties: false,
+};
+
+const valuationResearchPacketSchema = {
+  type: "object",
+  properties: {
+    fundamentals: {
+      type: "object",
+      description: "Reported company facts. Use raw USD amounts, not millions, and never mix periods without labels.",
+      properties: {
+        company_name: { type: "string" },
+        sic: { type: ["string", "number", "null"] },
+        revenue_ttm: { type: ["number", "null"] },
+        revenue_fy: { type: ["number", "null"] },
+        net_income_ttm: { type: ["number", "null"] },
+        net_income_fy: { type: ["number", "null"] },
+        free_cash_flow_ttm: { type: ["number", "null"] },
+        free_cash_flow_fy: { type: ["number", "null"] },
+        gross_profit_ttm: { type: ["number", "null"] },
+        gross_profit_fy: { type: ["number", "null"] },
+        cash: { type: ["number", "null"] },
+        short_term_investments: { type: ["number", "null"] },
+        debt: { type: ["number", "null"] },
+        stockholders_equity: { type: ["number", "null"] },
+        shares_outstanding: { type: "number" },
+        revenue_growth: { type: ["number", "null"] },
+        shares_growth: { type: ["number", "null"] },
+        period_basis: { type: ["string", "null"] },
+        sec_form: { type: ["string", "null"] },
+        sec_filed_at: { type: ["string", "null"] },
+      },
+      required: ["shares_outstanding"],
+      additionalProperties: false,
+    },
+    forward: {
+      type: "object",
+      description: "Sourced forward assumptions only. PCC calculates all fair values after submission.",
+      properties: {
+        model_family: { type: "string", enum: ["normalized_dcf", "transition_dcf", "excess_return"] },
+        company_stage: { type: "string" },
+        evidence_quality: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"] },
+        basis: { type: "string" },
+        rationale: { type: "string" },
+        as_of: { type: "string" },
+        revenue_year_1: { type: ["number", "null"] },
+        fcf_margin_year_1: { type: ["number", "null"] },
+        fcf_margin_year_5: { type: ["number", "null"] },
+        fcf_margin_terminal: { type: ["number", "null"] },
+        horizon_years: { type: ["number", "null"] },
+        diluted_shares: { type: ["number", "null"] },
+        balance_adjustments: {
+          type: "array",
+          maxItems: 12,
+          items: {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["cash_inflow", "cash_outflow", "debt_increase", "debt_repayment"] },
+              amount: { type: "number" },
+              description: { type: "string" },
+            },
+            required: ["kind", "amount", "description"],
+            additionalProperties: false,
+          },
+        },
+        scenarios: { type: "array", minItems: 3, maxItems: 3, items: valuationScenarioSchema },
+        sources: { type: "array", minItems: 1, maxItems: 12, items: valuationSourceSchema },
+        risks: { type: "array", maxItems: 8, items: { type: "string" } },
+      },
+      required: ["model_family", "company_stage", "evidence_quality", "basis", "rationale", "as_of", "scenarios", "sources"],
+      additionalProperties: false,
+    },
+    brief: {
+      type: "object",
+      description: "Concise plain-Thai research brief saved under the calculated range.",
+      properties: {
+        headline: { type: "string" },
+        summary: { type: "string" },
+        base_case: { type: "string" },
+        conditions: { type: "array", minItems: 1, maxItems: 6, items: { type: "string" } },
+        risks: { type: "array", minItems: 1, maxItems: 6, items: { type: "string" } },
+        watch_metric: { type: "string" },
+      },
+      required: ["headline", "summary", "base_case", "conditions", "risks", "watch_metric"],
+      additionalProperties: false,
+    },
+  },
+  required: ["fundamentals", "forward", "brief"],
+  additionalProperties: false,
+};
+
 const dailyBriefContentSchema = {
   type: "object",
   properties: {
@@ -598,6 +719,47 @@ const tools = [
     },
   },
   {
+    name: "claim_valuation_research_job",
+    description: "Ian valuation worker: claim the oldest queued PCC valuation-research job for 45 minutes. Call this from the Ian Research room worker. When data is null, stay silent because no job is waiting. When claimed, post the job status and full sourced research report in Research before submitting the structured packet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string", description: "Optional exact PCC job UUID. Omit to claim the oldest queued job." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "submit_valuation_research_draft",
+    description: "Submit Ian's sourced assumptions and plain-Thai brief for a claimed valuation job. Do not include Bear/Base/Bull fair values: PCC validates the packet, calculates the range server-side, stores a Draft revision, and notifies the member.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string" },
+        claim_token: { type: "string", description: "Exact claim_token from claim_valuation_research_job." },
+        report_period: { type: "string", description: "Research period in YYYY-QN form." },
+        research_packet: valuationResearchPacketSchema,
+        idempotency_key: { type: "string", minLength: 8, maxLength: 180 },
+      },
+      required: ["job_id", "claim_token", "report_period", "research_packet", "idempotency_key"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "fail_valuation_research_job",
+    description: "Mark a claimed valuation-research job failed only when the required filings or evidence cannot be verified. Include a concise user-facing reason; PCC will allow a new request.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string" },
+        claim_token: { type: "string", description: "Exact claim_token from claim_valuation_research_job." },
+        message: { type: "string", minLength: 1, maxLength: 1200 },
+      },
+      required: ["job_id", "claim_token", "message"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "add_watchlist_ticker",
     description: "Add or update a stock/ETF in the separate research Watchlist. This does not create a portfolio position or allocation target.",
     inputSchema: {
@@ -656,6 +818,9 @@ const actionByTool = {
   get_confirmed_execution_sync: "confirmed_execution_sync",
   create_trade_draft: "create_trade_draft",
   create_cash_movement_draft: "create_cash_draft",
+  claim_valuation_research_job: "claim_valuation_research",
+  submit_valuation_research_draft: "submit_valuation_research",
+  fail_valuation_research_job: "fail_valuation_research",
   add_watchlist_ticker: "add_watchlist",
   remove_watchlist_ticker: "remove_watchlist",
 };

@@ -194,6 +194,40 @@ const valuationResearchPacketSchema = {
   additionalProperties: false,
 };
 
+const completedValuationResearchSchema = {
+  type: "object",
+  properties: {
+    schema_version: { type: "number", enum: [1] },
+    headline: { type: "string", minLength: 1, maxLength: 240 },
+    summary: { type: "string", minLength: 1, maxLength: 2400 },
+    report: { type: "string", minLength: 1, maxLength: 40000 },
+    methodology: { type: "string", minLength: 1, maxLength: 6000 },
+    as_of: { type: "string", minLength: 1, maxLength: 40 },
+    sources: { type: "array", minItems: 1, maxItems: 20, items: valuationSourceSchema },
+    watch_items: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 800 } },
+  },
+  required: ["schema_version", "headline", "summary", "report", "methodology", "as_of", "sources"],
+  additionalProperties: false,
+};
+
+const completedValuationSchema = {
+  type: "object",
+  properties: {
+    currency: { type: "string", enum: ["USD"] },
+    as_of: { type: "string", minLength: 1, maxLength: 40 },
+    method: { type: "string", minLength: 1, maxLength: 240 },
+    market_price: { type: "number", minimum: 0 },
+    bear_value: { type: "number", minimum: 0 },
+    base_value: { type: "number", minimum: 0 },
+    bull_value: { type: "number", minimum: 0 },
+    calculation_summary: { type: "string", minLength: 1, maxLength: 6000 },
+    key_assumptions: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1200 } },
+    risks: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1200 } },
+  },
+  required: ["currency", "as_of", "method", "base_value", "calculation_summary", "key_assumptions", "risks"],
+  additionalProperties: false,
+};
+
 const dailyBriefContentSchema = {
   type: "object",
   properties: {
@@ -743,7 +777,7 @@ const tools = [
   },
   {
     name: "submit_valuation_research_draft",
-    description: "Submit Ian's sourced assumptions and plain-Thai brief for a claimed valuation job. Do not include Bear/Base/Bull fair values: PCC validates the packet, calculates the range server-side, stores a Draft revision, and notifies the member.",
+    description: "Deprecated compatibility tool for the previous PCC-calculated valuation workflow. New Ian workers must use submit_completed_valuation_research.",
     inputSchema: {
       type: "object",
       properties: {
@@ -754,6 +788,23 @@ const tools = [
         idempotency_key: { type: "string", minLength: 8, maxLength: 180 },
       },
       required: ["job_id", "claim_token", "report_period", "research_packet", "idempotency_key"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "submit_completed_valuation_research",
+    description: "Submit Ian's finished primary-source analysis and Ian-calculated valuation for a claimed job. PCC stores, archives, notifies and displays this result; PCC does not calculate or override Ian's valuation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        job_id: { type: "string" },
+        claim_token: { type: "string", description: "Exact claim_token from claim_valuation_research_job." },
+        report_period: { type: "string", description: "Research period in YYYY-QN form." },
+        completed_research: completedValuationResearchSchema,
+        completed_valuation: completedValuationSchema,
+        idempotency_key: { type: "string", minLength: 8, maxLength: 180 },
+      },
+      required: ["job_id", "claim_token", "report_period", "completed_research", "completed_valuation", "idempotency_key"],
       additionalProperties: false,
     },
   },
@@ -832,6 +883,7 @@ const actionByTool = {
   create_cash_movement_draft: "create_cash_draft",
   claim_valuation_research_job: "claim_valuation_research",
   submit_valuation_research_draft: "submit_valuation_research",
+  submit_completed_valuation_research: "submit_completed_valuation_research",
   fail_valuation_research_job: "fail_valuation_research",
   add_watchlist_ticker: "add_watchlist",
   remove_watchlist_ticker: "remove_watchlist",

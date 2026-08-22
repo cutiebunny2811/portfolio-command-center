@@ -157,29 +157,55 @@ test("routes News and Earnings calls to their read-only API actions", async () =
   assert.deepEqual(earnings.request, { action: "earnings", symbol: "AXTI" });
 });
 
-test("exposes the Ian valuation queue without accepting agent-written fair values", async () => {
+test("exposes Ian-completed valuation research and routes the finished archive", async () => {
   const tools = await listTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const claim = byName.get("claim_valuation_research_job");
-  const submit = byName.get("submit_valuation_research_draft");
+  const submit = byName.get("submit_completed_valuation_research");
   const fail = byName.get("fail_valuation_research_job");
 
   assert.ok(claim);
   assert.ok(submit);
   assert.ok(fail);
-  assert.equal(submit.inputSchema.properties.fair_value, undefined);
-  assert.equal(submit.inputSchema.properties.research_packet.properties.forward.properties.scenarios.minItems, 3);
-  assert.deepEqual(submit.inputSchema.properties.research_packet.properties.forward.properties.model_family.enum, [
-    "normalized_dcf", "transition_dcf", "excess_return",
-  ]);
-  assert.equal(
-    submit.inputSchema.properties.research_packet.properties.forward.properties.company_stage.maxLength,
-    40,
-  );
+  const valuation = submit.inputSchema.properties.completed_valuation;
+  assert.ok(valuation.required.includes("base_value"));
+  assert.equal(valuation.properties.bear_value.type, "number");
+  assert.equal(valuation.properties.bull_value.type, "number");
+  assert.match(submit.description, /Ian-calculated valuation/i);
+  assert.match(submit.description, /does not calculate or override/i);
+  assert.doesNotMatch(submit.description, /PCC calculates fair values/i);
 
   const claimed = await callTool("claim_valuation_research_job", {});
   assert.equal(claimed.response.result.isError, false);
   assert.deepEqual(claimed.request, { action: "claim_valuation_research" });
+
+  const completed = await callTool("submit_completed_valuation_research", {
+    job_id: "11111111-1111-4111-8111-111111111111",
+    claim_token: "22222222-2222-4222-8222-222222222222",
+    report_period: "2026-Q2",
+    completed_research: {
+      schema_version: 1,
+      headline: "NVDA completed research",
+      summary: "Primary-source conclusion.",
+      report: "Full sourced report.",
+      methodology: "Normalized forward DCF.",
+      as_of: "2026-08-22",
+      sources: [{ title: "NVIDIA 10-Q", url: "https://www.sec.gov/example" }],
+    },
+    completed_valuation: {
+      currency: "USD",
+      as_of: "2026-08-22",
+      method: "Normalized forward DCF",
+      base_value: 135.69,
+      calculation_summary: "Ian discounted the sourced cash-flow cases.",
+      key_assumptions: ["Base growth 15%"],
+      risks: ["AI capex normalization"],
+    },
+    idempotency_key: "valuation-research:11111111-1111-4111-8111-111111111111",
+  });
+  assert.equal(completed.response.result.isError, false);
+  assert.equal(completed.request.action, "submit_completed_valuation_research");
+  assert.equal(completed.request.completed_valuation.base_value, 135.69);
 
   const failed = await callTool("fail_valuation_research_job", {
     job_id: "11111111-1111-4111-8111-111111111111",

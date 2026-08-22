@@ -947,6 +947,39 @@ Deno.serve(async (request) => {
       }), { headers: jsonHeaders });
     }
 
+    if (body?.action === "valuation_quote") {
+      const instrumentId = String(body?.instrument_id || "").trim();
+      if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });
+      const [{ data: watchlistItem, error: watchlistError }, { data: instrument, error: instrumentError }] = await Promise.all([
+        supabase.from("watchlist_items").select("instrument_id").eq("instrument_id", instrumentId).maybeSingle(),
+        supabase.from("instruments").select("id,symbol,asset_type").eq("id", instrumentId).eq("user_id", authenticatedUserId).eq("asset_type", "stock").maybeSingle(),
+      ]);
+      if (watchlistError) throw watchlistError;
+      if (instrumentError) throw instrumentError;
+      if (!watchlistItem || !instrument) return new Response(JSON.stringify({ error: "A Watchlist stock is required" }), { status: 404, headers: jsonHeaders });
+      const snapshot = await fetchSnapshot(instrument as Instrument);
+      const { error: priceError } = await supabase.rpc("api_record_instrument_price", {
+        p_instrument_id: instrumentId,
+        p_price: snapshot.price,
+        p_market_time: snapshot.marketTime,
+        p_source: "webull",
+      });
+      if (priceError) throw priceError;
+      const logoFailure = await syncInstrumentLogos(supabase, [{
+        instrumentId,
+        webullInstrumentId: snapshot.webullInstrumentId,
+        logoUrl: snapshot.logoUrl,
+      }]);
+      if (logoFailure) throw new Error(`Logo refresh: ${logoFailure}`);
+      return new Response(JSON.stringify({
+        symbol: instrument.symbol,
+        price: snapshot.price,
+        market_time: snapshot.marketTime,
+        fetched_at: new Date().toISOString(),
+        source: "webull",
+      }), { headers: jsonHeaders });
+    }
+
     if (body?.action === "chart") {
       const instrumentId = String(body?.instrument_id || "");
       if (!instrumentId) return new Response(JSON.stringify({ error: "instrument_id is required" }), { status: 400, headers: jsonHeaders });

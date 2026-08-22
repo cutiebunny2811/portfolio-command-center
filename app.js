@@ -158,7 +158,10 @@
   }
 
   function valuationJobActive(job) {
-    return ["queued", "researching"].includes(String(job?.status || ""));
+    if (job?.status === "queued") return true;
+    if (job?.status !== "researching") return false;
+    const expiry = Date.parse(job.claim_expires_at || "");
+    return !Number.isFinite(expiry) || expiry > Date.now();
   }
 
   function scheduleValuationResearchPoll(instrumentId) {
@@ -810,6 +813,8 @@
         valuation: revision?.valuation || data?.valuation || null,
         researchPacket: revision?.research_packet || data?.researchPacket || null,
         brief: revision?.brief || data?.brief || null,
+        completedResearch: revision?.completed_research || null,
+        completedValuation: revision?.completed_valuation || null,
       };
       if (silent && hadActiveJob && data?.job?.status === "completed" && revision) {
         toast(`${data.job.job_code || "Valuation research"} is ready to read`);
@@ -829,6 +834,29 @@
     }
   }
 
+  async function refreshValuationMarketPrice(instrumentId) {
+    const { data, error } = await db.functions.invoke("refresh-stock-prices", {
+      body: { action: "valuation_quote", instrument_id: instrumentId }
+    });
+    if (error) {
+      let detail = error.message;
+      try { detail = (await error.context?.clone?.().json())?.error || detail; } catch (_) { /* Optional response body. */ }
+      throw new Error(`Market price refresh: ${detail}`);
+    }
+    if (data?.error) throw new Error(`Market price refresh: ${data.error}`);
+    if (!Number.isFinite(Number(data?.price)) || Number(data.price) <= 0) {
+      throw new Error("Market price refresh returned no usable Webull quote");
+    }
+    state.prices = [{
+      instrument_id: instrumentId,
+      price: Number(data.price),
+      market_time: data.market_time || data.fetched_at || new Date().toISOString(),
+      fetched_at: data.fetched_at || new Date().toISOString(),
+      source: data.source || "webull",
+    }, ...state.prices.filter((item) => item.instrument_id !== instrumentId)];
+    return data;
+  }
+
   async function requestCompanyValuationResearch() {
     const instrumentId = state.selectedWatchlistInstrumentId;
     if (!instrumentId || state.valuationBusy || valuationJobActive(state.valuationData?.job)) return;
@@ -839,9 +867,14 @@
       if (localPreviewEnabled) {
         state.valuationData = { ...(state.valuationData || {}), job: { id: "preview-job", job_code: "PREVIEW-2026-Q2", status: "queued", requested_at: new Date().toISOString() } };
       } else {
+        await refreshValuationMarketPrice(instrumentId);
         const result = await rpc("api_request_valuation_research", { p_instrument_id: instrumentId });
         state.valuationData = { ...(state.valuationData || {}), job: result?.job || null };
-        toast(result?.created ? `Research job ${result.job.job_code} queued for Ian` : `${result?.job?.job_code || "Research job"} is already active`);
+        toast(result?.requeued
+          ? `Expired Ian lease for ${result.job.job_code} returned to the research queue`
+          : result?.created
+            ? `Research job ${result.job.job_code} queued for Ian`
+            : `${result?.job?.job_code || "Research job"} is already active`);
       }
       scheduleValuationResearchPoll(instrumentId);
     } catch (error) {
@@ -3656,7 +3689,47 @@
     return compact ? compactMoney(parsed) : money(parsed, 2);
   }
 
-  function renderValuationDesk(rows, selected) {
+  function valuationLeaseExpired(job) {
+    if (job?.status !== "researching") return false;
+    const expiry = Date.parse(job.claim_expires_at || "");
+    return Number.isFinite(expiry) && expiry <= Date.now();
+  }
+
+  function valuationResearchAction(job) {
+    const active = valuationJobActive(job);
+    const button = `<button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || active ? "disabled" : ""}>Research</button>`;
+    if (state.valuationBusy) return button.replace(">Research<", ">Creating research…<");
+    if (active) return button.replace(">Research<", ">Research in progress<");
+    return button;
+  }
+
+  function valuationResearchJobMarkup(job, revision) {
+    if (!job) return "";
+    const stale = valuationLeaseExpired(job);
+    const title = job.status === "queued"
+      ? "รอ Ian รับงาน"
+      : stale
+        ? "Ian lease หมดอายุ"
+        : job.status === "researching"
+          ? "Ian กำลังทำ research"
+          : job.status === "completed"
+            ? "Research พร้อมอ่าน"
+            : job.status === "failed"
+              ? "Research ไม่สำเร็จ"
+              : job.status;
+    const detail = stale
+      ? "Previous Ian lease expired — press Research to return it to the queue."
+      : job.status === "failed"
+        ? esc(job.failure_message || "ไม่สามารถยืนยันข้อมูลที่จำเป็นได้")
+        : valuationJobActive(job)
+          ? "PCC จะตรวจสถานะให้อัตโนมัติ โดย revision เดิมยังเปิดอ่านได้ระหว่างรอ"
+          : revision
+            ? `Revision ${revision.revision_no} · ${esc(revision.report_period)}`
+            : "";
+    return `<div class="valuation-job valuation-job--${stale ? "expired" : esc(job.status)}"><span>${esc(job.job_code || "RESEARCH JOB")}</span><strong>${esc(title)}</strong><p>${detail}</p></div>`;
+  }
+
+  function renderLegacyValuationRevision(rows, selected) {
     const payload = state.valuationInstrumentId === selected?.instrument_id ? state.valuationData : null;
     const valuation = payload?.valuation || null;
     const revision = payload?.revision || null;
@@ -3699,11 +3772,11 @@
         <section><small>ความเสี่ยงหลัก</small>${Array.isArray(brief.risks) ? `<ul>${brief.risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
       </div>
       <footer><small>NEXT CHECK</small><p>${esc(brief.watch_metric || "")}</p><span>${revision?.submitted_at ? `${smartMoneyDate(revision.submitted_at, true)} · SAVED TO SUPABASE` : "SAVED RESEARCH"}</span></footer>
-    </div>` : `<div class="valuation-research__empty"><span>HERMES RESEARCH / 00</span><strong>ยังไม่มี research revision สำหรับหุ้นตัวนี้</strong><p>กด Refresh research เพื่อสร้างงานให้ Ian เมื่อทำเสร็จ รายงานและราคาประเมินจะถูกเก็บใน Supabase และเปิดอ่านได้จากทุกอุปกรณ์</p></div>`;
+    </div>` : `<div class="valuation-research__empty"><span>HERMES RESEARCH / 00</span><strong>ยังไม่มี research revision สำหรับหุ้นตัวนี้</strong><p>กด Research เพื่อสร้างงานให้ Ian เมื่อทำเสร็จ รายงานและราคาประเมินจะถูกเก็บใน Supabase และเปิดอ่านได้จากทุกอุปกรณ์</p></div>`;
     const sourceRows = Array.isArray(valuation?.forward?.sources) ? valuation.forward.sources : [];
     const sourceMarkup = sourceRows.length ? `<section class="valuation-citations"><span class="section-index">06 / SOURCE LEDGER</span><div>${sourceRows.map((source, index) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer"><small>${String(index + 1).padStart(2, "0")} · ${esc(source.form || "SEC")}</small><strong>${esc(source.title)}</strong><span>${esc(source.date || "")}</span></a>`).join("")}</div></section>` : "";
     const status = state.valuationBusy ? "SYNCING" : valuationJobActive(job) ? String(job.status).toUpperCase() : revision ? `DRAFT R${revision.revision_no}` : "NO RESEARCH";
-    const jobMarkup = job ? `<div class="valuation-job valuation-job--${esc(job.status)}"><span>${esc(job.job_code || "RESEARCH JOB")}</span><strong>${job.status === "queued" ? "รอ Ian รับงาน" : job.status === "researching" ? "Ian กำลังทำ research" : job.status === "completed" ? "Research พร้อมอ่าน" : job.status === "failed" ? "Research ไม่สำเร็จ" : esc(job.status)}</strong><p>${job.status === "failed" ? esc(job.failure_message || "ไม่สามารถยืนยันข้อมูลที่จำเป็นได้") : valuationJobActive(job) ? "PCC จะตรวจสถานะให้อัตโนมัติ โดย revision เดิมยังเปิดอ่านได้ระหว่างรอ" : revision ? `Revision ${revision.revision_no} · ${esc(revision.report_period)}` : ""}</p></div>` : "";
+    const jobMarkup = valuationResearchJobMarkup(job, revision);
 
     return `<section class="valuation-workbench" aria-label="Watchlist company valuation">
       <aside class="watchlist-rail valuation-rail">
@@ -3713,7 +3786,7 @@
       <article class="valuation-sheet">
         ${selected ? `<header class="valuation-head">
           <div>${assetIdentity(selected.instrument)}<span class="section-index">02 / FORWARD INTRINSIC VALUE</span></div>
-          <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span><button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || valuationJobActive(job) ? "disabled" : ""}>${state.valuationBusy ? "Creating job…" : valuationJobActive(job) ? "Research in progress" : "Refresh research with Ian"}</button></div>
+          <div><small>MARKET</small><strong>${marketPrice ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span>${valuationResearchAction(job)}</div>
         </header>` : ""}
         ${jobMarkup}
         ${state.valuationBusy && !payload ? `<div class="valuation-loading"><span></span><strong>Reading saved research.</strong><p>Loading the latest Supabase revision for ${esc(selected?.instrument?.symbol || "this company")}.</p></div>` : ""}
@@ -3742,6 +3815,77 @@
         <footer class="valuation-source"><span>IAN RESEARCH + PCC CALCULATION</span><span>BASE DATA FILED ${esc(valuation.data_quality?.sec_filed_at || "—")}</span><span>DRAFT REVISION · NOT A PRICE TARGET</span></footer>` : !state.valuationBusy && !state.valuationError ? researchBriefMarkup : ""}
       </article>
     </section>`;
+  }
+
+  function renderIanCompletedValuationRevision(rows, selected, payload) {
+    const revision = payload?.revision || null;
+    const job = payload?.job || null;
+    const research = payload?.completedResearch || revision?.completed_research || {};
+    const valuation = payload?.completedValuation || revision?.completed_valuation || {};
+    const currentMarketPrice = Number(selected?.price?.price);
+    const archivedMarketPrice = Number(valuation.market_price);
+    const marketPrice = archivedMarketPrice > 0 ? archivedMarketPrice : currentMarketPrice;
+    const cases = [
+      ["bear", "Bear", valuation.bear_value],
+      ["base", "Base", valuation.base_value],
+      ["bull", "Bull", valuation.bull_value],
+    ].filter(([, , value]) => Number.isFinite(Number(value)));
+    const caseMarkup = cases.map(([key, label, value]) => {
+      const fairValue = Number(value);
+      const spread = marketPrice > 0 ? (fairValue / marketPrice - 1) * 100 : null;
+      return `<div class="valuation-case valuation-case--${key}"><span>${label}</span><strong>${money(fairValue)}</strong><small class="${spread == null || spread >= 0 ? "positive" : "negative"}">${spread == null ? "NO MARKET COMPARISON" : `${spread >= 0 ? "+" : ""}${spread.toFixed(1)}% vs archived market`}</small><em>${esc(valuation.method || "Ian valuation")}</em></div>`;
+    }).join("");
+    const assumptions = Array.isArray(valuation.key_assumptions) ? valuation.key_assumptions : [];
+    const risks = Array.isArray(valuation.risks) ? valuation.risks : [];
+    const watchItems = Array.isArray(research.watch_items) ? research.watch_items : [];
+    const sources = Array.isArray(research.sources) ? research.sources : [];
+    const sourcesMarkup = sources.length ? `<section class="valuation-citations"><span class="section-index">06 / SOURCE LEDGER</span><div>${sources.map((source, index) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer"><small>${String(index + 1).padStart(2, "0")} · ${esc(source.form || source.publisher || "PRIMARY")}</small><strong>${esc(source.title)}</strong><span>${esc(source.date || "")}</span></a>`).join("")}</div></section>` : "";
+    const status = state.valuationBusy ? "SYNCING" : valuationJobActive(job) ? String(job.status).toUpperCase() : `DRAFT R${revision?.revision_no || "—"}`;
+
+    return `<section class="valuation-workbench" aria-label="Watchlist company valuation">
+      <aside class="watchlist-rail valuation-rail">
+        <div class="watchlist-rail__head"><div><span class="section-index">01 / WATCHLIST</span><h2>Choose a company.</h2></div><span class="meta">${rows.length} symbols</span></div>
+        ${rows.length ? `<label class="watchlist-search"><span>Search all ${rows.length} symbols</span><input type="search" autocomplete="off" data-watchlist-search placeholder="Ticker or company" value="${esc(state.watchlistSearch)}"></label><div id="watchlist-list-region">${watchlistRowsMarkup(rows, selected, "valuation-stock")}</div>` : `<div class="empty-state"><div><strong>Your watchlist is empty</strong>Add a US stock before opening its valuation.</div></div>`}
+      </aside>
+      <article class="valuation-sheet valuation-sheet--completed">
+        ${selected ? `<header class="valuation-head"><div>${assetIdentity(selected.instrument)}<span class="section-index">02 / IAN-COMPLETED VALUE</span></div><div><small>MARKET</small><strong>${marketPrice > 0 ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span>${valuationResearchAction(job)}</div></header>` : ""}
+        ${valuationResearchJobMarkup(job, revision)}
+        <div class="valuation-verdict">
+          <div><span>METHOD</span><strong>${esc(valuation.method || "—")}</strong></div>
+          <div><span>AUTHOR</span><strong>IAN</strong></div>
+          <div><span>FORMAT</span><strong>COMPLETED V1</strong></div>
+          <div><span>VALUATION AS OF</span><strong>${esc(valuation.as_of || research.as_of || "—")}</strong></div>
+        </div>
+        <section class="valuation-range">
+          <header><div><span class="section-index">03 / IAN VALUE RANGE</span><h2>${esc(research.headline || "Completed valuation research")}</h2></div><p>${esc(research.summary || "")}</p></header>
+          <div class="valuation-cases valuation-cases--completed valuation-cases--count-${cases.length}">${caseMarkup}</div>
+        </section>
+        <section class="valuation-evidence valuation-evidence--completed">
+          <header><span class="section-index">04 / METHOD + CALCULATION</span><h2>The work behind the number.</h2></header>
+          <dl><div><dt>Methodology</dt><dd>${esc(research.methodology || valuation.method || "—")}</dd></div><div><dt>Calculation summary</dt><dd>${esc(valuation.calculation_summary || "—")}</dd></div></dl>
+          <div class="valuation-research__points">
+            <section><small>KEY ASSUMPTIONS</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+            <section><small>RISKS</small>${risks.length ? `<ul>${risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+          </div>
+        </section>
+        <section class="valuation-completed-report">
+          <header><span class="section-index">05 / IAN RESEARCH ARCHIVE</span><h2>รายงานฉบับเต็ม</h2></header>
+          <p>${esc(research.report || "")}</p>
+          ${watchItems.length ? `<div><small>NEXT CHECK</small><ul>${watchItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
+        </section>
+        ${sourcesMarkup}
+        <footer class="valuation-source"><span>IAN RESEARCH ARCHIVE</span><span>AS OF ${esc(research.as_of || valuation.as_of || "—")}</span><span>DRAFT REVISION · NOT A PRICE TARGET</span></footer>
+      </article>
+    </section>`;
+  }
+
+  function renderValuationDesk(rows, selected) {
+    const payload = state.valuationInstrumentId === selected?.instrument_id ? state.valuationData : null;
+    const revision = payload?.revision;
+    if (revision?.research_format === "ian_completed_v1") {
+      return renderIanCompletedValuationRevision(rows, selected, payload);
+    }
+    return renderLegacyValuationRevision(rows, selected);
   }
 
   function marketPulseValue(row, window = state.marketPulseWindow) {
@@ -4447,13 +4591,12 @@
     if (state.watchlistView === "valuation") {
       const rows = watchlistRows();
       const selected = rows.find((item) => item.instrument_id === state.selectedWatchlistInstrumentId) || rows[0] || null;
-      const activeJob = state.valuationInstrumentId === selected?.instrument_id && valuationJobActive(state.valuationData?.job);
       viewRoot.innerHTML = `
         ${pageHead(
-          "Hermes research · PCC calculation · Supabase revisions",
+          "Ian research · Supabase revisions",
           "Research once. Keep the revision.",
-          "Ian builds the sourced research packet in the Research room. PCC validates the assumptions, calculates Bear, Base and Bull, and keeps every completed draft available on mobile.",
-          `<button class="button button--primary" type="button" data-action="valuation-refresh" ${state.valuationBusy || activeJob || !selected ? "disabled" : ""}>${state.valuationBusy ? "Creating job…" : activeJob ? "Research in progress" : "Refresh research"}</button>`
+          "Ian completes the sourced analysis and valuation in the Research room. PCC queues, archives and keeps each finished revision available on every device.",
+          ""
         )}
         ${marketPulseTabs()}
         ${renderValuationDesk(rows, selected)}`;

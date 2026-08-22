@@ -37,12 +37,15 @@ Center without editing dashboard files or receiving Supabase SQL access.
   narrow `briefings:write` scope.
 - Valuation research uses a durable pull queue. `claim_valuation_research_job`
   leases one member-requested job for 45 minutes. Ian researches it in the
-  Research room, then `submit_valuation_research_draft` sends reported facts,
-  sourced forward assumptions and a concise Thai brief. Ian never submits a
-  fair value: the Agent API validates the packet and PCC calculates Bear, Base
-  and Bull before Supabase stores a numbered Draft revision and notification.
+  Research room, performs the valuation, then
+  `submit_completed_valuation_research` sends the finished readable report and
+  Ian-calculated valuation. PCC is the queue, archive, notification service and
+  reader; it does not calculate or override new Ian-authored values. Supabase
+  stores each completion as a numbered Draft revision.
   `fail_valuation_research_job` is reserved for genuinely unverifiable inputs.
-  Completed revisions remain readable while Hermes is offline.
+  Expired leases can be returned to the queue by the member's single Research
+  action. Completed revisions remain readable while Hermes is offline, and
+  legacy PCC-calculated revisions keep their original renderer.
 - Trade and cash tools create expiring drafts only.
 - Draft confirmation is intentionally absent from MCP. Confirm from
   `Account > Agent drafts` in the dashboard.

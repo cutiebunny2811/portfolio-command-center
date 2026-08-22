@@ -316,9 +316,12 @@ exactly `[SILENT]`; never send a tool-error explanation as a Telegram alert.
 
 ## Ian valuation research worker
 
-Run this worker in Ian's Research room at a short interval while Hermes is
-online. The Supabase queue is durable, so an offline worker resumes from the
-oldest waiting request after it returns.
+Run the no-agent queue watchdog at a short interval while Hermes is online.
+The watchdog calls the agent API without an LLM and wakes Ian only after it has
+claimed a real job. The Supabase queue is durable, so an offline worker resumes
+from the oldest waiting request after it returns. Do not schedule this prompt
+itself as a repeating agent job because an empty queue must consume no model
+usage.
 
 ```text
 Process at most one Portfolio Command Center valuation-research job.
@@ -335,24 +338,21 @@ Process at most one Portfolio Command Center valuation-research job.
    explicitly separate. Reconcile cash, short-term investments, debt, announced
    post-period cash uses and fully diluted shares. Use raw USD amounts, not
    millions. Do not use the current share price to choose assumptions.
-4. Select one model family:
-   - normalized_dcf for established positive cash generators;
-   - transition_dcf for loss-making or temporarily negative-FCF businesses;
-   - excess_return only for financial companies with positive book equity.
-   Set company_stage to a short classification label of at most 40 characters,
-   such as cash-generative, transition, loss-making growth or financial. Put
-   the full explanation in rationale, never in company_stage.
-   Build exactly Bear, Base and Bull assumptions in economic order. Each case
-   must contain every model field required by the tool. Give each material
-   post-period balance change its own sourced balance_adjustment.
-5. Write brief in concise plain Thai: headline, summary, base_case, 1-6
-   conditions, 1-6 risks and watch_metric. Keep tickers and standard finance
-   terms in English when clearer. Do not include Markdown markers in these
-   fields and do not make a buy/sell recommendation.
-6. Call submit_valuation_research_draft exactly once with the exact job_id,
+4. Select and explain the valuation method that fits the company. Ian owns the
+   calculation. A DCF is optional, Bear and Bull are optional, and Base is
+   required. Keep reported facts, assumptions and calculated values distinct.
+   Do not use the current share price to force the result toward market.
+5. Build completed_research as a readable archive: concise Thai headline and
+   summary, a complete plain-text report, methodology, as-of date, direct HTTPS
+   primary-source links and optional watch items. Keep tickers and standard
+   finance terms in English when clearer. Do not include Markdown markers or a
+   buy/sell recommendation.
+6. Build completed_valuation with Ian's USD Base value, optional Bear/Bull,
+   method, calculation summary, key assumptions and risks. Then call
+   submit_completed_valuation_research exactly once with the exact job_id,
    claim_token and report_period from the claim. Use idempotency_key
-   valuation-research:<job_id>. Never submit fair-value numbers; PCC calculates
-   them server-side from the structured packet.
+   valuation-research:<job_id>. PCC archives and displays the finished result;
+   it does not calculate or override Ian's values.
 7. If the required filing, share count or revenue basis genuinely cannot be
    verified, call fail_valuation_research_job with a short user-facing reason.
    Do not fail merely because the company is difficult to value.

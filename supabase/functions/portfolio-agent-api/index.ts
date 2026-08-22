@@ -203,6 +203,75 @@ function validateValuationResearchPacket(value: unknown) {
   return { packet, fundamentals, forward, brief };
 }
 
+function completedValuationNumber(value: unknown, label: string, required = false) {
+  if (value == null || value === "") {
+    if (required) throw new Error(`${label} is required`);
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1_000_000_000) {
+    throw new Error(`${label} must be a finite non-negative number`);
+  }
+  return value;
+}
+
+function validateCompletedValuationResearch(researchValue: unknown, valuationValue: unknown) {
+  const research = jsonObject(researchValue, "completed_research");
+  if (typeof research.schema_version !== "number" || research.schema_version !== 1) {
+    throw new Error("completed_research.schema_version must be the number 1");
+  }
+  const sources = requireArraySection(research, "sources", 1, 20).map((value, index) => {
+    const source = jsonObject(value, `completed_research.sources[${index}]`);
+    const url = requiredText(source.url, `completed_research.sources[${index}].url`, 2000);
+    if (!/^https:\/\//i.test(url)) throw new Error(`completed_research.sources[${index}].url must use HTTPS`);
+    return {
+      title: requiredText(source.title, `completed_research.sources[${index}].title`, 500),
+      url,
+      ...(source.publisher ? { publisher: requiredText(source.publisher, `completed_research.sources[${index}].publisher`, 160) } : {}),
+      ...(source.date ? { date: requiredText(source.date, `completed_research.sources[${index}].date`, 40) } : {}),
+      ...(source.form ? { form: requiredText(source.form, `completed_research.sources[${index}].form`, 40) } : {}),
+    };
+  });
+  const watchItems = research.watch_items == null
+    ? []
+    : validateStringItems(research.watch_items, "completed_research.watch_items", 0, 16)
+      .map((item) => requiredText(item, "completed_research.watch_items[]", 800));
+  const completedResearch = {
+    schema_version: 1,
+    headline: requiredText(research.headline, "completed_research.headline", 240),
+    summary: requiredText(research.summary, "completed_research.summary", 2400),
+    report: requiredText(research.report, "completed_research.report", 40_000),
+    methodology: requiredText(research.methodology, "completed_research.methodology", 6000),
+    as_of: requiredText(research.as_of, "completed_research.as_of", 40),
+    sources,
+    ...(watchItems.length ? { watch_items: watchItems } : {}),
+  };
+
+  const valuation = jsonObject(valuationValue, "completed_valuation");
+  const currency = requiredText(valuation.currency, "completed_valuation.currency", 3).toUpperCase();
+  if (currency !== "USD") throw new Error("completed_valuation.currency must be USD");
+  const bearValue = completedValuationNumber(valuation.bear_value, "completed_valuation.bear_value");
+  const baseValue = completedValuationNumber(valuation.base_value, "completed_valuation.base_value", true)!;
+  const bullValue = completedValuationNumber(valuation.bull_value, "completed_valuation.bull_value");
+  if (bearValue != null && bearValue > baseValue) throw new Error("completed_valuation.bear_value cannot exceed base_value");
+  if (bullValue != null && bullValue < baseValue) throw new Error("completed_valuation.bull_value cannot be below base_value");
+  const marketPrice = completedValuationNumber(valuation.market_price, "completed_valuation.market_price");
+  const completedValuation = {
+    currency: "USD",
+    as_of: requiredText(valuation.as_of, "completed_valuation.as_of", 40),
+    method: requiredText(valuation.method, "completed_valuation.method", 240),
+    ...(marketPrice != null ? { market_price: marketPrice } : {}),
+    ...(bearValue != null ? { bear_value: bearValue } : {}),
+    base_value: baseValue,
+    ...(bullValue != null ? { bull_value: bullValue } : {}),
+    calculation_summary: requiredText(valuation.calculation_summary, "completed_valuation.calculation_summary", 6000),
+    key_assumptions: validateStringItems(valuation.key_assumptions, "completed_valuation.key_assumptions", 1, 20)
+      .map((item) => requiredText(item, "completed_valuation.key_assumptions[]", 1200)),
+    risks: validateStringItems(valuation.risks, "completed_valuation.risks", 1, 20)
+      .map((item) => requiredText(item, "completed_valuation.risks[]", 1200)),
+  };
+  return { completedResearch, completedValuation };
+}
+
 function validateBriefNotes(content: Record<string, unknown>, key: string, minLength: number, maxLength: number) {
   const items = requireArraySection(content, key, minLength, maxLength);
   items.forEach((value, index) => {
@@ -1875,7 +1944,41 @@ Deno.serve(async (request) => {
         action,
         data: { ...data, valuation },
         stored_as: "draft",
-        message: "Hermes research was stored. PCC calculated and saved the valuation range.",
+        deprecated: true,
+        message: "Legacy research was stored. Upgrade the worker to submit_completed_valuation_research.",
+      });
+    }
+
+    if (action === "submit_completed_valuation_research") {
+      requireScope(identity, "valuation:write");
+      const jobId = requiredText(body.job_id, "job_id", 36);
+      const claimToken = requiredText(body.claim_token, "claim_token", 36);
+      if (!/^[0-9a-f-]{36}$/i.test(jobId) || !/^[0-9a-f-]{36}$/i.test(claimToken)) {
+        throw new Error("job_id and claim_token must be UUIDs returned by claim_valuation_research");
+      }
+      const reportPeriod = requiredText(body.report_period, "report_period", 7).toUpperCase();
+      if (!/^\d{4}-Q[1-4]$/.test(reportPeriod)) throw new Error("report_period must be YYYY-QN");
+      const idempotencyKey = requiredText(body.idempotency_key, "idempotency_key", 180);
+      if (idempotencyKey.length < 8) throw new Error("idempotency_key must contain at least 8 characters");
+      const { completedResearch, completedValuation } = validateCompletedValuationResearch(
+        body.completed_research,
+        body.completed_valuation,
+      );
+      const data = await must(service.rpc("api_agent_complete_valuation_research", {
+        p_user_id: identity.user_id,
+        p_agent_id: identity.token_id,
+        p_job_id: jobId,
+        p_claim_token: claimToken,
+        p_report_period: reportPeriod,
+        p_completed_research: completedResearch,
+        p_completed_valuation: completedValuation,
+        p_idempotency_key: idempotencyKey,
+      }));
+      return response({
+        action,
+        data,
+        stored_as: "draft",
+        message: "Ian’s completed research and valuation were saved as a revision.",
       });
     }
 

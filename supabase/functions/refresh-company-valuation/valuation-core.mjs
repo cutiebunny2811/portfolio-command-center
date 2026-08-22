@@ -19,13 +19,13 @@ function selectModelFamily(fundamentals, forward, netIncome, fcf, equity) {
   const sic = finite(fundamentals.sic);
   const isFinancial = sic != null && sic >= 6000 && sic < 6800;
   if (forward.model_family === "excess_return" && isFinancial && equity > 0) return "excess_return";
-  if (netIncome <= 0 || fcf <= 0 || forward.model_family === "transition_dcf") return "transition_dcf";
+  if ((netIncome != null && netIncome <= 0) || fcf <= 0 || forward.model_family === "transition_dcf") return "transition_dcf";
   return "normalized_dcf";
 }
 
 export function buildFallbackForwardPacket(fundamentals = {}, documents = []) {
   const revenue = finite(fundamentals.revenue_ttm) ?? finite(fundamentals.revenue_fy) ?? 0;
-  const netIncome = finite(fundamentals.net_income_ttm) ?? finite(fundamentals.net_income_fy) ?? 0;
+  const netIncome = finite(fundamentals.net_income_ttm) ?? finite(fundamentals.net_income_fy);
   const fcf = finite(fundamentals.free_cash_flow_ttm) ?? finite(fundamentals.free_cash_flow_fy) ?? 0;
   const shares = finite(fundamentals.shares_outstanding) ?? 0;
   const equity = finite(fundamentals.stockholders_equity) ?? 0;
@@ -33,7 +33,7 @@ export function buildFallbackForwardPacket(fundamentals = {}, documents = []) {
   if (!(revenue > 0) || !(shares > 0)) throw new Error("SEC facts are not sufficient for a deterministic forward range.");
 
   const isFinancial = sic != null && sic >= 6000 && sic < 6800 && equity > 0;
-  const isTransition = !isFinancial && (netIncome <= 0 || fcf <= 0);
+  const isTransition = !isFinancial && ((netIncome != null && netIncome <= 0) || fcf <= 0);
   const reportedGrowth = finite(fundamentals.revenue_growth);
   const baseGrowth = clamp(reportedGrowth ?? (isTransition ? 0.1 : 0.06), isTransition ? 0.04 : -0.05, isTransition ? 0.25 : 0.18);
   const currentMargin = clamp(fcf / revenue, -0.5, 0.4);
@@ -108,6 +108,8 @@ function scenarioRow(packet, fairValue, model, assumption) {
     method: model,
     assumption,
     inputs: {
+      input_mode: packet.fcff_path ? "explicit_fcff_path" : "revenue_margin",
+      fcff_path: packet.fcff_path ? [...packet.fcff_path] : undefined,
       revenue_year_1: rounded(packet.revenue_year_1, 0),
       revenue_growth: rounded(packet.revenue_growth, 4),
       fcf_margin_year_1: rounded(packet.fcf_margin_year_1, 4),
@@ -141,6 +143,10 @@ function normalizedScenario(raw, common, key) {
   const horizonYears = isTransition
     ? Math.round(requestedHorizon != null && requestedHorizon >= 7 ? clamp(requestedHorizon, 7, 10) : 10)
     : 5;
+  const fcffPath = Array.isArray(raw?.fcff_path) ? raw.fcff_path.map(finite) : null;
+  if (fcffPath && (fcffPath.length !== horizonYears || fcffPath.some((value) => value == null))) {
+    throw new Error(`${key} case explicit FCFF path must contain ${horizonYears} finite annual values.`);
+  }
   const transitionFloor = key === "bear" ? 0 : key === "bull" ? 0.12 : 0.06;
   const requestedTerminalMargin = finite(raw?.fcf_margin_terminal) ?? finite(common.fcf_margin_terminal) ?? yearFiveMargin;
   const terminalMargin = clamp(isTransition ? Math.max(requestedTerminalMargin, transitionFloor) : yearFiveMargin, -0.1, 0.55);
@@ -155,12 +161,14 @@ function normalizedScenario(raw, common, key) {
     wacc,
     terminal_growth: Math.min(clamp(finite(raw?.terminal_growth) ?? defaultTerminal, 0, 0.04), wacc - 0.025),
     diluted_shares: dilutedShares,
+    fcff_path: fcffPath,
     revenue_anchor_applied: reportedFloor > 0 && requestedRevenue < reportedFloor,
     terminal_margin_floor_applied: isTransition && requestedTerminalMargin < transitionFloor,
   };
 }
 
 function economicallyOrderPackets(packets) {
+  if (packets.some((packet) => packet.fcff_path)) return packets;
   const [bear, base, bull] = packets.map((packet) => ({ ...packet }));
   bear.revenue_year_1 = Math.min(bear.revenue_year_1, base.revenue_year_1);
   bull.revenue_year_1 = Math.max(bull.revenue_year_1, base.revenue_year_1);
@@ -187,11 +195,15 @@ function forwardDcf(packet, adjustedCash, adjustedDebt) {
   let finalFcf = 0;
   const horizonYears = packet.horizon_years || 5;
   for (let year = 1; year <= horizonYears; year += 1) {
-    if (year > 1) revenue *= 1 + packet.revenue_growth;
-    const margin = year <= 5
-      ? packet.fcf_margin_year_1 + (packet.fcf_margin_year_5 - packet.fcf_margin_year_1) * ((year - 1) / 4)
-      : packet.fcf_margin_year_5 + (packet.fcf_margin_terminal - packet.fcf_margin_year_5) * ((year - 5) / (horizonYears - 5));
-    finalFcf = revenue * margin;
+    if (packet.fcff_path) {
+      finalFcf = packet.fcff_path[year - 1];
+    } else {
+      if (year > 1) revenue *= 1 + packet.revenue_growth;
+      const margin = year <= 5
+        ? packet.fcf_margin_year_1 + (packet.fcf_margin_year_5 - packet.fcf_margin_year_1) * ((year - 1) / 4)
+        : packet.fcf_margin_year_5 + (packet.fcf_margin_terminal - packet.fcf_margin_year_5) * ((year - 5) / (horizonYears - 5));
+      finalFcf = revenue * margin;
+    }
     presentValue += finalFcf / ((1 + packet.wacc) ** year);
   }
   const terminal = finalFcf > 0
@@ -262,7 +274,7 @@ export function buildValuation(input = {}) {
   const forward = input.forward || {};
   const market = input.market || {};
   const revenue = finite(fundamentals.revenue_ttm) ?? finite(fundamentals.revenue_fy) ?? 0;
-  const netIncome = finite(fundamentals.net_income_ttm) ?? finite(fundamentals.net_income_fy) ?? 0;
+  const netIncome = finite(fundamentals.net_income_ttm) ?? finite(fundamentals.net_income_fy);
   const fcf = finite(fundamentals.free_cash_flow_ttm) ?? finite(fundamentals.free_cash_flow_fy) ?? 0;
   const grossProfit = finite(fundamentals.gross_profit_ttm) ?? finite(fundamentals.gross_profit_fy);
   const reportedCash = Math.max(finite(fundamentals.cash) ?? 0, 0);
@@ -320,14 +332,16 @@ export function buildValuation(input = {}) {
     model = modelFamily === "normalized_dcf" ? "NORMALIZED FORWARD DCF" : "LONG-HORIZON TRANSITION DCF";
     const packets = economicallyOrderPackets(keys.map((key) => normalizedScenario(rawScenarios.get(key), common, key)));
     scenarios = packets.map((packet) => {
-      if (!(packet.revenue_year_1 > 0)) throw new Error(`${packet.key} case does not provide usable forward revenue.`);
+      if (!packet.fcff_path && !(packet.revenue_year_1 > 0)) throw new Error(`${packet.key} case does not provide usable forward revenue.`);
       if (!(packet.diluted_shares >= basicShares)) throw new Error(`${packet.key} case diluted shares are below reported basic shares.`);
       const fairValue = perShare(forwardDcf(packet, adjustedCash, adjustedDebt), packet.diluted_shares);
       return scenarioRow(
         packet,
         fairValue,
         model,
-        `${rounded(packet.revenue_growth * 100, 1)}% growth · ${rounded(packet.fcf_margin_terminal * 100, 1)}% year-${packet.horizon_years} FCF margin`,
+        packet.fcff_path
+          ? `Explicit FCFF · Y1 $${rounded(packet.fcff_path[0] / 1_000_000_000, 1)}B → Y${packet.horizon_years} $${rounded(packet.fcff_path.at(-1) / 1_000_000_000, 1)}B`
+          : `${rounded(packet.revenue_growth * 100, 1)}% growth · ${rounded(packet.fcf_margin_terminal * 100, 1)}% year-${packet.horizon_years} FCF margin`,
       );
     });
   }

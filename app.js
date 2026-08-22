@@ -3676,14 +3676,21 @@
     }).join("");
     const baseInputs = scenarios.find((item) => item.key === "base")?.inputs || {};
     const valuationHorizon = Number(baseInputs.horizon_years || valuation?.assumptions?.horizon_years || 5);
-    const metricRows = valuation ? [
+    const explicitFcffPath = Array.isArray(baseInputs.fcff_path) ? baseInputs.fcff_path : null;
+    const metricRows = valuation ? (explicitFcffPath ? [
+      [`FCFF path · Y1 → Y${valuationHorizon}`, `${valuationMetric(explicitFcffPath[0])} → ${valuationMetric(explicitFcffPath.at(-1))}`],
+      ["Annual FCFF", explicitFcffPath.map((value, index) => `Y${index + 1} ${valuationMetric(value)}`).join(" · ")],
+      ["WACC / terminal", `${valuationMetric(baseInputs.wacc, { percent: true })} / ${valuationMetric(baseInputs.terminal_growth, { percent: true })}`],
+      ["Modeled liquid assets / debt", `${valuationMetric(valuation.metrics?.adjusted_cash)} / ${valuationMetric(valuation.metrics?.adjusted_debt)}`],
+      ["Diluted shares", Number.isFinite(Number(valuation.metrics?.diluted_shares)) ? compactNumber(valuation.metrics.diluted_shares) : "—"],
+    ] : [
       ["Year 1 revenue", valuationMetric(baseInputs.revenue_year_1 || valuation.metrics?.forward_revenue)],
       ["Revenue growth", valuationMetric(baseInputs.revenue_growth, { percent: true })],
       [`FCF margin · Y1 → Y${valuationHorizon}`, `${valuationMetric(baseInputs.fcf_margin_year_1, { percent: true })} → ${valuationMetric(baseInputs.fcf_margin_terminal ?? baseInputs.fcf_margin_year_5, { percent: true })}`],
       ["WACC / terminal", `${valuationMetric(baseInputs.wacc, { percent: true })} / ${valuationMetric(baseInputs.terminal_growth, { percent: true })}`],
       ["Modeled liquid assets / debt", `${valuationMetric(valuation.metrics?.adjusted_cash)} / ${valuationMetric(valuation.metrics?.adjusted_debt)}`],
       ["Diluted shares", Number.isFinite(Number(valuation.metrics?.diluted_shares)) ? compactNumber(valuation.metrics.diluted_shares) : "—"],
-    ] : [];
+    ]) : [];
     const researchBriefMarkup = brief ? `<div class="valuation-research__note">
       <header><span>IAN / DRAFT R${esc(revision?.revision_no || "—")} / ${esc(revision?.report_period || job?.request_period || "—")}</span><h3>${esc(brief.headline || "Hermes valuation research")}</h3><p>${esc(brief.summary || "")}</p></header>
       <div class="valuation-research__base"><small>BASE CASE</small><p>${esc(brief.base_case || "")}</p></div>

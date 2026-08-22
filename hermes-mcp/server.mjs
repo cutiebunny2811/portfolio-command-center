@@ -83,6 +83,13 @@ const valuationScenarioSchema = {
     fcf_margin_year_1: { type: "number", description: "Decimal free-cash-flow margin." },
     fcf_margin_year_5: { type: "number" },
     fcf_margin_terminal: { type: "number" },
+    fcff_path: {
+      type: "array",
+      minItems: 5,
+      maxItems: 10,
+      items: { type: "number" },
+      description: "Optional explicit annual unlevered FCFF values in raw USD. Its length must equal horizon_years.",
+    },
     horizon_years: { type: "number", minimum: 5, maximum: 10 },
     wacc: { type: "number", description: "Decimal WACC, for example 0.10 for 10%." },
     terminal_growth: { type: "number" },

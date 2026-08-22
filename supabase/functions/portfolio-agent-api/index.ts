@@ -142,11 +142,30 @@ function validateValuationResearchPacket(value: unknown) {
   }
   requiredText(forward.rationale, "research_packet.forward.rationale", 1600);
   requiredText(forward.as_of, "research_packet.forward.as_of", 40);
+  let explicitFcffScenarioCount = 0;
   const scenarios = requireArraySection(forward, "scenarios", 3, 3).map((value, index) => {
     const scenario = jsonObject(value, `research_packet.forward.scenarios[${index}]`);
     const key = requiredText(scenario.key, `research_packet.forward.scenarios[${index}].key`, 8).toLowerCase();
     if (!['bear', 'base', 'bull'].includes(key)) throw new Error(`Unsupported valuation case: ${key}`);
-    if (modelFamily === "excess_return") {
+    const hasExplicitFcffPath = Array.isArray(scenario.fcff_path);
+    if (hasExplicitFcffPath) {
+      explicitFcffScenarioCount += 1;
+      if (modelFamily === "excess_return") {
+        throw new Error(`research_packet.forward.scenarios[${index}].fcff_path is not supported for excess_return`);
+      }
+      const horizon = optionalNumber(scenario.horizon_years);
+      const minHorizon = modelFamily === "normalized_dcf" ? 5 : 7;
+      const maxHorizon = modelFamily === "normalized_dcf" ? 5 : 10;
+      if (!Number.isInteger(horizon) || horizon! < minHorizon || horizon! > maxHorizon || scenario.fcff_path.length !== horizon) {
+        throw new Error(`research_packet.forward.scenarios[${index}].fcff_path must contain one finite value for each supported model-horizon year`);
+      }
+      scenario.fcff_path.forEach((value: unknown, pathIndex: number) => {
+        if (optionalNumber(value) == null) throw new Error(`research_packet.forward.scenarios[${index}].fcff_path[${pathIndex}] must be a finite number`);
+      });
+      ["wacc", "terminal_growth", "diluted_shares"].forEach((field) => {
+        if (optionalNumber(scenario[field]) == null) throw new Error(`research_packet.forward.scenarios[${index}].${field} is required`);
+      });
+    } else if (modelFamily === "excess_return") {
       ["roe", "cost_of_equity", "payout_ratio", "terminal_growth"].forEach((field) => {
         if (optionalNumber(scenario[field]) == null) {
           throw new Error(`research_packet.forward.scenarios[${index}].${field} is required`);
@@ -164,6 +183,9 @@ function validateValuationResearchPacket(value: unknown) {
     }
     return key;
   });
+  if (explicitFcffScenarioCount > 0 && explicitFcffScenarioCount < 3) {
+    throw new Error("research_packet.forward.scenarios must use either explicit FCFF paths for all cases or legacy revenue-margin inputs for all cases");
+  }
   if (new Set(scenarios).size !== 3) throw new Error("research_packet.forward.scenarios requires one Bear, Base and Bull case");
   const sources = requireArraySection(forward, "sources", 1, 12);
   sources.forEach((value, index) => {

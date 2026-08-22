@@ -256,3 +256,41 @@ test("SEC facts produce an ordered fallback range when document synthesis is una
   assert.ok(result.scenarios[1].fair_value <= result.scenarios[2].fair_value);
   assert.match(result.warnings.join(" "), /SEC-facts fallback/);
 });
+
+test("positive FCF preserves a requested normalized DCF when net income is unavailable", () => {
+  const result = buildValuation({
+    fundamentals: baseFacts({ net_income_ttm: null, net_income_fy: null, free_cash_flow_ttm: 53_273_000_000 }),
+    forward: forwardPacket({ model_family: "normalized_dcf", company_stage: "CASH-GENERATIVE" }),
+    market: { price: 344.82 },
+  });
+
+  assert.equal(result.model, "NORMALIZED FORWARD DCF");
+  assert.equal(result.stage, "CASH-GENERATIVE");
+  assert.equal(result.assumptions.horizon_years, 5);
+});
+
+test("explicit annual FCFF paths drive a normalized DCF without revenue-margin interpolation", () => {
+  const explicitScenarios = [
+    { key: "bear", fcff_path: [6_000_000, 7_000_000, 8_000_000, 9_000_000, 10_000_000], horizon_years: 5, wacc: 0.12, terminal_growth: 0.015, diluted_shares: 22_000_000 },
+    { key: "base", fcff_path: [7_000_000, 10_000_000, 13_000_000, 16_000_000, 19_000_000], horizon_years: 5, wacc: 0.1, terminal_growth: 0.025, diluted_shares: 21_000_000 },
+    { key: "bull", fcff_path: [8_500_000, 13_000_000, 18_000_000, 23_000_000, 28_000_000], horizon_years: 5, wacc: 0.085, terminal_growth: 0.03, diluted_shares: 20_500_000 },
+  ];
+  const result = buildValuation({
+    fundamentals: baseFacts(),
+    forward: forwardPacket({ scenarios: explicitScenarios }),
+    market: { price: 12 },
+  });
+
+  assert.equal(result.model, "NORMALIZED FORWARD DCF");
+  assert.equal(result.assumptions.horizon_years, 5);
+  assert.deepEqual(result.scenarios[1].inputs.fcff_path, explicitScenarios[1].fcff_path);
+  assert.equal(result.scenarios[1].inputs.input_mode, "explicit_fcff_path");
+  assert.ok(result.scenarios[0].fair_value < result.scenarios[1].fair_value);
+  assert.ok(result.scenarios[1].fair_value < result.scenarios[2].fair_value);
+});
+
+test("positive FCF keeps the SEC fallback cash-generative when net income is unavailable", () => {
+  const fallback = buildFallbackForwardPacket(baseFacts({ net_income_ttm: null, net_income_fy: null, free_cash_flow_ttm: 10_000_000 }), source());
+  assert.equal(fallback.model_family, "normalized_dcf");
+  assert.equal(fallback.company_stage, "CASH-GENERATIVE");
+});

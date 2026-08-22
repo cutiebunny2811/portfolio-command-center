@@ -104,10 +104,10 @@ test("saved valuation revisions render with an existing timestamp formatter", ()
   assert.doesNotMatch(app, /dateLabel\(revision\.submitted_at\)/);
 });
 
-test("research refresh persists one fresh Webull quote before queueing a valuation job", () => {
+test("research queues even when the best-effort Webull quote refresh fails", () => {
   assert.match(app, /async function refreshValuationMarketPrice\(instrumentId\)/);
   assert.match(app, /action: "valuation_quote", instrument_id: instrumentId/);
-  assert.match(app, /await refreshValuationMarketPrice\(instrumentId\);[\s\S]*api_request_valuation_research/);
+  assert.match(app, /try \{[\s\S]*await refreshValuationMarketPrice\(instrumentId\);[\s\S]*\} catch \(priceError\) \{[\s\S]*console\.warn\("Valuation quote refresh skipped", priceError\);[\s\S]*\}[\s\S]*api_request_valuation_research/);
   assert.match(priceRefresh, /body\?\.action === "valuation_quote"/);
   assert.match(priceRefresh, /from\("watchlist_items"\)[\s\S]*eq\("instrument_id", instrumentId\)/);
   assert.match(priceRefresh, /const snapshot = await fetchSnapshot\(instrument as Instrument\)/);

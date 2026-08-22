@@ -867,7 +867,11 @@
       if (localPreviewEnabled) {
         state.valuationData = { ...(state.valuationData || {}), job: { id: "preview-job", job_code: "PREVIEW-2026-Q2", status: "queued", requested_at: new Date().toISOString() } };
       } else {
-        await refreshValuationMarketPrice(instrumentId);
+        try {
+          await refreshValuationMarketPrice(instrumentId);
+        } catch (priceError) {
+          console.warn("Valuation quote refresh skipped", priceError);
+        }
         const result = await rpc("api_request_valuation_research", { p_instrument_id: instrumentId });
         state.valuationData = { ...(state.valuationData || {}), job: result?.job || null };
         toast(result?.requeued

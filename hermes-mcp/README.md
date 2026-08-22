@@ -35,9 +35,10 @@ Center without editing dashboard files or receiving Supabase SQL access.
   sees them. `publish_smart_money_brief` refuses stale sources, empty reports,
   duplicate events and more than one edition inside six days; it uses the same
   narrow `briefings:write` scope.
-- Valuation research uses a durable pull queue. `claim_valuation_research_job`
-  leases one member-requested job for 45 minutes. Ian researches it in the
-  Research room, performs the valuation, then
+- Valuation research uses a durable pull queue. A no-agent watchdog claims one
+  member-requested job and starts one bounded Ian process only when work exists.
+  Interactive Ian chat cannot claim a job or promise background work. Ian
+  researches the claimed job in the Research room, performs the valuation, then
   `submit_completed_valuation_research` sends the finished readable report and
   Ian-calculated valuation. PCC is the queue, archive, notification service and
   reader; it does not calculate or override new Ian-authored values. Supabase

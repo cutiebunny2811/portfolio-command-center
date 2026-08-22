@@ -326,8 +326,9 @@ usage.
 ```text
 Process at most one Portfolio Command Center valuation-research job.
 
-1. Call claim_valuation_research_job once. If data is null, return exactly
-   [SILENT]. Never poll again inside the same run.
+1. The no-agent watchdog already claimed exactly one job and supplied its job_id,
+   claim_token and report_period. Never claim or poll for another job. Never say
+   work will continue later: submit or fail before this run ends.
 2. Post a concise status line in this Research room using the returned job_code
    and symbol. Then research the requested report_period from primary evidence:
    latest SEC 10-Q/10-K, material 8-K filings, earnings materials and a current
@@ -361,4 +362,5 @@ Process at most one Portfolio Command Center valuation-research job.
    https://cutiebunny2811.github.io/portfolio-command-center/?route=watchlist
 
 Never create trades, change a portfolio, or submit a second job in this run.
+Never leave a claimed job with only a status message or a promise of future work.
 ```

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 function listTools() {
@@ -157,14 +158,14 @@ test("routes News and Earnings calls to their read-only API actions", async () =
   assert.deepEqual(earnings.request, { action: "earnings", symbol: "AXTI" });
 });
 
-test("exposes Ian-completed valuation research and routes the finished archive", async () => {
+test("keeps valuation claims watchdog-only and routes Ian's finished archive", async () => {
   const tools = await listTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const claim = byName.get("claim_valuation_research_job");
   const submit = byName.get("submit_completed_valuation_research");
   const fail = byName.get("fail_valuation_research_job");
 
-  assert.ok(claim);
+  assert.equal(claim, undefined);
   assert.ok(submit);
   assert.ok(fail);
   const valuation = submit.inputSchema.properties.completed_valuation;
@@ -175,9 +176,10 @@ test("exposes Ian-completed valuation research and routes the finished archive",
   assert.match(submit.description, /does not calculate or override/i);
   assert.doesNotMatch(submit.description, /PCC calculates fair values/i);
 
-  const claimed = await callTool("claim_valuation_research_job", {});
-  assert.equal(claimed.response.result.isError, false);
-  assert.deepEqual(claimed.request, { action: "claim_valuation_research" });
+  const workerPrompt = readFileSync(new URL("../BRIEFING_PROMPTS.md", import.meta.url), "utf8");
+  assert.match(workerPrompt, /watchdog already claimed/i);
+  assert.match(workerPrompt, /submit or fail before this run ends/i);
+  assert.doesNotMatch(workerPrompt, /Call claim_valuation_research_job once/i);
 
   const completed = await callTool("submit_completed_valuation_research", {
     job_id: "11111111-1111-4111-8111-111111111111",

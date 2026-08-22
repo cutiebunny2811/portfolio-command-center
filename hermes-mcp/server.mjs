@@ -765,24 +765,13 @@ const tools = [
     },
   },
   {
-    name: "claim_valuation_research_job",
-    description: "Ian valuation worker: claim the oldest queued PCC valuation-research job for 45 minutes. Call this from the Ian Research room worker. When data is null, stay silent because no job is waiting. When claimed, post the job status and full sourced research report in Research before submitting the structured packet.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        job_id: { type: "string", description: "Optional exact PCC job UUID. Omit to claim the oldest queued job." },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
     name: "submit_valuation_research_draft",
     description: "Deprecated compatibility tool for the previous PCC-calculated valuation workflow. New Ian workers must use submit_completed_valuation_research.",
     inputSchema: {
       type: "object",
       properties: {
         job_id: { type: "string" },
-        claim_token: { type: "string", description: "Exact claim_token from claim_valuation_research_job." },
+        claim_token: { type: "string", description: "Exact claim_token supplied by the no-agent queue watchdog." },
         report_period: { type: "string", description: "Research period in YYYY-QN form." },
         research_packet: valuationResearchPacketSchema,
         idempotency_key: { type: "string", minLength: 8, maxLength: 180 },
@@ -798,7 +787,7 @@ const tools = [
       type: "object",
       properties: {
         job_id: { type: "string" },
-        claim_token: { type: "string", description: "Exact claim_token from claim_valuation_research_job." },
+        claim_token: { type: "string", description: "Exact claim_token supplied by the no-agent queue watchdog." },
         report_period: { type: "string", description: "Research period in YYYY-QN form." },
         completed_research: completedValuationResearchSchema,
         completed_valuation: completedValuationSchema,
@@ -815,7 +804,7 @@ const tools = [
       type: "object",
       properties: {
         job_id: { type: "string" },
-        claim_token: { type: "string", description: "Exact claim_token from claim_valuation_research_job." },
+        claim_token: { type: "string", description: "Exact claim_token supplied by the no-agent queue watchdog." },
         message: { type: "string", minLength: 1, maxLength: 1200 },
       },
       required: ["job_id", "claim_token", "message"],
@@ -881,7 +870,6 @@ const actionByTool = {
   get_confirmed_execution_sync: "confirmed_execution_sync",
   create_trade_draft: "create_trade_draft",
   create_cash_movement_draft: "create_cash_draft",
-  claim_valuation_research_job: "claim_valuation_research",
   submit_valuation_research_draft: "submit_valuation_research",
   submit_completed_valuation_research: "submit_completed_valuation_research",
   fail_valuation_research_job: "fail_valuation_research",

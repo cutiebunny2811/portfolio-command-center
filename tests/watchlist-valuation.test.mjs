@@ -8,6 +8,7 @@ const agentApi = readFileSync(new URL("../supabase/functions/portfolio-agent-api
 const priceRefresh = readFileSync(new URL("../supabase/functions/refresh-stock-prices/index.ts", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../supabase/migrations/20260822050000_valuation_research_workflow.sql", import.meta.url), "utf8");
 const completedMigration = readFileSync(new URL("../supabase/migrations/20260823010000_ian_completed_valuation_revisions.sql", import.meta.url), "utf8");
+const leaseMigration = readFileSync(new URL("../supabase/migrations/20260823040000_valuation_research_15_minute_lease.sql", import.meta.url), "utf8");
 
 test("Valuation is the fourth Watchlist view and reads durable research revisions", () => {
   assert.match(app, /data-view="valuation"><span>04<\/span>Valuation/);
@@ -34,7 +35,9 @@ test("the workflow stores per-member jobs and numbered revisions", () => {
   assert.match(migration, /create table if not exists public\.valuation_research_jobs/);
   assert.match(migration, /create table if not exists public\.valuation_research_revisions/);
   assert.match(migration, /where status in \('queued', 'researching'\)/);
-  assert.match(migration, /claim_expires_at = now\(\) \+ interval '45 minutes'/);
+  assert.match(migration, /claim_expires_at = now\(\) \+ interval '15 minutes'/);
+  assert.match(leaseMigration, /create or replace function public\.api_agent_claim_valuation_research_job/);
+  assert.match(leaseMigration, /claim_expires_at = now\(\) \+ interval '15 minutes'/);
   assert.match(migration, /revision_no/);
   assert.match(migration, /valuation_research_revisions_select_own/);
   assert.match(migration, /notification_type[\s\S]*valuation_research/);

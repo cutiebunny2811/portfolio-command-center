@@ -223,7 +223,7 @@ begin
   if v_job.id is null then return null; end if;
 
   update public.valuation_research_jobs job
-  set status = 'researching', claimed_at = now(), claim_expires_at = now() + interval '45 minutes',
+  set status = 'researching', claimed_at = now(), claim_expires_at = now() + interval '15 minutes',
       claimed_by_agent_id = p_agent_id, claim_token = v_claim, failure_message = null, updated_at = now()
   where job.id = v_job.id
   returning * into v_job;

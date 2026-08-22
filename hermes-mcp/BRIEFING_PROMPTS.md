@@ -339,6 +339,9 @@ Process at most one Portfolio Command Center valuation-research job.
    - normalized_dcf for established positive cash generators;
    - transition_dcf for loss-making or temporarily negative-FCF businesses;
    - excess_return only for financial companies with positive book equity.
+   Set company_stage to a short classification label of at most 40 characters,
+   such as cash-generative, transition, loss-making growth or financial. Put
+   the full explanation in rationale, never in company_stage.
    Build exactly Bear, Base and Bull assumptions in economic order. Each case
    must contain every model field required by the tool. Give each material
    post-period balance change its own sourced balance_adjustment.

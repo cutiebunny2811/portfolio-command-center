@@ -172,6 +172,10 @@ test("exposes the Ian valuation queue without accepting agent-written fair value
   assert.deepEqual(submit.inputSchema.properties.research_packet.properties.forward.properties.model_family.enum, [
     "normalized_dcf", "transition_dcf", "excess_return",
   ]);
+  assert.equal(
+    submit.inputSchema.properties.research_packet.properties.forward.properties.company_stage.maxLength,
+    40,
+  );
 
   const claimed = await callTool("claim_valuation_research_job", {});
   assert.equal(claimed.response.result.isError, false);

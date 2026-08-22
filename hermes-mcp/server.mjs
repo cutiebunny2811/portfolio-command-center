@@ -131,7 +131,12 @@ const valuationResearchPacketSchema = {
       description: "Sourced forward assumptions only. PCC calculates all fair values after submission.",
       properties: {
         model_family: { type: "string", enum: ["normalized_dcf", "transition_dcf", "excess_return"] },
-        company_stage: { type: "string" },
+        company_stage: {
+          type: "string",
+          minLength: 2,
+          maxLength: 40,
+          description: "Short classification label only, for example cash-generative, transition, loss-making growth or financial. Put the explanation in rationale.",
+        },
         evidence_quality: { type: "string", enum: ["HIGH", "MEDIUM", "LOW"] },
         basis: { type: "string" },
         rationale: { type: "string" },

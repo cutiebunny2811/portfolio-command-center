@@ -345,9 +345,12 @@ Process at most one Portfolio Command Center valuation-research job.
    Do not use the current share price to force the result toward market.
 5. Build completed_research as a readable archive: concise Thai headline and
    summary, a complete plain-text report, methodology, as-of date, direct HTTPS
-   primary-source links and optional watch items. Keep tickers and standard
-   finance terms in English when clearer. Do not include Markdown markers or a
-   buy/sell recommendation.
+   primary-source links and optional watch items. Always include brief with a
+   short Thai headline, summary, Base case, 1-6 conditions, 1-6 principal risks
+   and one next-check metric. This brief is the default PCC reading surface;
+   keep each item concise and do not paste the full report into it. Keep tickers
+   and standard finance terms in English when clearer. Do not include Markdown
+   markers or a buy/sell recommendation.
 6. Build completed_valuation with Ian's USD Base value, optional Bear/Bull,
    method, calculation summary, key assumptions and risks. Then call
    submit_completed_valuation_research exactly once with the exact job_id,

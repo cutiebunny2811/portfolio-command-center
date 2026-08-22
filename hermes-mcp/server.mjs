@@ -203,10 +203,23 @@ const completedValuationResearchSchema = {
     report: { type: "string", minLength: 1, maxLength: 40000 },
     methodology: { type: "string", minLength: 1, maxLength: 6000 },
     as_of: { type: "string", minLength: 1, maxLength: 40 },
+    brief: {
+      type: "object",
+      properties: {
+        headline: { type: "string", minLength: 1, maxLength: 240 },
+        summary: { type: "string", minLength: 1, maxLength: 2400 },
+        base_case: { type: "string", minLength: 1, maxLength: 2400 },
+        conditions: { type: "array", minItems: 1, maxItems: 6, items: { type: "string", minLength: 1, maxLength: 800 } },
+        risks: { type: "array", minItems: 1, maxItems: 6, items: { type: "string", minLength: 1, maxLength: 800 } },
+        watch_metric: { type: "string", minLength: 1, maxLength: 1200 },
+      },
+      required: ["headline", "summary", "base_case", "conditions", "risks", "watch_metric"],
+      additionalProperties: false,
+    },
     sources: { type: "array", minItems: 1, maxItems: 20, items: valuationSourceSchema },
     watch_items: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 800 } },
   },
-  required: ["schema_version", "headline", "summary", "report", "methodology", "as_of", "sources"],
+  required: ["schema_version", "headline", "summary", "report", "methodology", "as_of", "brief", "sources"],
   additionalProperties: false,
 };
 

@@ -235,6 +235,17 @@ function validateCompletedValuationResearch(researchValue: unknown, valuationVal
     ? []
     : validateStringItems(research.watch_items, "completed_research.watch_items", 0, 16)
       .map((item) => requiredText(item, "completed_research.watch_items[]", 800));
+  const brief = jsonObject(research.brief, "completed_research.brief");
+  const completedBrief = {
+    headline: requiredText(brief.headline, "completed_research.brief.headline", 240),
+    summary: requiredText(brief.summary, "completed_research.brief.summary", 2400),
+    base_case: requiredText(brief.base_case, "completed_research.brief.base_case", 2400),
+    conditions: validateStringItems(brief.conditions, "completed_research.brief.conditions", 1, 6)
+      .map((item) => requiredText(item, "completed_research.brief.conditions[]", 800)),
+    risks: validateStringItems(brief.risks, "completed_research.brief.risks", 1, 6)
+      .map((item) => requiredText(item, "completed_research.brief.risks[]", 800)),
+    watch_metric: requiredText(brief.watch_metric, "completed_research.brief.watch_metric", 1200),
+  };
   const completedResearch = {
     schema_version: 1,
     headline: requiredText(research.headline, "completed_research.headline", 240),
@@ -242,6 +253,7 @@ function validateCompletedValuationResearch(researchValue: unknown, valuationVal
     report: requiredText(research.report, "completed_research.report", 40_000),
     methodology: requiredText(research.methodology, "completed_research.methodology", 6000),
     as_of: requiredText(research.as_of, "completed_research.as_of", 40),
+    brief: completedBrief,
     sources,
     ...(watchItems.length ? { watch_items: watchItems } : {}),
   };
@@ -1891,7 +1903,7 @@ Deno.serve(async (request) => {
         action,
         data,
         claimed: Boolean(data),
-        message: data ? "Research job claimed for 45 minutes." : "No valuation research job is waiting.",
+        message: data ? "Research job claimed for 15 minutes." : "No valuation research job is waiting.",
       });
     }
 

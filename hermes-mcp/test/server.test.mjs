@@ -192,6 +192,14 @@ test("keeps valuation claims watchdog-only and routes Ian's finished archive", a
       report: "Full sourced report.",
       methodology: "Normalized forward DCF.",
       as_of: "2026-08-22",
+      brief: {
+        headline: "ธุรกิจแข็งแรง แต่ต้องพิสูจน์ cash conversion",
+        summary: "สรุปฐานข้อมูลและช่วงมูลค่าที่อ่านซ้ำได้",
+        base_case: "กรณีฐานอิงรายได้และ FCF ที่ตรวจสอบแล้ว",
+        conditions: ["รายได้และ margin ต้องเป็นไปตามสมมติฐาน"],
+        risks: ["การใช้เงินลงทุนสูงกว่าคาด"],
+        watch_metric: "ติดตามรายได้ FCF และ diluted shares ทุกไตรมาส",
+      },
       sources: [{ title: "NVIDIA 10-Q", url: "https://www.sec.gov/example" }],
     },
     completed_valuation: {

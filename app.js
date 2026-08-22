@@ -3843,6 +3843,22 @@
     const risks = Array.isArray(valuation.risks) ? valuation.risks : [];
     const watchItems = Array.isArray(research.watch_items) ? research.watch_items : [];
     const sources = Array.isArray(research.sources) ? research.sources : [];
+    const completedResearchBriefMarkup = (() => {
+      const brief = research.brief && typeof research.brief === "object" ? research.brief : {};
+      const conditions = Array.isArray(brief.conditions) && brief.conditions.length ? brief.conditions : assumptions.slice(0, 6);
+      const briefRisks = Array.isArray(brief.risks) && brief.risks.length ? brief.risks : risks.slice(0, 6);
+      const nextCheck = brief.watch_metric || watchItems[0] || "ติดตามงบและสมมติฐานหลักใน revision ถัดไป";
+      const baseCase = brief.base_case || assumptions[0] || valuation.calculation_summary || "Ian ยังไม่ได้แยกกรณีฐานเป็นข้อความสั้นใน revision นี้";
+      return `<div class="valuation-research__note">
+        <header><span>IAN / DRAFT R${esc(revision?.revision_no || "—")} / ${esc(revision?.report_period || job?.request_period || "—")}</span><h3>${esc(brief.headline || research.headline || "Hermes valuation research")}</h3><p>${esc(brief.summary || research.summary || "")}</p></header>
+        <div class="valuation-research__base"><small>BASE CASE</small><p>${esc(baseCase)}</p></div>
+        <div class="valuation-research__points">
+          <section><small>สิ่งที่ต้องเกิด</small>${conditions.length ? `<ul>${conditions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+          <section><small>ความเสี่ยงหลัก</small>${briefRisks.length ? `<ul>${briefRisks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+        </div>
+        <footer><small>NEXT CHECK</small><p>${esc(nextCheck)}</p><span>${revision?.submitted_at ? `${smartMoneyDate(revision.submitted_at, true)} · SAVED TO SUPABASE` : "SAVED RESEARCH"}</span></footer>
+      </div>`;
+    })();
     const sourcesMarkup = sources.length ? `<section class="valuation-citations"><span class="section-index">06 / SOURCE LEDGER</span><div>${sources.map((source, index) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer"><small>${String(index + 1).padStart(2, "0")} · ${esc(source.form || source.publisher || "PRIMARY")}</small><strong>${esc(source.title)}</strong><span>${esc(source.date || "")}</span></a>`).join("")}</div></section>` : "";
     const status = state.valuationBusy ? "SYNCING" : valuationJobActive(job) ? String(job.status).toUpperCase() : `DRAFT R${revision?.revision_no || "—"}`;
 
@@ -3866,17 +3882,20 @@
         </section>
         <section class="valuation-evidence valuation-evidence--completed">
           <header><span class="section-index">04 / METHOD + CALCULATION</span><h2>The work behind the number.</h2></header>
-          <dl><div><dt>Methodology</dt><dd>${esc(research.methodology || valuation.method || "—")}</dd></div><div><dt>Calculation summary</dt><dd>${esc(valuation.calculation_summary || "—")}</dd></div></dl>
+          <div class="valuation-method-grid"><section><small>METHODOLOGY</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>CALCULATION SUMMARY</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
           <div class="valuation-research__points">
             <section><small>KEY ASSUMPTIONS</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
             <section><small>RISKS</small>${risks.length ? `<ul>${risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
           </div>
         </section>
-        <section class="valuation-completed-report">
-          <header><span class="section-index">05 / IAN RESEARCH ARCHIVE</span><h2>รายงานฉบับเต็ม</h2></header>
-          <p>${esc(research.report || "")}</p>
-          ${watchItems.length ? `<div><small>NEXT CHECK</small><ul>${watchItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}
+        <section class="valuation-research valuation-research--completed">
+          <div><span class="section-index">05 / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian เรียบเรียงหลักฐาน สมมติฐาน และจุดติดตามเป็นภาษาไทย ส่วนรายงานฉบับเต็มยังเปิดอ่านได้ด้านล่าง</p></div>
+          ${completedResearchBriefMarkup}
         </section>
+        <details class="valuation-completed-report">
+          <summary><span class="section-index">RESEARCH ARCHIVE</span><strong>เปิดรายงานฉบับเต็ม</strong><em>หลักฐานและ reconciliation ฉบับละเอียด</em></summary>
+          <div class="valuation-completed-report__body"><p>${esc(research.report || "")}</p>${watchItems.length ? `<aside><small>NEXT CHECK</small><ul>${watchItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></aside>` : ""}</div>
+        </details>
         ${sourcesMarkup}
         <footer class="valuation-source"><span>IAN RESEARCH ARCHIVE</span><span>AS OF ${esc(research.as_of || valuation.as_of || "—")}</span><span>DRAFT REVISION · NOT A PRICE TARGET</span></footer>
       </article>

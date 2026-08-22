@@ -9,6 +9,7 @@ const priceRefresh = readFileSync(new URL("../supabase/functions/refresh-stock-p
 const migration = readFileSync(new URL("../supabase/migrations/20260822050000_valuation_research_workflow.sql", import.meta.url), "utf8");
 const completedMigration = readFileSync(new URL("../supabase/migrations/20260823010000_ian_completed_valuation_revisions.sql", import.meta.url), "utf8");
 const leaseMigration = readFileSync(new URL("../supabase/migrations/20260823040000_valuation_research_15_minute_lease.sql", import.meta.url), "utf8");
+const worker = readFileSync(new URL("../scripts/pcc_valuation_research_worker.py", import.meta.url), "utf8");
 
 test("Valuation is the fourth Watchlist view and reads durable research revisions", () => {
   assert.match(app, /data-view="valuation"><span>04<\/span>Valuation/);
@@ -53,6 +54,8 @@ test("Ian submits the completed report and valuation without PCC calculation", (
   assert.doesNotMatch(completedAction, /buildValuation/);
   assert.match(agentApi, /typeof value !== "number"/);
   assert.match(agentApi, /typeof research\.schema_version !== "number"/);
+  assert.match(agentApi, /completed_research\.brief\.base_case/);
+  assert.match(agentApi, /brief: completedBrief/);
 });
 
 test("completed Ian revisions are additive, idempotent and recover expired leases", () => {
@@ -105,6 +108,27 @@ test("valuation UI exposes the model horizon, balance basis and saved Thai brief
 test("saved valuation revisions render with an existing timestamp formatter", () => {
   assert.match(app, /smartMoneyDate\(revision\.submitted_at, true\)/);
   assert.doesNotMatch(app, /dateLabel\(revision\.submitted_at\)/);
+});
+
+test("completed Ian research uses a structured Thai brief and keeps the full report collapsible", () => {
+  assert.match(app, /completedResearchBriefMarkup/);
+  assert.match(app, /05 \/ HERMES RESEARCH BRIEF/);
+  assert.match(app, /valuation-research__base/);
+  assert.match(app, /สิ่งที่ต้องเกิด/);
+  assert.match(app, /ความเสี่ยงหลัก/);
+  assert.match(app, /<details class="valuation-completed-report"/);
+  assert.match(app, /เปิดรายงานฉบับเต็ม/);
+  assert.match(app, /research\.brief/);
+});
+
+test("the no-agent watchdog detaches one bounded Ian worker before Hermes' 120 second cron limit", () => {
+  assert.match(worker, /ACTIVE_LOCK/);
+  assert.match(worker, /worker_is_active/);
+  assert.match(worker, /subprocess\.Popen/);
+  assert.match(worker, /DETACHED_PROCESS/);
+  assert.match(worker, /--run-claimed-job/);
+  assert.match(worker, /timeout=720/);
+  assert.match(worker, /fail_unfinished_job/);
 });
 
 test("research queues even when the best-effort Webull quote refresh fails", () => {

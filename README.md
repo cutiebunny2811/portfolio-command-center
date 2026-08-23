@@ -45,6 +45,12 @@ separately, and the dashboard requests only 25 stories at a time. Full setup is
 documented in
 [`supabase/RESEARCH_NEWS_SETUP.md`](supabase/RESEARCH_NEWS_SETUP.md).
 
+Migration [`supabase/051_news_discovery.sql`](supabase/051_news_discovery.sql)
+adds a free GDELT radar that searches four market-wide lanes every 30 minutes,
+clusters duplicate coverage, and keeps a seven-day evidence preview. It runs in
+shadow mode: raw GDELT leads are excluded from the published brief until their
+source coverage and editorial usefulness have been reviewed.
+
 ## Webull stock prices
 
 `supabase/functions/refresh-stock-prices` refreshes active stock and ETF prices through the Webull Snapshot API. Options are intentionally excluded. The dashboard calls it when the app opens, when the user requests a refresh, and every 15 minutes while the app remains open. The Edge Function ignores prices that are already less than 15 minutes old unless a manual refresh is requested.

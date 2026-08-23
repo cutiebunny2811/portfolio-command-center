@@ -65,3 +65,32 @@ Hermes calls `refresh_brief_sources` immediately before the 20:00 brief and
 sync secret, so it does not require Steel, a browser session, or a second X
 integration. The midnight call receives a short grace window for the preceding
 23:00 Reuters batch.
+
+## Free discovery radar
+
+Run `051_news_discovery.sql`, then deploy the independent GDELT collector:
+
+```bash
+supabase functions deploy sync-news-discovery --project-ref zzynqlqnzdhkffvqvpzt --no-verify-jwt
+```
+
+`.github/workflows/sync-news-discovery.yml` invokes it every 30 minutes on all
+seven days. The collector searches four bounded lanes: market/rates, the broad
+US tape, earnings/AI, and global risk. GDELT DOC 2.0 has no API key or usage fee,
+but requests must remain sequential; PCC leaves six seconds between lanes.
+
+The radar is a discovery layer, not a fact authority. Similar headlines are
+grouped into event clusters, multiple publisher domains raise a cluster only to
+`corroborated`, and the evidence packet keeps an explicit warning that an
+original publisher or official source must be opened before publication.
+
+Raw `gdelt` articles, clusters and evidence packets are retained for seven
+days. The cleanup RPC never deletes Massive, SEC or X rows. During this first
+shadow phase, `sharedMarketNews()` excludes raw GDELT rows, so enabling the
+collector cannot silently change the canonical Daily Market Brief.
+
+Signed-in members can inspect the latest bounded packet through:
+
+```text
+api_get_news_evidence_preview()
+```

@@ -1,0 +1,30 @@
+name: Sync free news discovery
+
+on:
+  schedule:
+    # Broad market discovery runs every 30 minutes, including weekends.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-news-discovery
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Refresh the GDELT discovery radar
+        env:
+          RESEARCH_SYNC_SECRET: ${{ secrets.RESEARCH_SYNC_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error --retry 1 \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-sync-secret: ${RESEARCH_SYNC_SECRET}" \
+            --data '{}' \
+            https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/sync-news-discovery

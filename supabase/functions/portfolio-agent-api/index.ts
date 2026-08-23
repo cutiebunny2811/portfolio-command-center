@@ -1056,6 +1056,7 @@ async function sharedMarketNews(service: any, lookbackHours: number) {
   const rows = await must(service
     .from("research_articles")
     .select(articleFields)
+    .neq("source", "gdelt")
     .gte("published_at", cutoff)
     .order("published_at", { ascending: false })
     .limit(120));

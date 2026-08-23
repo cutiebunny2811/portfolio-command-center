@@ -75,9 +75,10 @@ supabase functions deploy sync-news-discovery --project-ref zzynqlqnzdhkffvqvpzt
 ```
 
 `.github/workflows/sync-news-discovery.yml` invokes it every 30 minutes on all
-seven days. The collector searches four bounded lanes: market/rates, the broad
-US tape, earnings/AI, and global risk. GDELT DOC 2.0 has no API key or usage fee,
-but requests must remain sequential; PCC leaves six seconds between lanes.
+seven days. The collector rotates one of four bounded lanes per run:
+market/rates, the broad US tape, earnings/AI, and global risk. Each lane refreshes
+every two hours. GDELT DOC 2.0 has no API key or usage fee; PCC avoids burst
+requests and retries one rate-limit response after seven seconds.
 
 The radar is a discovery layer, not a fact authority. Similar headlines are
 grouped into event clusters, multiple publisher domains raise a cluster only to

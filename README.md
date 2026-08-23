@@ -46,7 +46,7 @@ documented in
 [`supabase/RESEARCH_NEWS_SETUP.md`](supabase/RESEARCH_NEWS_SETUP.md).
 
 Migration [`supabase/051_news_discovery.sql`](supabase/051_news_discovery.sql)
-adds a free GDELT radar that searches four market-wide lanes every 30 minutes,
+adds a free GDELT radar that rotates four market-wide lanes every 30 minutes,
 clusters duplicate coverage, and keeps a seven-day evidence preview. It runs in
 shadow mode: raw GDELT leads are excluded from the published brief until their
 source coverage and editorial usefulness have been reviewed.

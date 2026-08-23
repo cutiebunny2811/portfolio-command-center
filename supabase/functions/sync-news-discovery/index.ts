@@ -2,12 +2,13 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   DISCOVERY_BUCKETS,
   GDELT_FETCH_TIMEOUT_MS,
-  GDELT_MIN_REQUEST_GAP_MS,
+  GDELT_RATE_LIMIT_RETRY_MS,
   GDELT_RETENTION_DAYS,
   buildEvidencePacket,
   buildGdeltUrl,
   clusterDiscoveryArticles,
   normalizeGdeltArticle,
+  selectDiscoveryBucket,
   summarizeLinkedCluster,
 } from "./discovery-core.mjs";
 
@@ -57,7 +58,10 @@ export function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function fetchBucket(bucket: Record<string, string>): Promise<Record<string, unknown>[]> {
+async function fetchBucket(
+  bucket: Record<string, string>,
+  retryCount = 0,
+): Promise<Record<string, unknown>[]> {
   const result = await fetch(buildGdeltUrl(bucket, { timespan: "2h", maxRecords: 25 }), {
     headers: {
       Accept: "application/json",
@@ -66,6 +70,10 @@ async function fetchBucket(bucket: Record<string, string>): Promise<Record<strin
     signal: AbortSignal.timeout(GDELT_FETCH_TIMEOUT_MS),
   });
   const rawText = await result.text();
+  if (result.status === 429 && retryCount === 0) {
+    await delay(GDELT_RATE_LIMIT_RETRY_MS);
+    return fetchBucket(bucket, retryCount + 1);
+  }
   if (!result.ok) {
     throw new Error(`GDELT ${bucket.lane} request failed: HTTP ${result.status} ${rawText.slice(0, 240)}`);
   }
@@ -108,35 +116,40 @@ Deno.serve(async (request) => {
     const admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const bucketRuns: Record<string, Record<string, unknown>> = {};
+    const selectedBucket = selectDiscoveryBucket(new Date());
+    const bucketRuns: Record<string, Record<string, unknown>> = Object.fromEntries(
+      DISCOVERY_BUCKETS.map((bucket) => [
+        bucket.lane,
+        bucket.lane === selectedBucket.lane
+          ? { status: "pending" }
+          : { status: "deferred", reason: "rotating half-hour schedule" },
+      ]),
+    );
     const candidateMap = new Map<string, DiscoveryArticle>();
 
-    // GDELT explicitly requests no more than one DOC API call every five
-    // seconds. Keep buckets sequential and leave a full six-second gap.
-    for (let index = 0; index < DISCOVERY_BUCKETS.length; index += 1) {
-      if (index > 0) await delay(GDELT_MIN_REQUEST_GAP_MS);
-      const bucket = DISCOVERY_BUCKETS[index];
-      try {
-        const rows = await fetchBucket(bucket);
-        let accepted = 0;
-        for (const raw of rows) {
-          const normalized = normalizeGdeltArticle(raw, bucket) as DiscoveryArticle | null;
-          if (!normalized) continue;
-          const existing = candidateMap.get(normalized.source_article_id);
-          if (existing) {
-            existing.keywords = [...new Set([
-              ...((existing.keywords as string[]) || []),
-              ...((normalized.keywords as string[]) || []),
-            ])];
-            continue;
-          }
-          candidateMap.set(normalized.source_article_id, normalized);
-          accepted += 1;
+    // Supabase Edge shares outbound infrastructure with other workloads. A
+    // four-request burst can still hit GDELT's global limiter despite local
+    // spacing, so each half-hour run owns one lane and retries one 429 once.
+    try {
+      const rows = await fetchBucket(selectedBucket);
+      let accepted = 0;
+      for (const raw of rows) {
+        const normalized = normalizeGdeltArticle(raw, selectedBucket) as DiscoveryArticle | null;
+        if (!normalized) continue;
+        const existing = candidateMap.get(normalized.source_article_id);
+        if (existing) {
+          existing.keywords = [...new Set([
+            ...((existing.keywords as string[]) || []),
+            ...((normalized.keywords as string[]) || []),
+          ])];
+          continue;
         }
-        bucketRuns[bucket.lane] = { status: "ok", fetched: rows.length, accepted };
-      } catch (error) {
-        bucketRuns[bucket.lane] = { status: "error", error: errorMessage(error) };
+        candidateMap.set(normalized.source_article_id, normalized);
+        accepted += 1;
       }
+      bucketRuns[selectedBucket.lane] = { status: "ok", fetched: rows.length, accepted };
+    } catch (error) {
+      bucketRuns[selectedBucket.lane] = { status: "error", error: errorMessage(error) };
     }
 
     const candidates = [...candidateMap.values()];
@@ -258,13 +271,14 @@ Deno.serve(async (request) => {
 
     const { data: cleanup, error: cleanupError } = await admin.rpc("collector_cleanup_news_discovery");
     if (cleanupError) throw cleanupError;
-    const successfulBuckets = Object.values(bucketRuns).filter((run) => run.status === "ok").length;
-    const statusCode = successfulBuckets === 0 && !(activeClusters || []).length ? 503 : 200;
+    const selectedSucceeded = bucketRuns[selectedBucket.lane].status === "ok";
+    const statusCode = selectedSucceeded ? 200 : 503;
     return response({
-      ok: successfulBuckets > 0,
-      status: successfulBuckets === DISCOVERY_BUCKETS.length ? "ok" : successfulBuckets > 0 ? "partial" : "cached_only",
+      ok: selectedSucceeded,
+      status: selectedSucceeded ? "ok" : "cached_only",
       provider: "gdelt-doc-2",
       api_cost_usd: 0,
+      selected_lane: selectedBucket.lane,
       buckets: bucketRuns,
       candidates: candidates.length,
       touched_clusters: touchedKeys.length,

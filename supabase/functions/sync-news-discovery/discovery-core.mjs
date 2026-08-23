@@ -1,5 +1,5 @@
 export const GDELT_API_URL = "https://api.gdeltproject.org/api/v2/doc/doc";
-export const GDELT_MIN_REQUEST_GAP_MS = 6_000;
+export const GDELT_RATE_LIMIT_RETRY_MS = 7_000;
 export const GDELT_FETCH_TIMEOUT_MS = 15_000;
 export const GDELT_RETENTION_DAYS = 7;
 
@@ -25,6 +25,14 @@ export const DISCOVERY_BUCKETS = Object.freeze([
     query: '(oil OR OPEC OR Hormuz OR Iran OR sanctions OR gold OR tariffs) sourcelang:english',
   },
 ]);
+
+export function selectDiscoveryBucket(now = new Date()) {
+  const date = now instanceof Date ? now : new Date(now);
+  const halfHourSlot = Math.floor(date.getTime() / (30 * 60_000));
+  const index = ((halfHourSlot % DISCOVERY_BUCKETS.length) + DISCOVERY_BUCKETS.length)
+    % DISCOVERY_BUCKETS.length;
+  return DISCOVERY_BUCKETS[index];
+}
 
 const TRACKING_PARAMS = new Set([
   "fbclid",

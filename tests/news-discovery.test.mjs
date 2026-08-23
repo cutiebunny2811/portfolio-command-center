@@ -4,13 +4,14 @@ import { readFile } from "node:fs/promises";
 import {
   DISCOVERY_BUCKETS,
   GDELT_FETCH_TIMEOUT_MS,
-  GDELT_MIN_REQUEST_GAP_MS,
+  GDELT_RATE_LIMIT_RETRY_MS,
   GDELT_RETENTION_DAYS,
   buildEvidencePacket,
   buildGdeltUrl,
   canonicalizeUrl,
   clusterDiscoveryArticles,
   normalizeGdeltArticle,
+  selectDiscoveryBucket,
 } from "../supabase/functions/sync-news-discovery/discovery-core.mjs";
 
 const workflowUrl = new URL("../.github/workflows/sync-news-discovery.yml", import.meta.url);
@@ -24,7 +25,7 @@ test("defines a bounded, market-wide discovery radar", () => {
     DISCOVERY_BUCKETS.map((bucket) => bucket.lane),
     ["market_rates", "market_tape", "earnings_ai", "global_risk"],
   );
-  assert.equal(GDELT_MIN_REQUEST_GAP_MS, 6_000);
+  assert.equal(GDELT_RATE_LIMIT_RETRY_MS, 7_000);
   assert.equal(GDELT_FETCH_TIMEOUT_MS, 15_000);
   assert.equal(GDELT_RETENTION_DAYS, 7);
 
@@ -39,6 +40,19 @@ test("defines a bounded, market-wide discovery radar", () => {
     assert.equal(url.searchParams.get("maxrecords"), "25");
     assert.match(url.searchParams.get("query"), /sourcelang:english/);
   }
+});
+
+test("rotates one discovery lane per half hour instead of bursting the shared GDELT endpoint", () => {
+  const start = new Date("2026-08-24T00:00:00.000Z");
+  const cycle = Array.from({ length: 4 }, (_, index) => (
+    selectDiscoveryBucket(new Date(start.getTime() + index * 30 * 60_000)).lane
+  ));
+
+  assert.equal(new Set(cycle).size, 4);
+  assert.equal(
+    selectDiscoveryBucket(new Date(start.getTime() + 4 * 30 * 60_000)).lane,
+    cycle[0],
+  );
 });
 
 test("normalizes GDELT rows into the canonical research article contract", () => {
@@ -157,8 +171,10 @@ test("schedules free discovery every thirty minutes and keeps GDELT out of the l
   assert.match(workflow, /cron: "\*\/30 \* \* \* \*"/);
   assert.match(workflow, /sync-news-discovery/);
   assert.doesNotMatch(workflow, /GDELT_API_KEY|MASSIVE_API_KEY|X_BEARER_TOKEN/);
-  assert.match(collector, /GDELT_MIN_REQUEST_GAP_MS/);
-  assert.match(collector, /await delay\(GDELT_MIN_REQUEST_GAP_MS\)/);
+  assert.match(collector, /selectDiscoveryBucket\(new Date\(\)\)/);
+  assert.match(collector, /GDELT_RATE_LIMIT_RETRY_MS/);
+  assert.match(collector, /result\.status === 429/);
+  assert.match(collector, /const statusCode = selectedSucceeded \? 200 : 503/);
   assert.match(collector, /collector_cleanup_news_discovery/);
   assert.match(agentApi, /\.neq\("source", "gdelt"\)/);
 

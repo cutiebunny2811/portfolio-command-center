@@ -121,11 +121,13 @@ test("completed Ian research uses a structured Thai brief and keeps the full rep
   assert.match(app, /research\.brief/);
 });
 
-test("the no-agent watchdog detaches one bounded Ian worker before Hermes' 120 second cron limit", () => {
+test("the no-agent watchdog launches one hidden bounded Ian worker before Hermes' 120 second cron limit", () => {
   assert.match(worker, /ACTIVE_LOCK/);
   assert.match(worker, /worker_is_active/);
   assert.match(worker, /subprocess\.Popen/);
-  assert.match(worker, /DETACHED_PROCESS/);
+  assert.match(worker, /OpenProcess/);
+  assert.match(worker, /GetExitCodeProcess/);
+  assert.match(worker, /CREATE_NO_WINDOW/);
   assert.match(worker, /--run-claimed-job/);
   assert.match(worker, /timeout=720/);
   assert.match(worker, /fail_unfinished_job/);

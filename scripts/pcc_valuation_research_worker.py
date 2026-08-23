@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import pathlib
@@ -80,11 +81,42 @@ def fail_unfinished_job(job: dict, message: str) -> None:
 def process_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        # os.kill(pid, 0) is unreliable on Windows and can raise SystemError
+        # with WinError 87 for a process that has just exited.
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
-    except OSError:
+    except (OSError, SystemError):
         return False
     return True
+
+
+def hidden_creation_flags() -> int:
+    if os.name != "nt":
+        return 0
+    return subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+
+
+def background_python() -> str:
+    executable = pathlib.Path(sys.executable)
+    if os.name == "nt":
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.exists():
+            return str(pythonw)
+    return str(executable)
 
 
 def worker_is_active() -> bool:
@@ -139,11 +171,13 @@ def run_claimed_job(job_path: pathlib.Path) -> int:
         result = subprocess.run(
             command,
             cwd=REPO,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=720,
             check=False,
+            creationflags=hidden_creation_flags(),
         )
         if result.returncode != 0:
             fail_unfinished_job(
@@ -184,10 +218,7 @@ def launch_one_job() -> int:
     job_path = STATE_DIR / f"job-{token}.json"
     log_path = LOG_DIR / f"{claimed.get('job_code', token)}.log"
     job_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
-    command = [sys.executable, str(pathlib.Path(__file__).resolve()), "--run-claimed-job", str(job_path)]
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    command = [background_python(), str(pathlib.Path(__file__).resolve()), "--run-claimed-job", str(job_path)]
     try:
         with log_path.open("a", encoding="utf-8") as log:
             process = subprocess.Popen(
@@ -197,7 +228,7 @@ def launch_one_job() -> int:
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 close_fds=True,
-                creationflags=creationflags,
+                creationflags=hidden_creation_flags(),
             )
         ACTIVE_LOCK.write_text(
             json.dumps(

@@ -1,6 +1,6 @@
 export const GDELT_API_URL = "https://api.gdeltproject.org/api/v2/doc/doc";
-export const GDELT_RATE_LIMIT_RETRY_MS = 7_000;
-export const GDELT_FETCH_TIMEOUT_MS = 15_000;
+export const GDELT_RATE_LIMIT_RETRY_MS = 10_000;
+export const GDELT_FETCH_TIMEOUT_MS = 20_000;
 export const GDELT_RETENTION_DAYS = 7;
 
 export const DISCOVERY_BUCKETS = Object.freeze([
@@ -12,12 +12,12 @@ export const DISCOVERY_BUCKETS = Object.freeze([
   {
     lane: "market_tape",
     label: "US market tape",
-    query: '("S&P 500" OR Nasdaq OR "Wall Street" OR "stock market" OR "US stocks") sourcelang:english',
+    query: '("S&P 500" OR Nasdaq OR "Dow Jones" OR "Wall Street" OR "stock futures" OR "US stocks") sourcelang:english',
   },
   {
     lane: "earnings_ai",
     label: "Earnings + AI",
-    query: '(earnings OR Nvidia OR semiconductor OR "artificial intelligence" OR "data center") sourcelang:english',
+    query: '(Nvidia OR "earnings season" OR "S&P 500 earnings" OR semiconductor OR "artificial intelligence" OR "data center" OR "AI spending") sourcelang:english',
   },
   {
     lane: "global_risk",
@@ -60,8 +60,57 @@ const TRUSTED_DOMAINS = new Set([
   "marketwatch.com",
 ]);
 
+const BLOCKED_DISCOVERY_DOMAINS = new Set([
+  "accesswire.com",
+  "americanbankingnews.com",
+  "businesswire.com",
+  "dailypolitical.com",
+  "defenseworld.net",
+  "etfdailynews.com",
+  "globenewswire.com",
+  "pr-inside.com",
+  "prnewswire.com",
+  "themarketsdaily.com",
+  "tickerreport.com",
+]);
+
+const LOW_SIGNAL_HEADLINE = /\b(class action|securities fraud|investors? have opportunity|lead plaintiff|law firm|rating (?:increased|lowered|downgraded|upgraded)|receives? average (?:rating|recommendation)|consensus price target|analysts set|head[- ]to[- ]head|versus its competitors|financial survey)\b/i;
+
+const LANE_HEADLINE_PATTERNS = Object.freeze({
+  market_rates: /\b(federal reserve|fed\b|fomc|treasury yields?|bond yields?|bond market|interest rates?|rate cuts?|rate hikes?|inflation|cpi\b|pce\b|payrolls?|jobs report|unemployment|jackson hole)\b/i,
+  market_tape: /\b(s&p\s*500|nasdaq|dow jones|wall street|u\.?s\.? stocks?|stock futures|equity futures|russell\s*2000)\b/i,
+  earnings_ai: /\b(earnings(?: season)?|nvidia|semiconductors?|chipmakers?|ai infrastructure|ai spending|ai capex|data\s*cent(?:er|re)s?|cloud capex)\b/i,
+  global_risk: /\b(brent|wti\b|crude oil|oil prices?|opec\+?|hormuz|iran|houthis?|red sea|middle east|geopolitic(?:al)?|sanctions?|tariffs?|trade war|bullion|gold (?:prices?|futures|rises?|falls?|gains?|slips?|hits?|near))\b/i,
+});
+
 function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function cleanHeadline(value) {
+  return cleanText(value)
+    .replace(/\s+([,.;:!?%])/g, "$1")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")");
+}
+
+function normalizedDomain(value) {
+  return cleanText(value).toLowerCase().replace(/^www\./, "");
+}
+
+function domainMatches(domain, candidates) {
+  const normalized = normalizedDomain(domain);
+  return [...candidates].some((candidate) => normalized === candidate || normalized.endsWith(`.${candidate}`));
+}
+
+export function isRelevantDiscoveryArticle(article) {
+  const lane = cleanText(article?.lane);
+  const title = cleanHeadline(article?.title);
+  const domain = normalizedDomain(article?.domain || article?.publisher_name);
+  if (!lane || !title || !LANE_HEADLINE_PATTERNS[lane]) return false;
+  if (domainMatches(domain, BLOCKED_DISCOVERY_DOMAINS)) return false;
+  if (LOW_SIGNAL_HEADLINE.test(title)) return false;
+  return LANE_HEADLINE_PATTERNS[lane].test(title);
 }
 
 function stableHash64(value) {
@@ -140,7 +189,7 @@ export function titleSimilarity(left, right) {
 
 export function normalizeGdeltArticle(raw, bucket) {
   const canonicalUrl = canonicalizeUrl(raw?.url);
-  const title = cleanText(raw?.title);
+  const title = cleanHeadline(raw?.title);
   const publishedAt = parseGdeltDate(raw?.seendate);
   if (!canonicalUrl || !title || !publishedAt) return null;
   let domain = cleanText(raw?.domain).toLowerCase();
@@ -172,10 +221,15 @@ export function normalizeGdeltArticle(raw, bucket) {
 }
 
 function clusterScore(cluster) {
-  const trustedCount = cluster.domains.filter((domain) => TRUSTED_DOMAINS.has(domain)).length;
+  const trustedCount = cluster.domains.filter((domain) => domainMatches(domain, TRUSTED_DOMAINS)).length;
+  const corroborationBonus = cluster.verification_status === "corroborated" ? 12 : 0;
   return Math.min(
     100,
-    24 + Math.min(cluster.article_count, 5) * 7 + Math.min(cluster.source_count, 4) * 11 + Math.min(trustedCount, 3) * 5,
+    20
+      + Math.min(cluster.article_count, 3) * 4
+      + Math.min(cluster.source_count, 3) * 6
+      + Math.min(trustedCount, 2) * 18
+      + corroborationBonus,
   );
 }
 
@@ -185,9 +239,10 @@ export function summarizeLinkedCluster(baseCluster, articles) {
     .sort((left, right) => String(left.published_at).localeCompare(String(right.published_at)));
   const latest = ordered.at(-1);
   const domains = unique(ordered.map((article) => cleanText(article.domain || article.publisher_name).toLowerCase()));
+  const headlineKeys = unique(ordered.map((article) => normalizeTitle(article.title)));
   const summary = {
     ...baseCluster,
-    headline: cleanText(latest?.title || baseCluster.headline),
+    headline: cleanHeadline(latest?.title || baseCluster.headline),
     normalized_title: normalizeTitle(baseCluster.normalized_title || baseCluster.headline),
     first_seen_at: ordered[0]?.published_at || baseCluster.first_seen_at,
     last_seen_at: latest?.published_at || baseCluster.last_seen_at,
@@ -195,8 +250,11 @@ export function summarizeLinkedCluster(baseCluster, articles) {
     source_count: domains.length || Number(baseCluster.source_count || 1),
     domains: domains.length ? domains : unique(baseCluster.domains || []),
     tickers: unique(ordered.flatMap((article) => article.tickers || []).map((ticker) => cleanText(ticker).toUpperCase())),
+    headline_keys: headlineKeys.length ? headlineKeys : unique(baseCluster.headline_keys || []),
   };
-  summary.verification_status = summary.source_count >= 2 ? "corroborated" : "candidate";
+  summary.verification_status = summary.source_count >= 2 && summary.headline_keys.length >= 2
+    ? "corroborated"
+    : "candidate";
   summary.importance_score = clusterScore(summary);
   return summary;
 }
@@ -207,7 +265,7 @@ function newCluster(article) {
   return {
     cluster_key: `${article.lane}-${stableHash64(normalizedTitle)}`,
     lane: article.lane,
-    headline: cleanText(article.title),
+    headline: cleanHeadline(article.title),
     normalized_title: normalizedTitle,
     first_seen_at: article.published_at,
     last_seen_at: article.published_at,
@@ -218,13 +276,16 @@ function newCluster(article) {
     importance_score: 0,
     verification_status: "candidate",
     article_keys: [],
+    headline_keys: normalizedTitle ? [normalizedTitle] : [],
   };
 }
 
 function addArticle(cluster, article) {
   const articleKey = cleanText(article.source_article_id || article.canonical_url);
   const domain = cleanText(article.domain || article.publisher_name).toLowerCase();
+  const headlineKey = normalizeTitle(article.title);
   if (articleKey && !cluster.article_keys.includes(articleKey)) cluster.article_keys.push(articleKey);
+  if (headlineKey && !cluster.headline_keys.includes(headlineKey)) cluster.headline_keys.push(headlineKey);
   cluster.article_count = Math.max(Number(cluster.article_count || 0), cluster.article_keys.length);
   cluster.domains = unique([...(cluster.domains || []), domain]);
   cluster.source_count = cluster.domains.length;
@@ -232,9 +293,11 @@ function addArticle(cluster, article) {
   if (!cluster.first_seen_at || article.published_at < cluster.first_seen_at) cluster.first_seen_at = article.published_at;
   if (!cluster.last_seen_at || article.published_at > cluster.last_seen_at) {
     cluster.last_seen_at = article.published_at;
-    cluster.headline = cleanText(article.title);
+    cluster.headline = cleanHeadline(article.title);
   }
-  cluster.verification_status = cluster.source_count >= 2 ? "corroborated" : "candidate";
+  cluster.verification_status = cluster.source_count >= 2 && cluster.headline_keys.length >= 2
+    ? "corroborated"
+    : "candidate";
   cluster.importance_score = clusterScore(cluster);
 }
 
@@ -245,6 +308,7 @@ export function clusterDiscoveryArticles(articles, existingClusters = [], option
     domains: unique(cluster.domains || []),
     tickers: unique(cluster.tickers || []),
     article_keys: unique(cluster.article_keys || []),
+    headline_keys: unique(cluster.headline_keys || [normalizeTitle(cluster.normalized_title || cluster.headline)]),
   }));
   const assignments = [];
   const ordered = [...articles]
@@ -294,7 +358,15 @@ export function buildEvidencePacket(clusters, options = {}) {
 
   for (const bucket of DISCOVERY_BUCKETS) {
     lanes[bucket.lane] = clusters
-      .filter((cluster) => cluster.lane === bucket.lane && String(cluster.last_seen_at || "") >= cutoff)
+      .filter((cluster) => {
+        if (cluster.lane !== bucket.lane || String(cluster.last_seen_at || "") < cutoff) return false;
+        const eligibleDomain = (cluster.domains || []).find((domain) => !domainMatches(domain, BLOCKED_DISCOVERY_DOMAINS));
+        return isRelevantDiscoveryArticle({
+          lane: cluster.lane,
+          title: cluster.headline,
+          publisher_name: eligibleDomain || cluster.domains?.[0],
+        });
+      })
       .sort((left, right) => Number(right.importance_score || 0) - Number(left.importance_score || 0)
         || String(right.last_seen_at || "").localeCompare(String(left.last_seen_at || "")))
       .slice(0, perLane)
@@ -325,7 +397,7 @@ export function buildEvidencePacket(clusters, options = {}) {
     source_ledger: sourceLedger,
     caveats: [
       "GDELT rows are discovery leads, not verified facts. Open an original publisher or official source before publication.",
-      "Corroborated means multiple publisher domains reported a similar event; it does not guarantee independent sourcing.",
+      "Corroborated means multiple publisher domains reported a similar event with distinct headline wording; it does not guarantee independent sourcing.",
     ],
   };
 }

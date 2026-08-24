@@ -7,6 +7,7 @@ import {
   buildEvidencePacket,
   buildGdeltUrl,
   clusterDiscoveryArticles,
+  isRelevantDiscoveryArticle,
   normalizeGdeltArticle,
   selectDiscoveryBucket,
   summarizeLinkedCluster,
@@ -14,7 +15,7 @@ import {
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret, x-discovery-slot",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
@@ -62,13 +63,22 @@ async function fetchBucket(
   bucket: Record<string, string>,
   retryCount = 0,
 ): Promise<Record<string, unknown>[]> {
-  const result = await fetch(buildGdeltUrl(bucket, { timespan: "2h", maxRecords: 25 }), {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "PortfolioCommandCenter/1.0 news-discovery",
-    },
-    signal: AbortSignal.timeout(GDELT_FETCH_TIMEOUT_MS),
-  });
+  let result: Response;
+  try {
+    result = await fetch(buildGdeltUrl(bucket, { timespan: "2h", maxRecords: 25 }), {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "PortfolioCommandCenter/1.0 news-discovery",
+      },
+      signal: AbortSignal.timeout(GDELT_FETCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (retryCount === 0) {
+      await delay(GDELT_RATE_LIMIT_RETRY_MS);
+      return fetchBucket(bucket, retryCount + 1);
+    }
+    throw error;
+  }
   const rawText = await result.text();
   if (result.status === 429 && retryCount === 0) {
     await delay(GDELT_RATE_LIMIT_RETRY_MS);
@@ -116,7 +126,10 @@ Deno.serve(async (request) => {
     const admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const selectedBucket = selectDiscoveryBucket(new Date());
+    const suppliedSlot = Number.parseInt(request.headers.get("x-discovery-slot") || "", 10);
+    const selectedBucket = Number.isInteger(suppliedSlot) && suppliedSlot >= 0
+      ? DISCOVERY_BUCKETS[suppliedSlot % DISCOVERY_BUCKETS.length]
+      : selectDiscoveryBucket(new Date());
     const bucketRuns: Record<string, Record<string, unknown>> = Object.fromEntries(
       DISCOVERY_BUCKETS.map((bucket) => [
         bucket.lane,
@@ -135,7 +148,7 @@ Deno.serve(async (request) => {
       let accepted = 0;
       for (const raw of rows) {
         const normalized = normalizeGdeltArticle(raw, selectedBucket) as DiscoveryArticle | null;
-        if (!normalized) continue;
+        if (!normalized || !isRelevantDiscoveryArticle(normalized)) continue;
         const existing = candidateMap.get(normalized.source_article_id);
         if (existing) {
           existing.keywords = [...new Set([
@@ -272,7 +285,6 @@ Deno.serve(async (request) => {
     const { data: cleanup, error: cleanupError } = await admin.rpc("collector_cleanup_news_discovery");
     if (cleanupError) throw cleanupError;
     const selectedSucceeded = bucketRuns[selectedBucket.lane].status === "ok";
-    const statusCode = selectedSucceeded ? 200 : 503;
     return response({
       ok: selectedSucceeded,
       status: selectedSucceeded ? "ok" : "cached_only",
@@ -289,7 +301,7 @@ Deno.serve(async (request) => {
         generated_at: packet.generated_at,
       },
       cleanup,
-    }, statusCode);
+    });
   } catch (error) {
     console.error(error);
     return response({ error: errorMessage(error) }, 500);

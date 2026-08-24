@@ -10,6 +10,7 @@ import {
   buildGdeltUrl,
   canonicalizeUrl,
   clusterDiscoveryArticles,
+  isRelevantDiscoveryArticle,
   normalizeGdeltArticle,
   selectDiscoveryBucket,
 } from "../supabase/functions/sync-news-discovery/discovery-core.mjs";
@@ -25,8 +26,8 @@ test("defines a bounded, market-wide discovery radar", () => {
     DISCOVERY_BUCKETS.map((bucket) => bucket.lane),
     ["market_rates", "market_tape", "earnings_ai", "global_risk"],
   );
-  assert.equal(GDELT_RATE_LIMIT_RETRY_MS, 7_000);
-  assert.equal(GDELT_FETCH_TIMEOUT_MS, 15_000);
+  assert.equal(GDELT_RATE_LIMIT_RETRY_MS, 10_000);
+  assert.equal(GDELT_FETCH_TIMEOUT_MS, 20_000);
   assert.equal(GDELT_RETENTION_DAYS, 7);
 
   for (const bucket of DISCOVERY_BUCKETS) {
@@ -80,6 +81,46 @@ test("normalizes GDELT rows into the canonical research article contract", () =>
   assert.ok(article.keywords.includes("MARKET_RATES"));
 });
 
+test("rejects broad-query noise before it can enter discovery storage", () => {
+  const relevant = [
+    ["market_rates", "Treasury yields rise as investors await Fed inflation signal"],
+    ["market_tape", "S&P 500 and Nasdaq futures slip before Wall Street open"],
+    ["earnings_ai", "Nvidia earnings put AI spending and semiconductor demand in focus"],
+    ["global_risk", "Brent oil rises as Iran sanctions renew Hormuz supply risk"],
+  ];
+  for (const [lane, title] of relevant) {
+    assert.equal(isRelevantDiscoveryArticle({ lane, title, publisher_name: "reuters.com" }), true);
+  }
+
+  const noise = [
+    ["market_rates", "Senator reveals new tax rules hurt divorcees"],
+    ["market_tape", "WIX investors invited to join securities fraud lawsuit"],
+    ["earnings_ai", "Fast evolving online scams fleece millions from Australians"],
+    ["global_risk", "Two officers among seven killed in wrong way A66 crash"],
+  ];
+  for (const [lane, title] of noise) {
+    assert.equal(isRelevantDiscoveryArticle({ lane, title, publisher_name: "example.com" }), false);
+  }
+});
+
+test("rejects press-release, lawsuit, ratings-farm and low-signal headline patterns", () => {
+  assert.equal(isRelevantDiscoveryArticle({
+    lane: "earnings_ai",
+    title: "Nvidia investors have opportunity to lead securities fraud class action",
+    publisher_name: "prnewswire.com",
+  }), false);
+  assert.equal(isRelevantDiscoveryArticle({
+    lane: "market_tape",
+    title: "Analysts set S&P Global price target at $620",
+    publisher_name: "tickerreport.com",
+  }), false);
+  assert.equal(isRelevantDiscoveryArticle({
+    lane: "global_risk",
+    title: "Iran sanctions raise risk for oil supply through Hormuz",
+    publisher_name: "apnews.com",
+  }), true);
+});
+
 test("clusters reordered coverage of the same event but keeps unrelated stories apart", () => {
   const articles = [
     {
@@ -122,7 +163,30 @@ test("clusters reordered coverage of the same event but keeps unrelated stories 
   assert.deepEqual(earnings.tickers, ["NVDA"]);
 });
 
+test("does not call identical syndicated headlines independent corroboration", () => {
+  const articles = ["one.example", "two.example", "three.example"].map((domain, index) => ({
+    source_article_id: `syndicated-${index}`,
+    canonical_url: `https://${domain}/story`,
+    title: "US imposes tariffs on Canadian goods after talks collapse",
+    publisher_name: domain,
+    published_at: `2026-08-23T1${index}:00:00.000Z`,
+    lane: "global_risk",
+    tickers: [],
+  }));
+
+  const result = clusterDiscoveryArticles(articles);
+  assert.equal(result.clusters.length, 1);
+  assert.equal(result.clusters[0].source_count, 3);
+  assert.equal(result.clusters[0].verification_status, "candidate");
+});
+
 test("builds a compact source-diverse evidence preview without pretending candidates are verified", () => {
+  const headlineByLane = {
+    market_rates: "Treasury yields and Fed policy remain in focus",
+    market_tape: "S&P 500 and Nasdaq futures point higher",
+    earnings_ai: "Nvidia earnings test AI spending expectations",
+    global_risk: "Brent oil rises as Iran sanctions tighten",
+  };
   const clusters = [
     ["rates-a", "market_rates", 91, ["reuters.com", "cnbc.com"]],
     ["rates-b", "market_rates", 78, ["wsj.com"]],
@@ -133,7 +197,7 @@ test("builds a compact source-diverse evidence preview without pretending candid
   ].map(([cluster_key, lane, importance_score, domains], index) => ({
     cluster_key,
     lane,
-    headline: `${lane} headline ${index}`,
+    headline: `${headlineByLane[lane]} ${index}`,
     last_seen_at: `2026-08-23T${String(18 - index).padStart(2, "0")}:00:00.000Z`,
     first_seen_at: `2026-08-23T${String(17 - index).padStart(2, "0")}:00:00.000Z`,
     article_count: domains.length,
@@ -170,11 +234,14 @@ test("schedules free discovery every thirty minutes and keeps GDELT out of the l
 
   assert.match(workflow, /cron: "\*\/30 \* \* \* \*"/);
   assert.match(workflow, /sync-news-discovery/);
+  assert.match(workflow, /GITHUB_RUN_NUMBER/);
+  assert.match(workflow, /x-discovery-slot/);
   assert.doesNotMatch(workflow, /GDELT_API_KEY|MASSIVE_API_KEY|X_BEARER_TOKEN/);
-  assert.match(collector, /selectDiscoveryBucket\(new Date\(\)\)/);
+  assert.match(collector, /isRelevantDiscoveryArticle/);
   assert.match(collector, /GDELT_RATE_LIMIT_RETRY_MS/);
   assert.match(collector, /result\.status === 429/);
-  assert.match(collector, /const statusCode = selectedSucceeded \? 200 : 503/);
+  assert.doesNotMatch(workflow, /--retry\s+1/);
+  assert.match(collector, /status: selectedSucceeded \? "ok" : "cached_only"/);
   assert.match(collector, /collector_cleanup_news_discovery/);
   assert.match(agentApi, /\.neq\("source", "gdelt"\)/);
 

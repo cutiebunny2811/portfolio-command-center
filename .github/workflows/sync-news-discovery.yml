@@ -22,9 +22,15 @@ jobs:
         env:
           RESEARCH_SYNC_SECRET: ${{ secrets.RESEARCH_SYNC_SECRET }}
         run: |
-          curl --fail-with-body --silent --show-error --retry 1 \
+          slot=$((GITHUB_RUN_NUMBER % 4))
+          response=$(curl --fail-with-body --silent --show-error --max-time 90 \
             --request POST \
             --header "content-type: application/json" \
             --header "x-sync-secret: ${RESEARCH_SYNC_SECRET}" \
+            --header "x-discovery-slot: ${slot}" \
             --data '{}' \
-            https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/sync-news-discovery
+            https://zzynqlqnzdhkffvqvpzt.supabase.co/functions/v1/sync-news-discovery)
+          echo "${response}"
+          if [ "$(echo "${response}" | jq -r '.ok')" != "true" ]; then
+            echo "::warning::GDELT provider was unavailable; the latest clean evidence packet remains active."
+          fi

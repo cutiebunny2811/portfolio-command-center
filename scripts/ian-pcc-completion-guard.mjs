@@ -27,15 +27,20 @@ export function assertCompletionEvidence(evidence, canonicalRepo) {
     throw new Error("completion evidence status must be VERIFIED");
   }
   const expectedRepo = normalizeWindowsPath(canonicalRepo);
-  if (normalizeWindowsPath(evidence.repo) !== expectedRepo) {
+  if (normalizeWindowsPath(evidence.canonical_repo ?? evidence.repo) !== expectedRepo) {
     throw new Error("completion evidence repo does not match the canonical repo");
   }
   for (const key of ["test", "deploy", "readback"]) {
-    if (typeof evidence[key] !== "string" || !evidence[key].trim()) {
+    const durableKey = `${key}_evidence`;
+    const scalarProof = evidence[key];
+    const durableProof = evidence[durableKey];
+    const hasProof = typeof scalarProof === "string" && scalarProof.trim()
+      || Array.isArray(durableProof) && durableProof.some((item) => typeof item === "string" && item.trim());
+    if (!hasProof) {
       throw new Error(`completion evidence requires ${key === "readback" ? "read-back" : key} proof`);
     }
   }
-  return { status: "VERIFIED", repo: expectedRepo };
+  return { status: "VERIFIED", canonical_repo: expectedRepo };
 }
 
 async function main() {

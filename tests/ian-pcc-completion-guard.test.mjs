@@ -46,7 +46,7 @@ test("completion evidence rejects an implementation claim without canonical repo
   assert.throws(
     () => assertCompletionEvidence({
       status: "VERIFIED",
-      repo: "C:\\Work\\portfolio-command-center",
+      canonical_repo: "C:\\Work\\portfolio-command-center",
       test: "pass",
       deploy: "pass",
     }, "C:\\Work\\portfolio-command-center"),
@@ -58,11 +58,24 @@ test("completion evidence accepts only a fully verified canonical deployment", (
   assert.deepEqual(
     assertCompletionEvidence({
       status: "VERIFIED",
-      repo: "C:\\Work\\portfolio-command-center",
+      canonical_repo: "C:\\Work\\portfolio-command-center",
       test: "node --test tests/valuation-framework.test.mjs: pass",
       deploy: "supabase functions deploy portfolio-agent-api: success",
       readback: "production API/UI read-back: pass",
     }, "C:\\Work\\portfolio-command-center"),
-    { status: "VERIFIED", repo: "C:\\Work\\portfolio-command-center" },
+    { status: "VERIFIED", canonical_repo: "C:\\Work\\portfolio-command-center" },
+  );
+});
+
+test("completion evidence accepts the durable work-item evidence arrays", () => {
+  assert.deepEqual(
+    assertCompletionEvidence({
+      status: "VERIFIED",
+      canonical_repo: "C:\\Work\\portfolio-command-center",
+      test_evidence: ["targeted tests: pass"],
+      deploy_evidence: ["edge function: deployed"],
+      readback_evidence: ["production read-back: pass"],
+    }, "C:\\Work\\portfolio-command-center"),
+    { status: "VERIFIED", canonical_repo: "C:\\Work\\portfolio-command-center" },
   );
 });

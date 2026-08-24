@@ -121,6 +121,16 @@ test("completed Ian research uses a structured Thai brief and keeps the full rep
   assert.match(app, /research\.brief/);
 });
 
+test("completed valuation keeps the decision surface concise and folds the audit method", () => {
+  assert.match(app, /function valuationMethodLabel\(/);
+  assert.match(app, /Core \+ Optionality/);
+  assert.match(app, /<details class="valuation-method-report"/);
+  assert.match(app, /เปิดวิธีคำนวณฉบับเต็ม/);
+  assert.match(app, /valuation-method-report__body/);
+  assert.match(css, /\.valuation-method-report summary/);
+  assert.match(css, /\.valuation-method-report__body \.valuation-method-grid p/);
+});
+
 test("the no-agent watchdog launches one hidden bounded Ian worker before Hermes' 120 second cron limit", () => {
   assert.match(worker, /ACTIVE_LOCK/);
   assert.match(worker, /worker_is_active/);

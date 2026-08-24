@@ -3839,6 +3839,17 @@
     </section>`;
   }
 
+  function valuationMethodLabel(method, hasFramework = false) {
+    if (hasFramework) return "Core + Optionality";
+    const value = String(method || "").trim();
+    if (!value) return "Ian valuation";
+    const normalized = value.toLowerCase().replace(/[_-]+/g, " ");
+    if (normalized.includes("excess return")) return "Excess Return";
+    if (normalized.includes("transition") && (normalized.includes("dcf") || normalized.includes("fcff"))) return "Transition DCF";
+    if (normalized.includes("dcf") || normalized.includes("fcff")) return "Forward DCF";
+    return value.length > 38 ? `${value.slice(0, 37).trim()}…` : value;
+  }
+
   function renderIanCompletedValuationRevision(rows, selected, payload) {
     const revision = payload?.revision || null;
     const job = payload?.job || null;
@@ -3852,16 +3863,17 @@
       ["base", "Base", valuation.base_value],
       ["bull", "Bull", valuation.bull_value],
     ].filter(([, , value]) => Number.isFinite(Number(value)));
+    const frameworkMarkup = valuationFrameworkMarkup(valuation.valuation_framework);
+    const methodLabel = valuationMethodLabel(valuation.method, Boolean(frameworkMarkup));
     const caseMarkup = cases.map(([key, label, value]) => {
       const fairValue = Number(value);
       const spread = marketPrice > 0 ? (fairValue / marketPrice - 1) * 100 : null;
-      return `<div class="valuation-case valuation-case--${key}"><span>${label}</span><strong>${money(fairValue)}</strong><small class="${spread == null || spread >= 0 ? "positive" : "negative"}">${spread == null ? "NO MARKET COMPARISON" : `${spread >= 0 ? "+" : ""}${spread.toFixed(1)}% vs archived market`}</small><em>${esc(valuation.method || "Ian valuation")}</em></div>`;
+      return `<div class="valuation-case valuation-case--${key}"><span>${label}</span><strong>${money(fairValue)}</strong><small class="${spread == null || spread >= 0 ? "positive" : "negative"}">${spread == null ? "NO MARKET COMPARISON" : `${spread >= 0 ? "+" : ""}${spread.toFixed(1)}% vs archived market`}</small><em>${esc(methodLabel)}</em></div>`;
     }).join("");
     const assumptions = Array.isArray(valuation.key_assumptions) ? valuation.key_assumptions : [];
     const risks = Array.isArray(valuation.risks) ? valuation.risks : [];
     const watchItems = Array.isArray(research.watch_items) ? research.watch_items : [];
     const sources = Array.isArray(research.sources) ? research.sources : [];
-    const frameworkMarkup = valuationFrameworkMarkup(valuation.valuation_framework);
     const completedResearchBriefMarkup = (() => {
       const brief = research.brief && typeof research.brief === "object" ? research.brief : {};
       const conditions = Array.isArray(brief.conditions) && brief.conditions.length ? brief.conditions : assumptions.slice(0, 6);
@@ -3890,7 +3902,7 @@
         ${selected ? `<header class="valuation-head"><div>${assetIdentity(selected.instrument)}<span class="section-index">02 / IAN-COMPLETED VALUE</span></div><div><small>MARKET</small><strong>${marketPrice > 0 ? money(marketPrice) : "—"}</strong><span>${esc(status)}</span>${valuationResearchAction(job)}</div></header>` : ""}
         ${valuationResearchJobMarkup(job, revision)}
         <div class="valuation-verdict">
-          <div><span>METHOD</span><strong>${esc(valuation.method || "—")}</strong></div>
+          <div><span>METHOD</span><strong>${esc(methodLabel)}</strong></div>
           <div><span>AUTHOR</span><strong>IAN</strong></div>
           <div><span>COMPANY STAGE</span><strong>${esc(valuation.company_stage || "LEGACY")}</strong></div>
           <div><span>VALUATION AS OF</span><strong>${esc(valuation.as_of || research.as_of || "—")}</strong></div>
@@ -3900,14 +3912,16 @@
           <div class="valuation-cases valuation-cases--completed valuation-cases--count-${cases.length}">${caseMarkup}</div>
         </section>
         ${frameworkMarkup}
-        <section class="valuation-evidence valuation-evidence--completed">
-          <header><span class="section-index">${frameworkMarkup ? "05" : "04"} / METHOD + CALCULATION</span><h2>The work behind the number.</h2></header>
-          <div class="valuation-method-grid"><section><small>METHODOLOGY</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>CALCULATION SUMMARY</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
-          <div class="valuation-research__points">
-            <section><small>KEY ASSUMPTIONS</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
-            <section><small>RISKS</small>${risks.length ? `<ul>${risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+        <details class="valuation-method-report">
+          <summary><span class="section-index">${frameworkMarkup ? "05" : "04"} / METHOD + CALCULATION</span><strong>เปิดวิธีคำนวณฉบับเต็ม</strong><em>${esc(methodLabel)} · methodology, assumptions และ risks</em></summary>
+          <div class="valuation-method-report__body">
+            <div class="valuation-method-grid"><section><small>METHODOLOGY</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>CALCULATION SUMMARY</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
+            <div class="valuation-research__points">
+              <section><small>KEY ASSUMPTIONS</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+              <section><small>RISKS</small>${risks.length ? `<ul>${risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+            </div>
           </div>
-        </section>
+        </details>
         <section class="valuation-research valuation-research--completed">
           <div><span class="section-index">${frameworkMarkup ? "06" : "05"} / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian เรียบเรียงหลักฐาน สมมติฐาน และจุดติดตามเป็นภาษาไทย ส่วนรายงานฉบับเต็มยังเปิดอ่านได้ด้านล่าง</p></div>
           ${completedResearchBriefMarkup}

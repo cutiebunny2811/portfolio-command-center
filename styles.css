@@ -1810,6 +1810,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .valuation-method-grid section:last-child { border-right: 0; }
 .valuation-method-grid small { color: var(--paper-faint); font: 700 8px/1.2 var(--mono); letter-spacing: .07em; }
 .valuation-method-grid p { max-width: 68ch; margin: 12px 0 0; color: var(--paper-dim); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.valuation-method-report { border-bottom: 1px solid var(--rule-strong); }
+.valuation-method-report summary { display: grid; grid-template-columns: 150px minmax(220px, .65fr) minmax(0, 1fr) auto; align-items: center; gap: 24px; min-height: 76px; padding: 18px 26px; cursor: pointer; list-style: none; }
+.valuation-method-report summary::-webkit-details-marker { display: none; }
+.valuation-method-report summary::after { content: "+"; justify-self: end; color: var(--gold); font: 600 22px/1 var(--mono); }
+.valuation-method-report[open] summary::after { content: "−"; }
+.valuation-method-report summary strong { font-size: 18px; }
+.valuation-method-report summary em { color: var(--paper-faint); font: normal 10px/1.4 var(--mono); }
+.valuation-method-report__body { border-top: 1px solid var(--rule); }
+.valuation-method-report__body .valuation-method-grid { grid-column: auto; }
+.valuation-method-report__body .valuation-method-grid p { font-size: 13px; line-height: 1.78; }
+.valuation-method-report__body .valuation-research__points ul { font-size: 12px; line-height: 1.72; }
 .valuation-framework { border-bottom: 1px solid var(--rule-strong); }
 .valuation-framework > header { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(0, 1.2fr); align-items: end; gap: 24px; border-bottom: 1px solid var(--rule); padding: 30px 26px; }
 .valuation-framework > header h2 { margin: 10px 0 0; font-size: clamp(28px, 3.4vw, 48px); line-height: .95; letter-spacing: 0; }
@@ -2274,6 +2285,12 @@ tbody tr:last-child td { border-bottom: 0; }
   .valuation-research__error { padding: 13px 0 13px 12px; }
   .valuation-method-grid { grid-column: 1; grid-template-columns: 1fr; }
   .valuation-method-grid section { border-right: 0; padding: 18px 0; }
+  .valuation-method-report summary { grid-template-columns: 1fr auto; gap: 8px; padding: 20px 0; }
+  .valuation-method-report summary .section-index,
+  .valuation-method-report summary strong,
+  .valuation-method-report summary em { grid-column: 1; }
+  .valuation-method-report summary::after { grid-column: 2; grid-row: 1 / span 3; }
+  .valuation-method-report__body .valuation-research__points section { padding: 18px 0; }
   .valuation-framework > header { grid-template-columns: 1fr; padding: 26px 0; }
   .valuation-framework__grid { grid-template-columns: 1fr; }
   .valuation-framework__grid > article { border-right: 0; padding: 22px 0; }

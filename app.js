@@ -765,7 +765,40 @@
     return {
       cached: true,
       job: { id: "preview-job", job_code: `${item?.instrument?.symbol || "NVDA"}-2026-Q2`, status: "completed", completed_at: submittedAt },
-      revision: { id: "preview-revision", revision_no: 2, report_period: "2026-Q2", status: "draft", submitted_at: submittedAt },
+      revision: {
+        id: "preview-revision", revision_no: 2, report_period: "2026-Q2", status: "draft", submitted_at: submittedAt, research_format: "ian_completed_v1",
+        completed_research: {
+          as_of: "2026-08-24",
+          headline: "ธุรกิจหลักแข็งแรง แต่โอกาสใหม่ต้องพิสูจน์เป็นเงินสดต่อหุ้น",
+          summary: "กรณีฐานแยกธุรกิจที่สร้างรายได้แล้วออกจากโอกาสใหม่ เพื่อไม่ให้เรื่องเล่าหรือยอดขายรวมกลบความเสี่ยงของการลงทุนและ dilution.",
+          methodology: "เริ่มจากธุรกิจหลักที่รายงานแล้ว ประเมินกระแสเงินสดในช่วงเปลี่ยนผ่าน แล้วเพิ่มมูลค่าโอกาสเฉพาะส่วนที่ถ่วงด้วยความน่าจะเป็นและหักผลกระทบต่อผู้ถือหุ้นต่อหุ้น.",
+          brief: {
+            headline: "มูลค่าที่เห็นต้องมาจากเงินสดต่อหุ้น ไม่ใช่ยอดขายรวมอย่างเดียว",
+            summary: "ธุรกิจหลักยังมีฐานรองรับ แต่กรณีฐานจะเกิดขึ้นได้ต่อเมื่อรายได้เปลี่ยนเป็นกระแสเงินสดและจำนวนหุ้นไม่เพิ่มเร็วกว่ากำไร.",
+            base_case: "กรณีฐานให้ธุรกิจหลักฟื้นตามแผน ขณะที่โอกาสใหม่ได้รับเครดิตเพียงบางส่วนจนกว่าจะผ่าน milestone สำคัญ.",
+            conditions: ["รายได้และ margin ของธุรกิจหลักต้องเดินตามแผน", "การลงทุนต้องเปลี่ยนเป็น FCF ต่อหุ้นที่ดีขึ้น"],
+            risks: ["CapEx หรือเงินทุนใหม่กดมูลค่าต่อหุ้น", "โอกาสใหม่ล่าช้ากว่าแผนหรือเปลี่ยนเป็นรายได้ไม่ได้"],
+            watch_metric: "งบถัดไปให้ดู revenue, FCF margin และ diluted share count พร้อมกัน"
+          },
+          report: "รายงานตัวอย่างสำหรับตรวจ layout ใน local preview เท่านั้น",
+          watch_items: ["ติดตามรายได้ กระแสเงินสด และจำนวนหุ้นทุกไตรมาส"],
+          sources: [{ title: "Quarterly report", form: "10-Q", date: "2026-08-01", url: "https://www.sec.gov/" }]
+        },
+        completed_valuation: {
+          as_of: "2026-08-24", market_price: marketPrice, method: "CORE + OPTIONALITY", company_stage: "CASH-GENERATIVE TRANSITION",
+          bear_value: marketPrice * 0.72, base_value: marketPrice * 1.06, bull_value: marketPrice * 1.44,
+          calculation_summary: "รวมมูลค่าธุรกิจหลัก โอกาสแบบถ่วงความน่าจะเป็น และผลกระทบจากเงินทุนต่อหุ้น.",
+          key_assumptions: ["ธุรกิจหลักรักษาการเติบโตและ margin", "โอกาสใหม่ผ่าน milestone ก่อนให้เครดิตเต็ม", "จำนวนหุ้นสะท้อน dilution ที่ทราบแล้ว"],
+          risks: ["กระแสเงินสดฟื้นช้ากว่าคาด", "หุ้นเพิ่มจากเงินทุนหรือค่าตอบแทน", "การส่งมอบโอกาสใหม่ล่าช้า"],
+          valuation_framework: {
+            type: "core_optionality",
+            core_business: { label: "ธุรกิจหลักที่รายงานแล้ว", summary: "ประเมินจากฐานรายได้และกระแสเงินสดที่พิสูจน์ได้ โดยยังไม่ให้เครดิตเต็มกับโครงการที่ต้องใช้เวลา.", method: "Transition FCF ของธุรกิจหลัก", bear_value: marketPrice * 0.66, base_value: marketPrice * 0.91, bull_value: marketPrice * 1.12 },
+            optionality: [{ status: "กำลังพิสูจน์", name: "โอกาสจากโครงการใหม่", summary: "ให้มูลค่าเฉพาะส่วนที่คาดว่าจะผ่าน milestone ด้านสินค้า รายได้ และการสร้างเงินสด.", success_value_per_share: marketPrice * 0.52, probability_bear: 0.1, probability_base: 0.3, probability_bull: 0.6, bear_value: marketPrice * 0.05, base_value: marketPrice * 0.16, bull_value: marketPrice * 0.31 }],
+            funding_dilution: { summary: "สะพานนี้หักผลกระทบจากหุ้นเพิ่มและเงินทุนที่ต้องใช้ เพื่อดูมูลค่าที่เป็นของผู้ถือหุ้นต่อหุ้นจริง.", basic_shares: 2_300_000_000, core_diluted_shares: 2_480_000_000, maximum_diluted_shares: 2_650_000_000, funding_required: 0, bear_adjustment: marketPrice * -0.02, base_adjustment: marketPrice * -0.01, bull_adjustment: 0 },
+            milestones: [{ status: "ยังไม่เสร็จ", name: "เปลี่ยนรายได้เป็น FCF ต่อหุ้น", required_for: "ยืนยันกรณีฐาน", impact: "ลดความเสี่ยงที่ยอดขายเติบโตแต่ผู้ถือหุ้นไม่ได้ประโยชน์ต่อหุ้น.", evidence: "ติดตาม FCF margin และ diluted share count ในงบถัดไป" }]
+          }
+        }
+      },
       valuation: {
         model_version: "forward-intrinsic-v5", model: "NORMALIZED FORWARD DCF", stage: "CASH-GENERATIVE", confidence: "HIGH",
         why: "Ian built the forward assumptions from the latest filings. PCC validated the packet and calculated each case.",
@@ -3829,20 +3862,20 @@
     const milestones = Array.isArray(framework.milestones) ? framework.milestones : [];
     const range = (row) => `<span>${money(row?.bear_value)}</span><strong>${money(row?.base_value)}</strong><span>${money(row?.bull_value)}</span>`;
     return `<section class="valuation-framework">
-      <header><div><span class="section-index">04 / VALUE ARCHITECTURE</span><h2>Core first. Options earned.</h2></div><p>มูลค่ารวมต่อหุ้นต้องย้อนกลับได้จากธุรกิจหลัก โอกาสที่ถ่วงด้วยความน่าจะเป็น และผลกระทบจากเงินทุนหรือ dilution</p></header>
+      <header><div><span class="section-index">04 / โครงสร้างมูลค่า</span><h2>ธุรกิจหลักก่อน. โอกาสต้องพิสูจน์.</h2></div><p>มูลค่ารวมต่อหุ้นต้องย้อนกลับได้จากธุรกิจหลัก โอกาสที่ถ่วงด้วยความน่าจะเป็น และผลกระทบจากเงินทุนหรือ dilution</p></header>
       <div class="valuation-framework__grid">
-        <article class="valuation-framework__core"><span>CORE BUSINESS</span><h3>${esc(core.label || "Reported operating business")}</h3><p>${esc(core.summary || "")}</p><small>${esc(core.method || "")}</small><div class="valuation-framework__range">${range(core)}</div></article>
-        <article class="valuation-framework__options"><span>PROBABILITY-WEIGHTED OPTIONALITY</span><div>${optionality.map((item, index) => `<section><header><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3></header><p>${esc(item.summary)}</p><dl><div><dt>SUCCESS VALUE</dt><dd>${money(item.success_value_per_share)}</dd></div><div><dt>PROBABILITY B / B / B</dt><dd>${percent(num(item.probability_bear) * 100, 0)} / ${percent(num(item.probability_base) * 100, 0)} / ${percent(num(item.probability_bull) * 100, 0)}</dd></div></dl><div class="valuation-framework__range">${range(item)}</div></section>`).join("")}</div></article>
-        <article class="valuation-framework__funding"><span>FUNDING / DILUTION</span><h3>Per-share bridge.</h3><p>${esc(funding.summary || "")}</p><dl><div><dt>BASIC SHARES</dt><dd>${compactNumber(funding.basic_shares)}</dd></div><div><dt>CORE DILUTED</dt><dd>${compactNumber(funding.core_diluted_shares)}</dd></div><div><dt>MAX DILUTED</dt><dd>${compactNumber(funding.maximum_diluted_shares)}</dd></div><div><dt>FUNDING NEED</dt><dd>${compactMoney(funding.funding_required)}</dd></div></dl><div class="valuation-framework__range valuation-framework__range--adjustment"><span>${money(funding.bear_adjustment)}</span><strong>${money(funding.base_adjustment)}</strong><span>${money(funding.bull_adjustment)}</span></div></article>
-        <article class="valuation-framework__milestones"><span>MILESTONE LEDGER</span><div>${milestones.map((item, index) => `<section><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3><strong>${esc(item.required_for)}</strong><p>${esc(item.impact)}</p><em>${esc(item.evidence)}</em></section>`).join("")}</div></article>
+        <article class="valuation-framework__core"><span>ธุรกิจหลัก</span><h3>${esc(core.label || "ธุรกิจที่รายงานแล้ว")}</h3><p>${esc(core.summary || "")}</p><small>${esc(core.method || "")}</small><div class="valuation-framework__range">${range(core)}</div></article>
+        <article class="valuation-framework__options"><span>มูลค่าโอกาสแบบถ่วงน้ำหนัก</span><div>${optionality.map((item, index) => `<section><header><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3></header><p>${esc(item.summary)}</p><dl><div><dt>มูลค่าเมื่อสำเร็จ</dt><dd>${money(item.success_value_per_share)}</dd></div><div><dt>โอกาสสำเร็จ B / B / B</dt><dd>${percent(num(item.probability_bear) * 100, 0)} / ${percent(num(item.probability_base) * 100, 0)} / ${percent(num(item.probability_bull) * 100, 0)}</dd></div></dl><div class="valuation-framework__range">${range(item)}</div></section>`).join("")}</div></article>
+        <article class="valuation-framework__funding"><span>เงินทุน / Dilution</span><h3>สะพานมูลค่าต่อหุ้น</h3><p>${esc(funding.summary || "")}</p><dl><div><dt>หุ้นปัจจุบัน</dt><dd>${compactNumber(funding.basic_shares)}</dd></div><div><dt>หุ้นหลัง Dilution หลัก</dt><dd>${compactNumber(funding.core_diluted_shares)}</dd></div><div><dt>หุ้นเต็ม Dilution</dt><dd>${compactNumber(funding.maximum_diluted_shares)}</dd></div><div><dt>เงินทุนที่ต้องใช้</dt><dd>${compactMoney(funding.funding_required)}</dd></div></dl><div class="valuation-framework__range valuation-framework__range--adjustment"><span>${money(funding.bear_adjustment)}</span><strong>${money(funding.base_adjustment)}</strong><span>${money(funding.bull_adjustment)}</span></div></article>
+        <article class="valuation-framework__milestones"><span>จุดพิสูจน์ที่ต้องผ่าน</span><div>${milestones.map((item, index) => `<section><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3><strong>${esc(item.required_for)}</strong><p>${esc(item.impact)}</p><em>${esc(item.evidence)}</em></section>`).join("")}</div></article>
       </div>
     </section>`;
   }
 
   function valuationMethodLabel(method, hasFramework = false) {
-    if (hasFramework) return "Core + Optionality";
+    if (hasFramework) return "ธุรกิจหลัก + โอกาส";
     const value = String(method || "").trim();
-    if (!value) return "Ian valuation";
+    if (!value) return "มูลค่าโดย Ian";
     const normalized = value.toLowerCase().replace(/[_-]+/g, " ");
     if (normalized.includes("excess return")) return "Excess Return";
     if (normalized.includes("transition") && (normalized.includes("dcf") || normalized.includes("fcff"))) return "Transition DCF";
@@ -3913,12 +3946,12 @@
         </section>
         ${frameworkMarkup}
         <details class="valuation-method-report">
-          <summary><span class="section-index">${frameworkMarkup ? "05" : "04"} / METHOD + CALCULATION</span><strong>เปิดวิธีคำนวณฉบับเต็ม</strong><em>${esc(methodLabel)} · methodology, assumptions และ risks</em></summary>
+          <summary><span class="section-index">${frameworkMarkup ? "05" : "04"} / วิธีคำนวณ</span><strong>เปิดวิธีคำนวณฉบับเต็ม</strong><em>${esc(methodLabel)} · วิธีคำนวณ สมมติฐาน และความเสี่ยง</em></summary>
           <div class="valuation-method-report__body">
-            <div class="valuation-method-grid"><section><small>METHODOLOGY</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>CALCULATION SUMMARY</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
+            <div class="valuation-method-grid"><section><small>วิธีคำนวณ</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>สรุปการคำนวณ</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
             <div class="valuation-research__points">
-              <section><small>KEY ASSUMPTIONS</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
-              <section><small>RISKS</small>${risks.length ? `<ul>${risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+              <section><small>สมมติฐานหลัก</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
+              <section><small>ความเสี่ยง</small>${risks.length ? `<ul>${risks.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
             </div>
           </div>
         </details>
@@ -3927,8 +3960,8 @@
           ${completedResearchBriefMarkup}
         </section>
         <details class="valuation-completed-report">
-          <summary><span class="section-index">RESEARCH ARCHIVE</span><strong>เปิดรายงานฉบับเต็ม</strong><em>หลักฐานและ reconciliation ฉบับละเอียด</em></summary>
-          <div class="valuation-completed-report__body"><p>${esc(research.report || "")}</p>${watchItems.length ? `<aside><small>NEXT CHECK</small><ul>${watchItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></aside>` : ""}</div>
+          <summary><span class="section-index">คลังรายงานวิจัย</span><strong>เปิดรายงานฉบับเต็ม</strong><em>หลักฐานและการตรวจทานตัวเลขฉบับละเอียด</em></summary>
+          <div class="valuation-completed-report__body"><p>${esc(research.report || "")}</p>${watchItems.length ? `<aside><small>จุดติดตามถัดไป</small><ul>${watchItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></aside>` : ""}</div>
         </details>
         ${sourcesMarkup}
         <footer class="valuation-source"><span>IAN RESEARCH ARCHIVE</span><span>AS OF ${esc(research.as_of || valuation.as_of || "—")}</span><span>DRAFT REVISION · NOT A PRICE TARGET</span></footer>

@@ -124,10 +124,10 @@ test("MCP, API and worker enforce the same optionality contract", () => {
 
 test("completed valuation UI renders the four-part framework and recomposes on mobile", () => {
   assert.match(app, /valuationFrameworkMarkup/);
-  assert.match(app, /CORE BUSINESS/);
-  assert.match(app, /PROBABILITY-WEIGHTED OPTIONALITY/);
-  assert.match(app, /FUNDING \/ DILUTION/);
-  assert.match(app, /MILESTONE LEDGER/);
+  assert.match(app, /ธุรกิจหลัก/);
+  assert.match(app, /มูลค่าโอกาสแบบถ่วงน้ำหนัก/);
+  assert.match(app, /เงินทุน \/ Dilution/);
+  assert.match(app, /จุดพิสูจน์ที่ต้องผ่าน/);
   assert.match(css, /\.valuation-framework/);
   assert.match(css, /\.valuation-framework__grid/);
   assert.match(css, /\.valuation-framework__grid \{ grid-template-columns: 1fr; \}/);

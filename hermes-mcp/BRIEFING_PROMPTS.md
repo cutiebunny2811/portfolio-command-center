@@ -391,9 +391,7 @@ Process at most one Portfolio Command Center valuation-research job.
    primary-source links and optional watch items. Always include brief with a
    short Thai headline, summary, Base case, 1-6 conditions, 1-6 principal risks
    and one next-check metric. This brief is the default PCC reading surface;
-   keep each item concise and do not paste the full report into it. Keep tickers
-   and standard finance terms in English when clearer. Do not include Markdown
-   markers or a buy/sell recommendation.
+   keep each item concise and do not paste the full report into it. All human-facing PCC research prose must be written in Thai. This includes completed_research headline, summary, brief, report and methodology, plus all completed_valuation fields and valuation_framework labels, summaries, milestones and funding bridge. Keep tickers, SEC forms, company names and standard finance terms such as DCF, FCF, WACC, ATM and dilution in English only when that is clearer. Do not include Markdown markers or a buy/sell recommendation.
 6. Build completed_valuation with company_stage, Ian's USD Base value, optional
    Bear/Bull, method, calculation summary, key assumptions and risks. Include
    the validated valuation_framework whenever company_stage is

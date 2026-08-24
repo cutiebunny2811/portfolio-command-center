@@ -10,6 +10,7 @@ const migration = readFileSync(new URL("../supabase/migrations/20260822050000_va
 const completedMigration = readFileSync(new URL("../supabase/migrations/20260823010000_ian_completed_valuation_revisions.sql", import.meta.url), "utf8");
 const leaseMigration = readFileSync(new URL("../supabase/migrations/20260823040000_valuation_research_15_minute_lease.sql", import.meta.url), "utf8");
 const worker = readFileSync(new URL("../scripts/pcc_valuation_research_worker.py", import.meta.url), "utf8");
+const valuationPrompt = readFileSync(new URL("../hermes-mcp/BRIEFING_PROMPTS.md", import.meta.url), "utf8");
 
 test("Valuation is the fourth Watchlist view and reads durable research revisions", () => {
   assert.match(app, /data-view="valuation"><span>04<\/span>Valuation/);
@@ -123,12 +124,25 @@ test("completed Ian research uses a structured Thai brief and keeps the full rep
 
 test("completed valuation keeps the decision surface concise and folds the audit method", () => {
   assert.match(app, /function valuationMethodLabel\(/);
-  assert.match(app, /Core \+ Optionality/);
+  assert.match(app, /ธุรกิจหลัก \+ โอกาส/);
   assert.match(app, /<details class="valuation-method-report"/);
   assert.match(app, /เปิดวิธีคำนวณฉบับเต็ม/);
   assert.match(app, /valuation-method-report__body/);
   assert.match(css, /\.valuation-method-report summary/);
   assert.match(css, /\.valuation-method-report__body \.valuation-method-grid p/);
+});
+
+test("completed valuation gives desktop readers a Thai-first editorial research surface", () => {
+  assert.match(app, /ธุรกิจหลักก่อน\. โอกาสต้องพิสูจน์\./);
+  assert.match(app, /มูลค่าโอกาสแบบถ่วงน้ำหนัก/);
+  assert.match(app, /ธุรกิจหลัก \+ โอกาส/);
+  assert.match(app, /research_format: "ian_completed_v1"/);
+  assert.match(app, /วิธีคำนวณ สมมติฐาน และความเสี่ยง/);
+  assert.match(css, /\.valuation-framework > header p \{ max-width: 58ch;/);
+  assert.match(css, /\.valuation-framework__grid \{ grid-template-columns: minmax\(320px, 5fr\) minmax\(0, 7fr\);/);
+  assert.match(css, /\.valuation-research--completed \{ grid-template-columns: minmax\(280px, 4fr\) minmax\(0, 8fr\);/);
+  assert.match(valuationPrompt, /All human-facing PCC research prose must be written in Thai/);
+  assert.match(valuationPrompt, /valuation_framework labels, summaries, milestones and funding bridge/);
 });
 
 test("the no-agent watchdog launches one hidden bounded Ian worker before Hermes' 120 second cron limit", () => {

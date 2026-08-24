@@ -99,7 +99,9 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
    news_hours=30 and audience=shared_market, then call get_macro_risk_monitor
    for the compact FRED risk/sentiment facts. If refresh_brief_sources reports
    unavailable, continue with cached_market_news instead of cancelling the
-   edition.
+   edition. Read editorial_policy.mode before drafting. The API
+   is the source of truth for whether this edition is daily_market_brief or
+   weekend_outlook.
 2. Write the brief in concise Thai, keeping tickers, release names and standard
    market terms in English when clearer. This is a SHARED, NEUTRAL brief for
    every PCC reader. Never mention or optimize for the owner's portfolio,
@@ -158,9 +160,24 @@ Create today's canonical Portfolio Command Center DAILY MARKET BRIEF.
      snapshot numbers, headlines or generic disclaimers.
    - sources: only sources actually referenced by top_stories.
    Keep the notification summary under 500 characters.
-6. On weekends or market holidays, state that the market is closed and anchor
-   the snapshot to the latest completed session while still covering material
-   developments since that close.
+6. Branch the editorial method by editorial_policy.mode while keeping the
+   visible title DAILY MARKET BRIEF:
+   - daily_market_brief: write an event-driven Daily Market Brief around the
+     current US session or latest completed session, fresh reporting and the
+     market reaction. Rank what is changing expectations now.
+   - weekend_outlook: write a Weekend Outlook internally. Build one central
+     thesis from the previous 7 days, update it with fresh 48-hour reporting,
+     and map catalysts across the next 7 calendar days. Use
+     weekly_context.recent_market_briefs to recover the week's sequence,
+     weekly_context.discovery_evidence only as leads that still require
+     verification, cached_market_news for fresh reporting, and
+     catalyst_window for forward decision points. Market Snapshot may anchor
+     to the latest completed session, but "market closed", "no new data" and
+     source limitations are never Top Stories. If fresh weekend reporting is
+     thin, deepen the verified weekly synthesis and scenario map; do not pad
+     the edition with static FRED readings or calendar reminders.
+   Both modes use the same publication schema, neutral shared audience and
+   archive title. Put editorial_policy.mode and its windows in source_context.
 7. Before publishing, reject your own draft if any object is blank, if two
    sections make the same point, or if a top story is merely one News item
    pasted without broader market meaning. Also reject it if a personal ticker
@@ -232,6 +249,9 @@ only a material change may create a Continuation notification.
    never personal holdings. Explain what changed, why it matters to the
    existing thesis, and what would confirm or reverse it. Do not repeat the
    canonical brief.
+   Continuation only when material_change is true. Never turn an ordinary
+   midnight rotation read, a blocked source or a missing data point into a
+   Continuation.
 6. For a material change use idempotency_key
    daily-market-brief:YYYY-MM-DD:continuation:0000 and return a concise Telegram
    preview. For an unchanged thesis, return the complete useful Market Check
@@ -253,17 +273,21 @@ the 20:00 job did not publish it.
 2. If it does not exist, call refresh_brief_sources once, then call
    get_briefing_context with news_hours=30 and audience=shared_market, then
    call get_macro_risk_monitor. If the refresh is unavailable, continue with
-   cached_market_news. Do not request personal context.
+   cached_market_news. Do not request personal context. Read
+   editorial_policy.mode and use the same daily_market_brief or weekend_outlook
+   branch as the primary 20:00 job.
 3. Retry external research across different domains, then use
    cached_market_news as the fallback evidence pool. A blocked article URL does
    not invalidate a cached item whose publisher, title, description, URL and
    timestamp are complete, but material claims still require an independent
    publisher, official source or consistent market-price reaction.
-4. Follow the same schema, evidence floor and non-overlap rules as the 20:00
-   job. Synthesize three to five current market drivers. Do not use FRED risk,
-   source failures or the macro calendar as substitute headlines. If current
-   evidence is thinner than the primary edition, omit unsupported detail and
-   state the narrower coverage without turning the limitation into a story.
+4. Follow the same schema, mode-specific evidence windows and non-overlap rules
+   as the 20:00 job. For weekend_outlook, synthesize the previous 7 days, fresh
+   48-hour reporting and the next 7 calendar days instead of imitating an open
+   session. Synthesize three to five current market drivers. Do not use FRED
+   risk, source failures or the macro calendar as substitute headlines. If
+   current evidence is thinner than the primary edition, omit unsupported
+   detail without turning the limitation into a story.
 5. Put RECOVERY EDITION in source_context.coverage_mode, keep
    the Telegram summary under 500 characters, and publish with idempotency_key
    daily-market-brief:YYYY-MM-DD. The database idempotency guard makes a race

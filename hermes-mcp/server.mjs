@@ -495,7 +495,7 @@ const tools = [
   },
   {
     name: "get_briefing_context",
-    description: "Read a grounded PCC fact pack for a market brief. shared_market is the canonical, privacy-safe mode: benchmarks, sectors, cached external market reporting, FRED risk/sentiment and high-impact Macro. Cached reporting is a fallback evidence pool when live pages block access; synthesize broad market drivers rather than copying headlines. personal adds the owner's dashboard, positions, watchlist, News and Earnings for a separate private analysis. Call refresh_brief_sources separately when a fresh canonical edition is being prepared.",
+    description: "Read a grounded PCC fact pack and the server-selected editorial policy for a market brief. On market weekdays it returns Daily Market Brief mode; on Saturday and Sunday it returns Weekend Outlook with previous-7-day context, fresh 48-hour reporting and next-7-day catalysts while retaining the Daily Market Brief archive title. shared_market is the canonical, privacy-safe mode: benchmarks, sectors, cached external reporting, discovery leads, recent briefs, FRED risk/sentiment and high-impact Macro. Verify discovery leads before publication. personal adds owner context only for a separate private analysis. Call refresh_brief_sources separately before a canonical edition.",
     inputSchema: {
       type: "object",
       properties: {
@@ -527,7 +527,7 @@ const tools = [
   },
   {
     name: "publish_daily_market_brief",
-    description: "Publish the one canonical Daily Market Brief for a Bangkok calendar date to Supabase and create its PCC notification. Use verified facts only, cite source ids, and call at most once per edition; a retry with the same idempotency key is safe.",
+    description: "Publish the one canonical Daily Market Brief for a Bangkok calendar date to Supabase and create its PCC notification. The API stamps the server-selected editorial policy into source_context, including Weekend Outlook mode on Saturday and Sunday. Use verified facts only, cite source ids, and call at most once per edition; a retry with the same idempotency key is safe.",
     inputSchema: {
       type: "object",
       properties: {

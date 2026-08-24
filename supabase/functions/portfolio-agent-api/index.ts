@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { analyzeWatchlistSetup } from "./watchlist-setup-scanner.mjs";
 import { analyzeOptionDesk } from "./option-desk-analysis.mjs";
+import { buildBriefEditorialPolicy } from "./briefing-policy.mjs";
 import { buildValuation } from "../refresh-company-valuation/valuation-core.mjs";
 
 const corsHeaders = {
@@ -1363,13 +1364,19 @@ async function briefingContext(
   userId: string,
   body: Record<string, unknown>,
 ) {
-  const lookbackHours = integer(body.news_hours, 30, 6, 168);
   const now = new Date();
   const today = newYorkDateKey(now);
+  const policy = buildBriefEditorialPolicy(today);
+  const requestedLookbackHours = integer(body.news_hours, policy.windows.fresh_news_hours, 6, 168);
+  const lookbackHours = policy.mode === "weekend_outlook"
+    ? policy.windows.fresh_news_hours
+    : requestedLookbackHours;
   const audience = body.audience === "personal" ? "personal" : "shared_market";
 
   if (audience === "shared_market") {
-    const [market, marketNews, macro, alerts, riskSnapshots] = await Promise.all([
+    const catalystWindowEnd = addDays(today, policy.windows.catalyst_days);
+    const retrospectiveWindowStart = addDays(today, -policy.windows.retrospective_days);
+    const [market, marketNews, macro, alerts, riskSnapshots, recentMarketBriefs, discoveryPacket] = await Promise.all([
       must(service
         .from("market_pulse_latest")
         .select("*")
@@ -1377,21 +1384,46 @@ async function briefingContext(
         .or("is_benchmark.eq.true,is_sector.eq.true")
         .order("symbol")),
       sharedMarketNews(service, lookbackHours),
-      macroCalendar(service, { from: addDays(today, -1), to: addDays(today, 14), limit: 200 }),
-      macroAlerts(service, { hours_ahead: 72, hours_back: 18 }),
+      macroCalendar(service, { from: retrospectiveWindowStart, to: catalystWindowEnd, limit: 200 }),
+      macroAlerts(service, {
+        hours_ahead: policy.windows.catalyst_days * 24,
+        hours_back: policy.mode === "weekend_outlook" ? policy.windows.fresh_news_hours : 18,
+      }),
       must(service
         .from("macro_risk_snapshots")
         .select("snapshot_date,risk_score,risk_label,fear_greed_score,fear_greed_label,risk_components,fear_greed_components,source_dates,fetched_at")
         .order("snapshot_date", { ascending: false })
         .limit(8)),
+      must(service
+        .from("market_briefs")
+        .select("brief_date,summary,content,source_context,published_at")
+        .eq("user_id", userId)
+        .eq("status", "published")
+        .gte("brief_date", retrospectiveWindowStart)
+        .lte("brief_date", today)
+        .order("brief_date", { ascending: false })
+        .limit(8)),
+      must(service
+        .from("news_evidence_packets")
+        .select("generated_at,mode,window_start,window_end,cluster_count,source_count,payload,expires_at")
+        .gt("expires_at", now.toISOString())
+        .order("generated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()),
     ]);
+    const macroEntries = ((macro as Record<string, unknown>).entries as Record<string, unknown>[] || []);
+    const forwardMacroEvents = macroEntries.filter((event) => {
+      const scheduledDate = String(event.scheduled_at || "").slice(0, 10);
+      return scheduledDate >= today && scheduledDate <= catalystWindowEnd;
+    });
 
     return {
       generated_at: now.toISOString(),
       timezone: "Asia/Bangkok",
       audience,
+      editorial_policy: policy,
       guidance: {
-        canonical_brief: "Write one neutral US-market brief for every PCC reader. Research current external sources; use PCC only for verified market and macro context.",
+        canonical_brief: "Write one neutral US-market brief for every PCC reader. Follow editorial_policy.mode and its evidence windows; research current external sources and use PCC for verified market and macro context.",
         privacy: "Do not request, infer or mention any user's portfolios, positions, watchlist or private preferences.",
         sources: "Prefer official releases for primary facts and reputable current reporting for market context. Verify both publication time and event date before citing.",
         source_resilience: "Use cached_market_news when a live page blocks access, then cross-check with another cached publisher, an official source or web search. FRED supports macro facts but must never be used as filler for a market-news story.",
@@ -1401,6 +1433,19 @@ async function briefingContext(
       },
       market_pulse: market,
       cached_market_news: marketNews,
+      weekly_context: {
+        window_from: retrospectiveWindowStart,
+        window_to: today,
+        recent_market_briefs: recentMarketBriefs,
+        discovery_evidence: discoveryPacket || null,
+        guidance: "Use this archive for synthesis and discovery only. Do not repeat prior copy, and verify discovery leads with an original publisher or official source before publication.",
+      },
+      catalyst_window: {
+        window_from: today,
+        window_to: catalystWindowEnd,
+        macro_events: forwardMacroEvents,
+        guidance: "Use the next seven calendar days to identify decision points. A scheduled event belongs in Watch Next, not Top Stories, unless current reporting shows that expectations are already moving markets.",
+      },
       macro_risk: {
         latest: (riskSnapshots as Record<string, unknown>[])[0] || null,
         recent: riskSnapshots,
@@ -1488,11 +1533,19 @@ async function publishMarketBrief(
   body: Record<string, unknown>,
 ) {
   const content = validateBriefContent(body.content);
-  const sourceContext = body.source_context == null ? {} : jsonObject(body.source_context, "source_context");
+  const briefDate = dateKey(body.brief_date, "brief_date");
+  const policy = buildBriefEditorialPolicy(briefDate);
+  const suppliedSourceContext = body.source_context == null ? {} : jsonObject(body.source_context, "source_context");
+  const sourceContext = {
+    ...suppliedSourceContext,
+    editorial_mode: policy.mode,
+    editorial_label: policy.internal_label,
+    evidence_windows: policy.windows,
+  };
   return await must(service.rpc("api_agent_publish_market_brief", {
     p_user_id: identity.user_id,
     p_agent_id: identity.token_id,
-    p_brief_date: dateKey(body.brief_date, "brief_date"),
+    p_brief_date: briefDate,
     p_summary: requiredText(body.summary, "summary"),
     p_content: content,
     p_source_context: sourceContext,

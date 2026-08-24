@@ -3854,24 +3854,6 @@
     </section>`;
   }
 
-  function valuationFrameworkMarkup(framework) {
-    if (!framework || framework.type !== "core_optionality") return "";
-    const core = framework.core_business || {};
-    const optionality = Array.isArray(framework.optionality) ? framework.optionality : [];
-    const funding = framework.funding_dilution || {};
-    const milestones = Array.isArray(framework.milestones) ? framework.milestones : [];
-    const range = (row) => `<span>${money(row?.bear_value)}</span><strong>${money(row?.base_value)}</strong><span>${money(row?.bull_value)}</span>`;
-    return `<section class="valuation-framework">
-      <header><div><span class="section-index">04 / โครงสร้างมูลค่า</span><h2>ธุรกิจหลักก่อน. โอกาสต้องพิสูจน์.</h2></div><p>มูลค่ารวมต่อหุ้นต้องย้อนกลับได้จากธุรกิจหลัก โอกาสที่ถ่วงด้วยความน่าจะเป็น และผลกระทบจากเงินทุนหรือ dilution</p></header>
-      <div class="valuation-framework__grid">
-        <article class="valuation-framework__core"><span>ธุรกิจหลัก</span><h3>${esc(core.label || "ธุรกิจที่รายงานแล้ว")}</h3><p>${esc(core.summary || "")}</p><small>${esc(core.method || "")}</small><div class="valuation-framework__range">${range(core)}</div></article>
-        <article class="valuation-framework__options valuation-framework__options--count-${optionality.length}"><span>มูลค่าโอกาสแบบถ่วงน้ำหนัก</span><div>${optionality.map((item, index) => `<section><header><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3></header><p>${esc(item.summary)}</p><dl><div><dt>มูลค่าเมื่อสำเร็จ</dt><dd>${money(item.success_value_per_share)}</dd></div><div><dt>โอกาสสำเร็จ B / B / B</dt><dd>${percent(num(item.probability_bear) * 100, 0)} / ${percent(num(item.probability_base) * 100, 0)} / ${percent(num(item.probability_bull) * 100, 0)}</dd></div></dl><div class="valuation-framework__range">${range(item)}</div></section>`).join("")}</div></article>
-        <article class="valuation-framework__funding"><span>เงินทุน / Dilution</span><h3>สะพานมูลค่าต่อหุ้น</h3><p>${esc(funding.summary || "")}</p><dl><div><dt>หุ้นปัจจุบัน</dt><dd>${compactNumber(funding.basic_shares)}</dd></div><div><dt>หุ้นหลัง Dilution หลัก</dt><dd>${compactNumber(funding.core_diluted_shares)}</dd></div><div><dt>หุ้นเต็ม Dilution</dt><dd>${compactNumber(funding.maximum_diluted_shares)}</dd></div><div><dt>เงินทุนที่ต้องใช้</dt><dd>${compactMoney(funding.funding_required)}</dd></div></dl><div class="valuation-framework__range valuation-framework__range--adjustment"><span>${money(funding.bear_adjustment)}</span><strong>${money(funding.base_adjustment)}</strong><span>${money(funding.bull_adjustment)}</span></div></article>
-        <article class="valuation-framework__milestones valuation-framework__milestones--count-${milestones.length}"><span>จุดพิสูจน์ที่ต้องผ่าน</span><div>${milestones.map((item, index) => `<section><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3><strong>${esc(item.required_for)}</strong><p>${esc(item.impact)}</p><em>${esc(item.evidence)}</em></section>`).join("")}</div></article>
-      </div>
-    </section>`;
-  }
-
   function valuationMethodLabel(method, hasFramework = false) {
     if (hasFramework) return "ธุรกิจหลัก + โอกาส";
     const value = String(method || "").trim();
@@ -3896,8 +3878,7 @@
       ["base", "Base", valuation.base_value],
       ["bull", "Bull", valuation.bull_value],
     ].filter(([, , value]) => Number.isFinite(Number(value)));
-    const frameworkMarkup = valuationFrameworkMarkup(valuation.valuation_framework);
-    const methodLabel = valuationMethodLabel(valuation.method, Boolean(frameworkMarkup));
+    const methodLabel = valuationMethodLabel(valuation.method, Boolean(valuation.valuation_framework));
     const caseMarkup = cases.map(([key, label, value]) => {
       const fairValue = Number(value);
       const spread = marketPrice > 0 ? (fairValue / marketPrice - 1) * 100 : null;
@@ -3944,9 +3925,8 @@
           <header><div><span class="section-index">03 / IAN VALUE RANGE</span><h2>${esc(research.headline || "Completed valuation research")}</h2></div><p>${esc(research.summary || "")}</p></header>
           <div class="valuation-cases valuation-cases--completed valuation-cases--count-${cases.length}">${caseMarkup}</div>
         </section>
-        ${frameworkMarkup}
         <details class="valuation-method-report">
-          <summary><span class="section-index">${frameworkMarkup ? "05" : "04"} / วิธีคำนวณ</span><strong>เปิดวิธีคำนวณฉบับเต็ม</strong><em>${esc(methodLabel)} · วิธีคำนวณ สมมติฐาน และความเสี่ยง</em></summary>
+          <summary><span class="section-index">04 / วิธีคำนวณ</span><strong>เปิดวิธีคำนวณฉบับเต็ม</strong><em>${esc(methodLabel)} · วิธีคำนวณ สมมติฐาน และความเสี่ยง</em></summary>
           <div class="valuation-method-report__body">
             <div class="valuation-method-grid"><section><small>วิธีคำนวณ</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>สรุปการคำนวณ</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
             <div class="valuation-research__points">
@@ -3956,7 +3936,7 @@
           </div>
         </details>
         <section class="valuation-research valuation-research--completed">
-          <div><span class="section-index">${frameworkMarkup ? "06" : "05"} / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian เรียบเรียงหลักฐาน สมมติฐาน และจุดติดตามเป็นภาษาไทย ส่วนรายงานฉบับเต็มยังเปิดอ่านได้ด้านล่าง</p></div>
+          <div><span class="section-index">05 / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian เรียบเรียงหลักฐาน สมมติฐาน และจุดติดตามเป็นภาษาไทย ส่วนรายงานฉบับเต็มยังเปิดอ่านได้ด้านล่าง</p></div>
           ${completedResearchBriefMarkup}
         </section>
         <details class="valuation-completed-report">

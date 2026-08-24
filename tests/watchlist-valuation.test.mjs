@@ -133,24 +133,19 @@ test("completed valuation keeps the decision surface concise and folds the audit
 });
 
 test("completed valuation gives desktop readers a Thai-first editorial research surface", () => {
-  assert.match(app, /ธุรกิจหลักก่อน\. โอกาสต้องพิสูจน์\./);
-  assert.match(app, /มูลค่าโอกาสแบบถ่วงน้ำหนัก/);
   assert.match(app, /ธุรกิจหลัก \+ โอกาส/);
   assert.match(app, /research_format: "ian_completed_v1"/);
   assert.match(app, /วิธีคำนวณ สมมติฐาน และความเสี่ยง/);
-  assert.match(css, /\.valuation-framework > header p \{ max-width: 58ch;/);
-  assert.match(css, /\.valuation-framework__grid \{ grid-template-columns: minmax\(320px, 5fr\) minmax\(0, 7fr\);/);
   assert.match(css, /\.valuation-research--completed \{ grid-template-columns: minmax\(280px, 4fr\) minmax\(0, 8fr\);/);
   assert.match(valuationPrompt, /All human-facing PCC research prose must be written in Thai/);
   assert.match(valuationPrompt, /valuation_framework labels, summaries, milestones and funding bridge/);
 });
 
-test("valuation architecture uses the full desktop grid with readable type", () => {
-  assert.match(app, /valuation-framework__options--count-\$\{optionality\.length\}/);
-  assert.match(app, /valuation-framework__milestones--count-\$\{milestones\.length\}/);
-  assert.match(css, /\.valuation-framework__options--count-1 > div \{ grid-template-columns: minmax\(0, 1fr\); \}/);
-  assert.match(css, /@media \(min-width: 761px\) \{[\s\S]*\.valuation-framework__grid p \{[^}]*font-size: 15px;/);
-  assert.match(css, /@media \(min-width: 761px\) \{[\s\S]*\.valuation-framework__grid h3 \{[^}]*font-size: clamp\(24px, 1\.9vw, 32px\);/);
+test("completed valuation hides the expanded value architecture and moves the folded method to section 04", () => {
+  assert.doesNotMatch(app, /function valuationFrameworkMarkup\(/);
+  assert.doesNotMatch(app, /04 \/ โครงสร้างมูลค่า/);
+  assert.match(app, /<summary><span class="section-index">04 \/ วิธีคำนวณ<\/span>/);
+  assert.match(app, /<span class="section-index">05 \/ HERMES RESEARCH BRIEF<\/span>/);
 });
 
 test("the no-agent watchdog launches one hidden bounded Ian worker before Hermes' 120 second cron limit", () => {

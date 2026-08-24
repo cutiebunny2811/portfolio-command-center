@@ -1,4 +1,5 @@
-const MAX_VALUE = 1_000_000_000;
+const MAX_PER_SHARE_VALUE = 1_000_000_000;
+const MAX_RAW_AMOUNT = 1_000_000_000_000_000;
 const VALUE_TOLERANCE = 0.011;
 
 function object(value, label) {
@@ -13,7 +14,7 @@ function text(value, label, maxLength = 1600) {
   return result;
 }
 
-function number(value, label, { min = 0, max = MAX_VALUE } = {}) {
+function number(value, label, { min = 0, max = MAX_RAW_AMOUNT } = {}) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
     throw new Error(`${label} must be a finite number from ${min} to ${max}`);
   }
@@ -30,9 +31,10 @@ function close(actual, expected, label) {
 
 function scenarioValues(value, label, options) {
   const row = object(value, label);
-  const bearValue = number(row.bear_value, `${label}.bear_value`, options);
-  const baseValue = number(row.base_value, `${label}.base_value`, options);
-  const bullValue = number(row.bull_value, `${label}.bull_value`, options);
+  const limits = options || { min: 0, max: MAX_PER_SHARE_VALUE };
+  const bearValue = number(row.bear_value, `${label}.bear_value`, limits);
+  const baseValue = number(row.base_value, `${label}.base_value`, limits);
+  const bullValue = number(row.bull_value, `${label}.bull_value`, limits);
   ordered(bearValue, baseValue, bullValue, label);
   return { bear_value: bearValue, base_value: baseValue, bull_value: bullValue };
 }
@@ -61,7 +63,7 @@ export function validateOptionalityValuationFramework(value, topLevel = {}) {
   const optionality = framework.optionality.map((value, index) => {
     const label = `completed_valuation.valuation_framework.optionality[${index}]`;
     const component = object(value, label);
-    const successValue = number(component.success_value_per_share, `${label}.success_value_per_share`);
+    const successValue = number(component.success_value_per_share, `${label}.success_value_per_share`, { min: 0, max: MAX_PER_SHARE_VALUE });
     const probabilityBear = number(component.probability_bear, `${label}.probability_bear`, { min: 0, max: 1 });
     const probabilityBase = number(component.probability_base, `${label}.probability_base`, { min: 0, max: 1 });
     const probabilityBull = number(component.probability_bull, `${label}.probability_bull`, { min: 0, max: 1 });
@@ -92,9 +94,9 @@ export function validateOptionalityValuationFramework(value, topLevel = {}) {
   const maximumDilutedShares = number(funding.maximum_diluted_shares, "completed_valuation.valuation_framework.funding_dilution.maximum_diluted_shares", { min: Number.EPSILON });
   if (basicShares > coreDilutedShares) throw new Error("completed_valuation.valuation_framework.funding_dilution.basic_shares cannot exceed core_diluted_shares");
   if (coreDilutedShares > maximumDilutedShares) throw new Error("completed_valuation.valuation_framework.funding_dilution.core_diluted_shares cannot exceed maximum_diluted_shares");
-  const bearAdjustment = number(funding.bear_adjustment, "completed_valuation.valuation_framework.funding_dilution.bear_adjustment", { min: -MAX_VALUE, max: 0 });
-  const baseAdjustment = number(funding.base_adjustment, "completed_valuation.valuation_framework.funding_dilution.base_adjustment", { min: -MAX_VALUE, max: 0 });
-  const bullAdjustment = number(funding.bull_adjustment, "completed_valuation.valuation_framework.funding_dilution.bull_adjustment", { min: -MAX_VALUE, max: 0 });
+  const bearAdjustment = number(funding.bear_adjustment, "completed_valuation.valuation_framework.funding_dilution.bear_adjustment", { min: -MAX_PER_SHARE_VALUE, max: 0 });
+  const baseAdjustment = number(funding.base_adjustment, "completed_valuation.valuation_framework.funding_dilution.base_adjustment", { min: -MAX_PER_SHARE_VALUE, max: 0 });
+  const bullAdjustment = number(funding.bull_adjustment, "completed_valuation.valuation_framework.funding_dilution.bull_adjustment", { min: -MAX_PER_SHARE_VALUE, max: 0 });
   const fundingDilution = {
     summary: text(funding.summary, "completed_valuation.valuation_framework.funding_dilution.summary", 2400),
     basic_shares: basicShares,

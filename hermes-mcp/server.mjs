@@ -885,7 +885,7 @@ const tools = [
   },
   {
     name: "submit_completed_valuation_research",
-    description: "Submit Ian's finished primary-source analysis and Ian-calculated valuation for a claimed job. PCC stores, archives, notifies and displays this result; PCC does not calculate or override Ian's valuation.",
+    description: "Submit Ian's finished primary-source analysis and Ian-calculated valuation for a claimed job. PCC stores, archives, notifies and displays this result; PCC does not calculate or override Ian's valuation. For pre_profit_optionality companies, valuation_framework is mandatory and must reconcile Core business value, probability-weighted optionality, funding/dilution adjustments and milestones to the submitted Bear/Base/Bull range.",
     inputSchema: {
       type: "object",
       properties: {

@@ -95,6 +95,21 @@ test("optionality framework rejects invalid dilution ordering", () => {
   );
 });
 
+test("optionality framework accepts large-cap share counts and funding figures", () => {
+  const value = framework();
+  value.funding_dilution.basic_shares = 12_100_000_000;
+  value.funding_dilution.core_diluted_shares = 12_400_000_000;
+  value.funding_dilution.maximum_diluted_shares = 12_800_000_000;
+  value.funding_dilution.funding_required = 80_000_000_000;
+  const result = validateOptionalityValuationFramework(value, {
+    bearValue: 2,
+    baseValue: 7,
+    bullValue: 14,
+  });
+  assert.equal(result.funding_dilution.core_diluted_shares, 12_400_000_000);
+  assert.equal(result.funding_dilution.funding_required, 80_000_000_000);
+});
+
 test("MCP, API and worker enforce the same optionality contract", () => {
   assert.match(mcp, /valuationFrameworkSchema/);
   assert.match(mcp, /pre_profit_optionality/);

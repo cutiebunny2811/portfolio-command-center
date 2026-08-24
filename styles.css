@@ -1857,6 +1857,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .valuation-framework__options { padding: 0 !important; }
 .valuation-framework__options > span { display: block; padding: clamp(28px, 3vw, 42px) clamp(28px, 3vw, 42px) 0; }
 .valuation-framework__options > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+.valuation-framework__options--count-1 > div { grid-template-columns: minmax(0, 1fr); }
 .valuation-framework__options section { min-width: 0; padding: 24px clamp(28px, 3vw, 42px) 28px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .valuation-framework__options section:nth-child(2n) { border-right: 0; }
 .valuation-framework__options section:last-child { border-bottom: 0; }
@@ -1873,9 +1874,54 @@ tbody tr:last-child td { border-bottom: 0; }
 .valuation-framework__milestones { padding: 0 !important; }
 .valuation-framework__milestones > span { display: block; padding: clamp(28px, 3vw, 42px) clamp(28px, 3vw, 42px) 0; }
 .valuation-framework__milestones > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+.valuation-framework__milestones--count-1 > div { grid-template-columns: minmax(0, 1fr); }
 .valuation-framework__milestones section { min-width: 0; padding: 24px clamp(28px, 3vw, 42px); border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .valuation-framework__milestones section:nth-child(2n) { border-right: 0; }
 .valuation-framework__milestones section > strong { display: block; margin-top: 10px; font-size: 11px; }
+
+@media (min-width: 761px) {
+  .valuation-framework > header {
+    grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr);
+    gap: 36px;
+    padding: 32px 36px;
+  }
+  .valuation-framework > header h2 { font-size: clamp(38px, 3.5vw, 54px); }
+  .valuation-framework > header p { max-width: 66ch; font-size: 16px; line-height: 1.58; }
+  .valuation-framework__grid { grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr); }
+  .valuation-framework__grid > article { align-content: start; padding: 30px 32px; }
+  .valuation-framework__grid > article > span { font-size: 9px; }
+  .valuation-framework__grid h3 { font-size: clamp(24px, 1.9vw, 32px); line-height: 1.08; }
+  .valuation-framework__grid p { max-width: 70ch; font-size: 15px; line-height: 1.62; }
+  .valuation-framework__grid em,
+  .valuation-framework__grid article > small { font-size: 10px; line-height: 1.55; }
+  .valuation-framework__range { margin: 24px -32px -30px; }
+  .valuation-framework__range > * { padding: 19px 16px; font-size: 18px; }
+  .valuation-framework__options > span,
+  .valuation-framework__milestones > span { padding: 30px 32px 0; font-size: 9px; }
+  .valuation-framework__options section,
+  .valuation-framework__milestones section { padding: 24px 32px 30px; }
+  .valuation-framework__options dl,
+  .valuation-framework__funding dl { margin-top: 20px; }
+  .valuation-framework__options dt,
+  .valuation-framework__funding dt { font-size: 8px; }
+  .valuation-framework__options dd,
+  .valuation-framework__funding dd { font-size: 13px; }
+  .valuation-framework__milestones section > strong { font-size: 13px; line-height: 1.45; }
+  .valuation-framework__options--count-1 section {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(220px, .65fr);
+    column-gap: 32px;
+  }
+  .valuation-framework__options--count-1 section > header,
+  .valuation-framework__options--count-1 section > p { grid-column: 1; }
+  .valuation-framework__options--count-1 section > dl {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    margin-top: 0;
+  }
+  .valuation-framework__options--count-1 section > .valuation-framework__range { grid-column: 1 / -1; }
+}
 .valuation-completed-report { border-bottom: 1px solid var(--rule-strong); }
 .valuation-completed-report summary { display: grid; grid-template-columns: 150px minmax(220px, .65fr) minmax(0, 1fr); align-items: center; gap: 24px; min-height: 76px; padding: 18px 26px; cursor: pointer; list-style: none; }
 .valuation-completed-report summary::-webkit-details-marker { display: none; }

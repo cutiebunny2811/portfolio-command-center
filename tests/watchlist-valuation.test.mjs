@@ -145,6 +145,14 @@ test("completed valuation gives desktop readers a Thai-first editorial research 
   assert.match(valuationPrompt, /valuation_framework labels, summaries, milestones and funding bridge/);
 });
 
+test("valuation architecture uses the full desktop grid with readable type", () => {
+  assert.match(app, /valuation-framework__options--count-\$\{optionality\.length\}/);
+  assert.match(app, /valuation-framework__milestones--count-\$\{milestones\.length\}/);
+  assert.match(css, /\.valuation-framework__options--count-1 > div \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(css, /@media \(min-width: 761px\) \{[\s\S]*\.valuation-framework__grid p \{[^}]*font-size: 15px;/);
+  assert.match(css, /@media \(min-width: 761px\) \{[\s\S]*\.valuation-framework__grid h3 \{[^}]*font-size: clamp\(24px, 1\.9vw, 32px\);/);
+});
+
 test("the no-agent watchdog launches one hidden bounded Ian worker before Hermes' 120 second cron limit", () => {
   assert.match(worker, /ACTIVE_LOCK/);
   assert.match(worker, /worker_is_active/);

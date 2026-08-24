@@ -67,6 +67,7 @@ const BLOCKED_DISCOVERY_DOMAINS = new Set([
   "dailypolitical.com",
   "defenseworld.net",
   "etfdailynews.com",
+  "fool.com",
   "globenewswire.com",
   "pr-inside.com",
   "prnewswire.com",
@@ -357,7 +358,7 @@ export function buildEvidencePacket(clusters, options = {}) {
   const lanes = Object.fromEntries(DISCOVERY_BUCKETS.map((bucket) => [bucket.lane, []]));
 
   for (const bucket of DISCOVERY_BUCKETS) {
-    lanes[bucket.lane] = clusters
+    const eligibleClusters = clusters
       .filter((cluster) => {
         if (cluster.lane !== bucket.lane || String(cluster.last_seen_at || "") < cutoff) return false;
         const eligibleDomain = (cluster.domains || []).find((domain) => !domainMatches(domain, BLOCKED_DISCOVERY_DOMAINS));
@@ -368,8 +369,17 @@ export function buildEvidencePacket(clusters, options = {}) {
         });
       })
       .sort((left, right) => Number(right.importance_score || 0) - Number(left.importance_score || 0)
-        || String(right.last_seen_at || "").localeCompare(String(left.last_seen_at || "")))
-      .slice(0, perLane)
+        || String(right.last_seen_at || "").localeCompare(String(left.last_seen_at || "")));
+    const usedDomains = new Set();
+    const diverseClusters = [];
+    for (const cluster of eligibleClusters) {
+      const domains = unique((cluster.domains || []).map(normalizedDomain).filter(Boolean));
+      if (domains.length && domains.every((domain) => usedDomains.has(domain))) continue;
+      diverseClusters.push(cluster);
+      domains.forEach((domain) => usedDomains.add(domain));
+      if (diverseClusters.length >= perLane) break;
+    }
+    lanes[bucket.lane] = diverseClusters
       .map((cluster) => ({
         cluster_key: cluster.cluster_key,
         headline: cluster.headline,

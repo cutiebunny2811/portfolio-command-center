@@ -119,6 +119,11 @@ test("rejects press-release, lawsuit, ratings-farm and low-signal headline patte
     title: "Iran sanctions raise risk for oil supply through Hormuz",
     publisher_name: "apnews.com",
   }), true);
+  assert.equal(isRelevantDiscoveryArticle({
+    lane: "market_rates",
+    title: "One Sentence in the Fed Minutes Is Nightmare Fuel for the Stock Market",
+    publisher_name: "fool.com",
+  }), false);
 });
 
 test("clusters reordered coverage of the same event but keeps unrelated stories apart", () => {
@@ -222,6 +227,33 @@ test("builds a compact source-diverse evidence preview without pretending candid
   assert.ok(packet.source_ledger.includes("reuters.com"));
   assert.ok(packet.caveats.some((line) => /discovery leads/i.test(line)));
   assert.ok(packet.lanes.market_rates.every((cluster) => cluster.verification_status !== "verified"));
+});
+
+test("does not let one publisher occupy multiple packet slots in the same lane", () => {
+  const clusters = [
+    ["ai-a", "Nvidia earnings put AI spending in focus", 90, ["digitimes.com"]],
+    ["ai-b", "Semiconductor demand rises with AI data center capex", 80, ["digitimes.com"]],
+    ["ai-c", "Chipmakers face a new test as earnings season begins", 70, ["reuters.com"]],
+  ].map(([cluster_key, headline, importance_score, domains], index) => ({
+    cluster_key,
+    lane: "earnings_ai",
+    headline,
+    last_seen_at: `2026-08-24T1${index}:00:00.000Z`,
+    first_seen_at: `2026-08-24T1${index}:00:00.000Z`,
+    article_count: 1,
+    source_count: 1,
+    domains,
+    tickers: [],
+    importance_score,
+    verification_status: "candidate",
+  }));
+
+  const packet = buildEvidencePacket(clusters, {
+    now: new Date("2026-08-24T18:00:00.000Z"),
+    perLane: 2,
+  });
+
+  assert.deepEqual(packet.lanes.earnings_ai.map((cluster) => cluster.cluster_key), ["ai-a", "ai-c"]);
 });
 
 test("schedules free discovery every thirty minutes and keeps GDELT out of the live brief feed", async () => {

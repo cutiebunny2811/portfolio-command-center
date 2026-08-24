@@ -1810,6 +1810,49 @@ tbody tr:last-child td { border-bottom: 0; }
 .valuation-method-grid section:last-child { border-right: 0; }
 .valuation-method-grid small { color: var(--paper-faint); font: 700 8px/1.2 var(--mono); letter-spacing: .07em; }
 .valuation-method-grid p { max-width: 68ch; margin: 12px 0 0; color: var(--paper-dim); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.valuation-framework { border-bottom: 1px solid var(--rule-strong); }
+.valuation-framework > header { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(0, 1.2fr); align-items: end; gap: 24px; border-bottom: 1px solid var(--rule); padding: 30px 26px; }
+.valuation-framework > header h2 { margin: 10px 0 0; font-size: clamp(28px, 3.4vw, 48px); line-height: .95; letter-spacing: 0; }
+.valuation-framework > header p { max-width: 68ch; margin: 0; color: var(--paper-dim); line-height: 1.6; }
+.valuation-framework__grid { display: grid; grid-template-columns: minmax(260px, 5fr) minmax(0, 7fr); }
+.valuation-framework__grid > article { min-width: 0; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 24px 26px; }
+.valuation-framework__grid > article:nth-child(2n) { border-right: 0; }
+.valuation-framework__grid > article > span { color: var(--gold); font: 700 8px/1.2 var(--mono); letter-spacing: .07em; }
+.valuation-framework__grid h3 { margin: 12px 0 0; font-size: 19px; line-height: 1.1; letter-spacing: 0; }
+.valuation-framework__grid p { margin: 10px 0 0; color: var(--paper-dim); font-size: 11px; line-height: 1.65; }
+.valuation-framework__grid em,
+.valuation-framework__grid article > small { display: block; margin-top: 12px; color: var(--paper-faint); font: normal 9px/1.45 var(--mono); }
+.valuation-framework__range { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 20px -26px -24px; border-top: 1px solid var(--rule); }
+.valuation-framework__range > * { min-width: 0; padding: 16px 12px; border-right: 1px solid var(--rule); font: 600 15px/1 var(--mono); overflow-wrap: anywhere; }
+.valuation-framework__range > *::before { display: block; margin-bottom: 8px; color: var(--paper-faint); font: 600 7px/1 var(--mono); }
+.valuation-framework__range > *:nth-child(1)::before { content: "BEAR"; }
+.valuation-framework__range > *:nth-child(2)::before { content: "BASE"; }
+.valuation-framework__range > *:nth-child(3)::before { content: "BULL"; }
+.valuation-framework__range > *:last-child { border-right: 0; }
+.valuation-framework__range > strong { color: var(--gold); }
+.valuation-framework__range--adjustment > * { color: var(--red-bright); }
+.valuation-framework__options { padding: 0 !important; }
+.valuation-framework__options > span { display: block; padding: 24px 26px 0; }
+.valuation-framework__options > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.valuation-framework__options section { min-width: 0; padding: 20px 26px 24px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.valuation-framework__options section:nth-child(2n) { border-right: 0; }
+.valuation-framework__options section:last-child { border-bottom: 0; }
+.valuation-framework__options section header small,
+.valuation-framework__milestones section > small { color: var(--green); font: 700 8px/1.2 var(--mono); letter-spacing: .07em; }
+.valuation-framework__options dl,
+.valuation-framework__funding dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 16px 0 0; }
+.valuation-framework__options dl div,
+.valuation-framework__funding dl div { min-width: 0; padding: 10px 10px 10px 0; border-top: 1px solid var(--rule); }
+.valuation-framework__options dt,
+.valuation-framework__funding dt { color: var(--paper-faint); font: 600 7px/1.2 var(--mono); }
+.valuation-framework__options dd,
+.valuation-framework__funding dd { margin: 7px 0 0; font: 600 11px/1.25 var(--mono); overflow-wrap: anywhere; }
+.valuation-framework__milestones { padding: 0 !important; }
+.valuation-framework__milestones > span { display: block; padding: 24px 26px 0; }
+.valuation-framework__milestones > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.valuation-framework__milestones section { min-width: 0; padding: 20px 26px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.valuation-framework__milestones section:nth-child(2n) { border-right: 0; }
+.valuation-framework__milestones section > strong { display: block; margin-top: 10px; font-size: 11px; }
 .valuation-completed-report { border-bottom: 1px solid var(--rule-strong); }
 .valuation-completed-report summary { display: grid; grid-template-columns: 150px minmax(220px, .65fr) minmax(0, 1fr); align-items: center; gap: 24px; min-height: 76px; padding: 18px 26px; cursor: pointer; list-style: none; }
 .valuation-completed-report summary::-webkit-details-marker { display: none; }
@@ -2231,6 +2274,19 @@ tbody tr:last-child td { border-bottom: 0; }
   .valuation-research__error { padding: 13px 0 13px 12px; }
   .valuation-method-grid { grid-column: 1; grid-template-columns: 1fr; }
   .valuation-method-grid section { border-right: 0; padding: 18px 0; }
+  .valuation-framework > header { grid-template-columns: 1fr; padding: 26px 0; }
+  .valuation-framework__grid { grid-template-columns: 1fr; }
+  .valuation-framework__grid > article { border-right: 0; padding: 22px 0; }
+  .valuation-framework__range { margin: 18px 0 -22px; }
+  .valuation-framework__range > * { padding: 14px 8px; font-size: 12px; }
+  .valuation-framework__options,
+  .valuation-framework__milestones { padding: 0 !important; }
+  .valuation-framework__options > span,
+  .valuation-framework__milestones > span { padding: 22px 0 0; }
+  .valuation-framework__options > div,
+  .valuation-framework__milestones > div { grid-template-columns: 1fr; }
+  .valuation-framework__options section,
+  .valuation-framework__milestones section { border-right: 0; padding: 18px 0; }
   .valuation-completed-report summary { grid-template-columns: 1fr auto; gap: 8px; padding: 20px 0; }
   .valuation-completed-report summary .section-index { grid-column: 1; }
   .valuation-completed-report summary strong { grid-column: 1; }

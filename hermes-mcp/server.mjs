@@ -223,10 +223,99 @@ const completedValuationResearchSchema = {
   additionalProperties: false,
 };
 
+const valuationFrameworkValuesSchema = {
+  type: "object",
+  properties: {
+    bear_value: { type: "number", minimum: 0 },
+    base_value: { type: "number", minimum: 0 },
+    bull_value: { type: "number", minimum: 0 },
+  },
+  required: ["bear_value", "base_value", "bull_value"],
+};
+
+const valuationFrameworkSchema = {
+  type: "object",
+  description: "Required for pre_profit_optionality companies. The combined per-share range must reconcile Core business plus probability-weighted optionality plus funding/dilution adjustments.",
+  properties: {
+    framework_version: { type: "number", enum: [1] },
+    type: { type: "string", enum: ["core_optionality"] },
+    core_business: {
+      ...valuationFrameworkValuesSchema,
+      properties: {
+        label: { type: "string", minLength: 1, maxLength: 160 },
+        method: { type: "string", minLength: 1, maxLength: 500 },
+        summary: { type: "string", minLength: 1, maxLength: 2400 },
+        ...valuationFrameworkValuesSchema.properties,
+      },
+      required: ["label", "method", "summary", "bear_value", "base_value", "bull_value"],
+      additionalProperties: false,
+    },
+    optionality: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 160 },
+          status: { type: "string", minLength: 1, maxLength: 120 },
+          summary: { type: "string", minLength: 1, maxLength: 2400 },
+          success_value_per_share: { type: "number", minimum: 0 },
+          probability_bear: { type: "number", minimum: 0, maximum: 1 },
+          probability_base: { type: "number", minimum: 0, maximum: 1 },
+          probability_bull: { type: "number", minimum: 0, maximum: 1 },
+          bear_value: { type: "number", minimum: 0 },
+          base_value: { type: "number", minimum: 0 },
+          bull_value: { type: "number", minimum: 0 },
+          included_in_base: { type: "boolean" },
+        },
+        required: ["name", "status", "summary", "success_value_per_share", "probability_bear", "probability_base", "probability_bull", "bear_value", "base_value", "bull_value", "included_in_base"],
+        additionalProperties: false,
+      },
+    },
+    funding_dilution: {
+      type: "object",
+      properties: {
+        summary: { type: "string", minLength: 1, maxLength: 2400 },
+        basic_shares: { type: "number", exclusiveMinimum: 0 },
+        core_diluted_shares: { type: "number", exclusiveMinimum: 0 },
+        maximum_diluted_shares: { type: "number", exclusiveMinimum: 0 },
+        funding_required: { type: "number", minimum: 0 },
+        bear_adjustment: { type: "number", minimum: -1000000000, maximum: 0 },
+        base_adjustment: { type: "number", minimum: -1000000000, maximum: 0 },
+        bull_adjustment: { type: "number", minimum: -1000000000, maximum: 0 },
+      },
+      required: ["summary", "basic_shares", "core_diluted_shares", "maximum_diluted_shares", "funding_required", "bear_adjustment", "base_adjustment", "bull_adjustment"],
+      additionalProperties: false,
+    },
+    milestones: {
+      type: "array",
+      minItems: 1,
+      maxItems: 20,
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 200 },
+          status: { type: "string", minLength: 1, maxLength: 120 },
+          required_for: { type: "string", minLength: 1, maxLength: 300 },
+          impact: { type: "string", minLength: 1, maxLength: 1200 },
+          evidence: { type: "string", minLength: 1, maxLength: 1200 },
+        },
+        required: ["name", "status", "required_for", "impact", "evidence"],
+        additionalProperties: false,
+      },
+    },
+    combined: { ...valuationFrameworkValuesSchema, additionalProperties: false },
+  },
+  required: ["framework_version", "type", "core_business", "optionality", "funding_dilution", "milestones", "combined"],
+  additionalProperties: false,
+};
+
 const completedValuationSchema = {
   type: "object",
   properties: {
     currency: { type: "string", enum: ["USD"] },
+    company_stage: { type: "string", enum: ["cash_generative", "financial", "cyclical", "capital_intensive_transition", "pre_profit_optionality"] },
     as_of: { type: "string", minLength: 1, maxLength: 40 },
     method: { type: "string", minLength: 1, maxLength: 240 },
     market_price: { type: "number", minimum: 0 },
@@ -236,8 +325,9 @@ const completedValuationSchema = {
     calculation_summary: { type: "string", minLength: 1, maxLength: 6000 },
     key_assumptions: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1200 } },
     risks: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1200 } },
+    valuation_framework: valuationFrameworkSchema,
   },
-  required: ["currency", "as_of", "method", "base_value", "calculation_summary", "key_assumptions", "risks"],
+  required: ["currency", "company_stage", "as_of", "method", "base_value", "calculation_summary", "key_assumptions", "risks"],
   additionalProperties: false,
 };
 

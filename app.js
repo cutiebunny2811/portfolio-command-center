@@ -3821,6 +3821,24 @@
     </section>`;
   }
 
+  function valuationFrameworkMarkup(framework) {
+    if (!framework || framework.type !== "core_optionality") return "";
+    const core = framework.core_business || {};
+    const optionality = Array.isArray(framework.optionality) ? framework.optionality : [];
+    const funding = framework.funding_dilution || {};
+    const milestones = Array.isArray(framework.milestones) ? framework.milestones : [];
+    const range = (row) => `<span>${money(row?.bear_value)}</span><strong>${money(row?.base_value)}</strong><span>${money(row?.bull_value)}</span>`;
+    return `<section class="valuation-framework">
+      <header><div><span class="section-index">04 / VALUE ARCHITECTURE</span><h2>Core first. Options earned.</h2></div><p>มูลค่ารวมต่อหุ้นต้องย้อนกลับได้จากธุรกิจหลัก โอกาสที่ถ่วงด้วยความน่าจะเป็น และผลกระทบจากเงินทุนหรือ dilution</p></header>
+      <div class="valuation-framework__grid">
+        <article class="valuation-framework__core"><span>CORE BUSINESS</span><h3>${esc(core.label || "Reported operating business")}</h3><p>${esc(core.summary || "")}</p><small>${esc(core.method || "")}</small><div class="valuation-framework__range">${range(core)}</div></article>
+        <article class="valuation-framework__options"><span>PROBABILITY-WEIGHTED OPTIONALITY</span><div>${optionality.map((item, index) => `<section><header><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3></header><p>${esc(item.summary)}</p><dl><div><dt>SUCCESS VALUE</dt><dd>${money(item.success_value_per_share)}</dd></div><div><dt>PROBABILITY B / B / B</dt><dd>${percent(num(item.probability_bear) * 100, 0)} / ${percent(num(item.probability_base) * 100, 0)} / ${percent(num(item.probability_bull) * 100, 0)}</dd></div></dl><div class="valuation-framework__range">${range(item)}</div></section>`).join("")}</div></article>
+        <article class="valuation-framework__funding"><span>FUNDING / DILUTION</span><h3>Per-share bridge.</h3><p>${esc(funding.summary || "")}</p><dl><div><dt>BASIC SHARES</dt><dd>${compactNumber(funding.basic_shares)}</dd></div><div><dt>CORE DILUTED</dt><dd>${compactNumber(funding.core_diluted_shares)}</dd></div><div><dt>MAX DILUTED</dt><dd>${compactNumber(funding.maximum_diluted_shares)}</dd></div><div><dt>FUNDING NEED</dt><dd>${compactMoney(funding.funding_required)}</dd></div></dl><div class="valuation-framework__range valuation-framework__range--adjustment"><span>${money(funding.bear_adjustment)}</span><strong>${money(funding.base_adjustment)}</strong><span>${money(funding.bull_adjustment)}</span></div></article>
+        <article class="valuation-framework__milestones"><span>MILESTONE LEDGER</span><div>${milestones.map((item, index) => `<section><small>${String(index + 1).padStart(2, "0")} · ${esc(item.status)}</small><h3>${esc(item.name)}</h3><strong>${esc(item.required_for)}</strong><p>${esc(item.impact)}</p><em>${esc(item.evidence)}</em></section>`).join("")}</div></article>
+      </div>
+    </section>`;
+  }
+
   function renderIanCompletedValuationRevision(rows, selected, payload) {
     const revision = payload?.revision || null;
     const job = payload?.job || null;
@@ -3843,6 +3861,7 @@
     const risks = Array.isArray(valuation.risks) ? valuation.risks : [];
     const watchItems = Array.isArray(research.watch_items) ? research.watch_items : [];
     const sources = Array.isArray(research.sources) ? research.sources : [];
+    const frameworkMarkup = valuationFrameworkMarkup(valuation.valuation_framework);
     const completedResearchBriefMarkup = (() => {
       const brief = research.brief && typeof research.brief === "object" ? research.brief : {};
       const conditions = Array.isArray(brief.conditions) && brief.conditions.length ? brief.conditions : assumptions.slice(0, 6);
@@ -3873,15 +3892,16 @@
         <div class="valuation-verdict">
           <div><span>METHOD</span><strong>${esc(valuation.method || "—")}</strong></div>
           <div><span>AUTHOR</span><strong>IAN</strong></div>
-          <div><span>FORMAT</span><strong>COMPLETED V1</strong></div>
+          <div><span>COMPANY STAGE</span><strong>${esc(valuation.company_stage || "LEGACY")}</strong></div>
           <div><span>VALUATION AS OF</span><strong>${esc(valuation.as_of || research.as_of || "—")}</strong></div>
         </div>
         <section class="valuation-range">
           <header><div><span class="section-index">03 / IAN VALUE RANGE</span><h2>${esc(research.headline || "Completed valuation research")}</h2></div><p>${esc(research.summary || "")}</p></header>
           <div class="valuation-cases valuation-cases--completed valuation-cases--count-${cases.length}">${caseMarkup}</div>
         </section>
+        ${frameworkMarkup}
         <section class="valuation-evidence valuation-evidence--completed">
-          <header><span class="section-index">04 / METHOD + CALCULATION</span><h2>The work behind the number.</h2></header>
+          <header><span class="section-index">${frameworkMarkup ? "05" : "04"} / METHOD + CALCULATION</span><h2>The work behind the number.</h2></header>
           <div class="valuation-method-grid"><section><small>METHODOLOGY</small><p>${esc(research.methodology || valuation.method || "—")}</p></section><section><small>CALCULATION SUMMARY</small><p>${esc(valuation.calculation_summary || "—")}</p></section></div>
           <div class="valuation-research__points">
             <section><small>KEY ASSUMPTIONS</small>${assumptions.length ? `<ul>${assumptions.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : ""}</section>
@@ -3889,7 +3909,7 @@
           </div>
         </section>
         <section class="valuation-research valuation-research--completed">
-          <div><span class="section-index">05 / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian เรียบเรียงหลักฐาน สมมติฐาน และจุดติดตามเป็นภาษาไทย ส่วนรายงานฉบับเต็มยังเปิดอ่านได้ด้านล่าง</p></div>
+          <div><span class="section-index">${frameworkMarkup ? "06" : "05"} / HERMES RESEARCH BRIEF</span><h2>ข้อสรุปที่อ่านซ้ำได้ ไม่ต้องคำนวณใหม่ทุกครั้ง</h2><p>Ian เรียบเรียงหลักฐาน สมมติฐาน และจุดติดตามเป็นภาษาไทย ส่วนรายงานฉบับเต็มยังเปิดอ่านได้ด้านล่าง</p></div>
           ${completedResearchBriefMarkup}
         </section>
         <details class="valuation-completed-report">

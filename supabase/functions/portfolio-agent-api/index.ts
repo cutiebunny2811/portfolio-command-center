@@ -3,6 +3,7 @@ import { analyzeWatchlistSetup } from "./watchlist-setup-scanner.mjs";
 import { analyzeOptionDesk } from "./option-desk-analysis.mjs";
 import { buildBriefEditorialPolicy } from "./briefing-policy.mjs";
 import { buildValuation } from "../refresh-company-valuation/valuation-core.mjs";
+import { validateOptionalityValuationFramework } from "./valuation-framework.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -262,14 +263,35 @@ function validateCompletedValuationResearch(researchValue: unknown, valuationVal
   const valuation = jsonObject(valuationValue, "completed_valuation");
   const currency = requiredText(valuation.currency, "completed_valuation.currency", 3).toUpperCase();
   if (currency !== "USD") throw new Error("completed_valuation.currency must be USD");
+  const companyStage = requiredText(valuation.company_stage, "completed_valuation.company_stage", 80).toLowerCase();
+  const completedValuationStages = new Set([
+    "cash_generative", "financial", "cyclical", "capital_intensive_transition", "pre_profit_optionality",
+  ]);
+  if (!completedValuationStages.has(companyStage)) throw new Error("completed_valuation.company_stage is unsupported");
   const bearValue = completedValuationNumber(valuation.bear_value, "completed_valuation.bear_value");
   const baseValue = completedValuationNumber(valuation.base_value, "completed_valuation.base_value", true)!;
   const bullValue = completedValuationNumber(valuation.bull_value, "completed_valuation.bull_value");
   if (bearValue != null && bearValue > baseValue) throw new Error("completed_valuation.bear_value cannot exceed base_value");
   if (bullValue != null && bullValue < baseValue) throw new Error("completed_valuation.bull_value cannot be below base_value");
   const marketPrice = completedValuationNumber(valuation.market_price, "completed_valuation.market_price");
+  let valuationFramework = null;
+  if (companyStage === "pre_profit_optionality") {
+    if (!valuation.valuation_framework) throw new Error("completed_valuation.valuation_framework is required for pre_profit_optionality");
+    valuationFramework = validateOptionalityValuationFramework(valuation.valuation_framework, {
+      bearValue,
+      baseValue,
+      bullValue,
+    });
+  } else if (valuation.valuation_framework != null) {
+    valuationFramework = validateOptionalityValuationFramework(valuation.valuation_framework, {
+      bearValue,
+      baseValue,
+      bullValue,
+    });
+  }
   const completedValuation = {
     currency: "USD",
+    company_stage: companyStage,
     as_of: requiredText(valuation.as_of, "completed_valuation.as_of", 40),
     method: requiredText(valuation.method, "completed_valuation.method", 240),
     ...(marketPrice != null ? { market_price: marketPrice } : {}),
@@ -281,6 +303,7 @@ function validateCompletedValuationResearch(researchValue: unknown, valuationVal
       .map((item) => requiredText(item, "completed_valuation.key_assumptions[]", 1200)),
     risks: validateStringItems(valuation.risks, "completed_valuation.risks", 1, 20)
       .map((item) => requiredText(item, "completed_valuation.risks[]", 1200)),
+    ...(valuationFramework ? { valuation_framework: valuationFramework } : {}),
   };
   return { completedResearch, completedValuation };
 }

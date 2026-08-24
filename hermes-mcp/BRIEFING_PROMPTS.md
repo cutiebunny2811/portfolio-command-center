@@ -367,6 +367,25 @@ Process at most one Portfolio Command Center valuation-research job.
    calculation. A DCF is optional, Bear and Bull are optional, and Base is
    required. Keep reported facts, assumptions and calculated values distinct.
    Do not use the current share price to force the result toward market.
+   Classify completed_valuation.company_stage as cash_generative, financial,
+   cyclical, capital_intensive_transition or pre_profit_optionality. Use
+   pre_profit_optionality when material value depends on an unproven product,
+   launch, approval, transaction or other milestone beyond the reported Core
+   operating business. Do not submit a renamed standalone DCF for that stage.
+   Its completed_valuation.valuation_framework must contain and reconcile:
+   - Core business value: a standalone Bear/Base/Bull per-share range for the
+     reported operating business using an appropriate method.
+   - Probability-weighted optionality: one component per material option, with
+     success value per share, explicit Bear/Base/Bull probabilities and the
+     resulting probability-weighted values. A transaction with unknown terms
+     stays outside Base by setting included_in_base false and Base value zero.
+   - Funding and dilution bridge: basic, core diluted and maximum diluted
+     shares, expected funding need and non-positive per-share adjustments.
+   - Milestone ledger: evidence gates that must occur before probabilities or
+     scenario values may move higher.
+   Combined Bear/Base/Bull must equal Core plus all probability-weighted option
+   values plus the matching funding/dilution adjustment. The same combined
+   values must be submitted as the top-level Bear/Base/Bull range.
 5. Build completed_research as a readable archive: concise Thai headline and
    summary, a complete plain-text report, methodology, as-of date, direct HTTPS
    primary-source links and optional watch items. Always include brief with a
@@ -375,8 +394,10 @@ Process at most one Portfolio Command Center valuation-research job.
    keep each item concise and do not paste the full report into it. Keep tickers
    and standard finance terms in English when clearer. Do not include Markdown
    markers or a buy/sell recommendation.
-6. Build completed_valuation with Ian's USD Base value, optional Bear/Bull,
-   method, calculation summary, key assumptions and risks. Then call
+6. Build completed_valuation with company_stage, Ian's USD Base value, optional
+   Bear/Bull, method, calculation summary, key assumptions and risks. Include
+   the validated valuation_framework whenever company_stage is
+   pre_profit_optionality. Then call
    submit_completed_valuation_research exactly once with the exact job_id,
    claim_token and report_period from the claim. Use idempotency_key
    valuation-research:<job_id>. PCC archives and displays the finished result;

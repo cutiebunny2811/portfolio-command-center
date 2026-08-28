@@ -2,9 +2,10 @@ name: Sync research news
 
 on:
   schedule:
-    # 17:00, 19:00, 21:00, 23:00, 01:00 and 03:00 Asia/Bangkok.
+    # 17:17, 19:17, 21:17, 23:17, 01:17 and 03:17 Asia/Bangkok.
     # All six UTC executions belong to the same US weekday session.
-    - cron: "0 10,12,14,16,18,20 * * 1-5"
+    # Avoid minute 00, when GitHub says scheduled runs are most likely to be delayed or dropped.
+    - cron: "17 10,12,14,16,18,20 * * 1-5"
   workflow_dispatch:
 
 permissions:

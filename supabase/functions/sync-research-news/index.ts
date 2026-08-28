@@ -111,6 +111,16 @@ function response(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status, headers: jsonHeaders });
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 function normalizedSymbol(value: unknown): string {
   return String(value || "").trim().toUpperCase();
 }
@@ -757,7 +767,7 @@ Deno.serve(async (request) => {
             month_posts: Number(usageRecord.posts_read || 0),
           };
         } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
+          const detail = errorMessage(error);
           xSourceErrors[sourceKey] = detail;
           xSourceRuns[sourceKey] = { status: "error", error: detail, window_key: windowKey };
           await admin.from("research_x_source_state").update({
@@ -769,7 +779,7 @@ Deno.serve(async (request) => {
       }
       xError = Object.keys(xSourceErrors).length ? JSON.stringify(xSourceErrors) : null;
     } catch (error) {
-      xError = error instanceof Error ? error.message : String(error);
+      xError = errorMessage(error);
       console.warn("X source sync skipped:", xError);
     }
 
@@ -837,6 +847,6 @@ Deno.serve(async (request) => {
     });
   } catch (error) {
     console.error(error);
-    return response({ error: error instanceof Error ? error.message : String(error) }, 500);
+    return response({ error: errorMessage(error) }, 500);
   }
 });

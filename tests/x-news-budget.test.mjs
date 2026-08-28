@@ -42,7 +42,7 @@ test("deduplicates shared subscriptions before an X API read", () => {
 });
 
 test("opens only the planned Bangkok collection windows", () => {
-  assert.match(workflowSource, /cron: "0 10,12,14,16,18,20 \* \* 1-5"/);
+  assert.match(workflowSource, /cron: "17 10,12,14,16,18,20 \* \* 1-5"/);
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T11:30:00Z"), null), null);
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T12:30:00Z"), null), "2026-08-12:brief");
   assert.equal(dueXWindow("reuters", new Date("2026-08-12T16:30:00Z"), "2026-08-12:brief"), "2026-08-12:continuation");

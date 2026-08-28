@@ -121,6 +121,14 @@ function errorMessage(error: unknown): string {
   }
 }
 
+function batches<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    result.push(items.slice(index, index + size));
+  }
+  return result;
+}
+
 function normalizedSymbol(value: unknown): string {
   return String(value || "").trim().toUpperCase();
 }
@@ -350,28 +358,26 @@ async function storeArticlesAndMatches(
   articleRows: Record<string, unknown>[],
   scopeBySymbol: Map<string, InstrumentScope[]>,
 ): Promise<number> {
-  if (articleRows.length) {
+  for (const articleBatch of batches(articleRows, 250)) {
     const { error } = await admin
       .from("research_articles")
-      .upsert(articleRows, { onConflict: "source,source_article_id" });
+      .upsert(articleBatch, { onConflict: "source,source_article_id" });
     if (error) throw error;
   }
-  const sourceIds = articleRows.map((row) => String(row.source_article_id));
-  const { data: storedArticles, error: articleError } = sourceIds.length
-    ? await admin
+  const sourceIds = [...new Set(articleRows.map((row) => String(row.source_article_id)))];
+  const storedArticles: Array<{ id: string; source_article_id: string; tickers: string[] | null }> = [];
+  for (const sourceIdBatch of batches(sourceIds, 50)) {
+    const { data, error } = await admin
       .from("research_articles")
       .select("id,source_article_id,tickers")
       .eq("source", source)
-      .in("source_article_id", sourceIds)
-    : { data: [], error: null };
-  if (articleError) throw articleError;
+      .in("source_article_id", sourceIdBatch);
+    if (error) throw error;
+    storedArticles.push(...((data || []) as typeof storedArticles));
+  }
 
   const matches: Record<string, unknown>[] = [];
-  for (const article of (storedArticles || []) as Array<{
-    id: string;
-    source_article_id: string;
-    tickers: string[] | null;
-  }>) {
+  for (const article of storedArticles) {
     const matchedScopes = new Map<string, InstrumentScope>();
     for (const ticker of article.tickers || []) {
       for (const scope of scopeBySymbol.get(normalizedSymbol(ticker)) || []) {
@@ -388,10 +394,10 @@ async function storeArticlesAndMatches(
       });
     }
   }
-  if (matches.length) {
+  for (const matchBatch of batches(matches, 500)) {
     const { error } = await admin
       .from("research_article_matches")
-      .upsert(matches, { onConflict: "user_id,article_id,instrument_id" });
+      .upsert(matchBatch, { onConflict: "user_id,article_id,instrument_id" });
     if (error) throw error;
   }
   return matches.length;
@@ -404,23 +410,27 @@ async function storeSourceArticleMatches(
 ): Promise<number> {
   const sourceIds = articleRows.map((row) => String(row.source_article_id));
   if (!sourceIds.length) return 0;
-  const { data: storedArticles, error: articleError } = await admin
-    .from("research_articles")
-    .select("id,source_article_id")
-    .eq("source", subscription.source)
-    .in("source_article_id", sourceIds);
-  if (articleError) throw articleError;
+  const storedArticles: Array<{ id: string; source_article_id: string }> = [];
+  for (const sourceIdBatch of batches([...new Set(sourceIds)], 50)) {
+    const { data, error } = await admin
+      .from("research_articles")
+      .select("id,source_article_id")
+      .eq("source", subscription.source)
+      .in("source_article_id", sourceIdBatch);
+    if (error) throw error;
+    storedArticles.push(...((data || []) as typeof storedArticles));
+  }
 
-  const rows = ((storedArticles || []) as Array<{ id: string; source_article_id: string }>).map((article) => ({
+  const rows = storedArticles.map((article) => ({
     user_id: subscription.user_id,
     article_id: article.id,
     source: subscription.source,
     source_key: subscription.source_key,
   }));
-  if (rows.length) {
+  for (const rowBatch of batches(rows, 500)) {
     const { error } = await admin
       .from("research_source_article_matches")
-      .upsert(rows, { onConflict: "user_id,article_id,source,source_key" });
+      .upsert(rowBatch, { onConflict: "user_id,article_id,source,source_key" });
     if (error) throw error;
   }
   return rows.length;

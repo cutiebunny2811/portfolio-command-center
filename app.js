@@ -318,12 +318,13 @@
 
   function priceSourceLabel(source) {
     if (source === "massive_eod") return "Massive EOD";
+    if (source === "webull_opra") return "Webull OPRA";
     if (source === "webull") return "Webull";
     return source || "Manual";
   }
 
   function optionPriceStatusLabel() {
-    return state.optionPriceAccess ? "options EOD · manual fallback" : "options use manual prices";
+    return state.optionPriceAccess ? "options OPRA · EOD fallback" : "options use manual prices";
   }
 
   function portfolioStats(portfolio) {
@@ -1500,7 +1501,7 @@
         const failed = Array.isArray(data?.failures) ? data.failures.length : 0;
         if (failed) toast(`${data.updated || 0} prices updated; ${failed} could not be read`, true);
         else if (data?.skipped) toast("Market prices are already current");
-        else toast(`${data?.updated || 0} prices updated · ${data?.stock_updated || 0} Webull · ${data?.option_updated || 0} option EOD`);
+        else toast(`${data?.updated || 0} prices updated · ${data?.stock_updated || 0} stocks · ${data?.option_webull_updated || 0} option OPRA · ${data?.option_massive_updated || 0} EOD fallback`);
       }
       render();
       return data;
@@ -2259,7 +2260,7 @@
         <div class="mobile-holding__details" id="${detailId}" ${expanded ? "" : "hidden"}>
           <div class="mobile-holding__facts">
             <div><small>Quantity</small><strong>${quantityLabel}</strong></div>
-            <div><small>Market price</small><strong>${marketLabel}</strong><span class="${metrics.market?.source === "webull" ? "price-live" : ""}">${metrics.market ? esc(priceSourceLabel(metrics.market.source)) : "Waiting for price"}</span></div>
+            <div><small>Market price</small><strong>${marketLabel}</strong><span class="${["webull", "webull_opra"].includes(metrics.market?.source) ? "price-live" : ""}">${metrics.market ? esc(priceSourceLabel(metrics.market.source)) : "Waiting for price"}</span></div>
             <div><small>Average cost</small><strong>${averageLabel}</strong></div>
             <div><small>Cost basis</small><strong>${money(metrics.costBasis)}</strong></div>
             ${row.instrument.asset_type === "option" ? `<div><small>Maximum loss</small><strong>${money(row.position?.maximum_loss)}</strong></div><div><small>Notional</small><strong>${money(row.position?.notional_value)}</strong></div>` : ""}
@@ -2290,7 +2291,7 @@
         const { market, quantity, costBasis, hasMarket, marketValue, unrealized, unrealizedPercent, pnlClass, pnlSign, allocationProgress, allocationState, trim, tranches, canPlanBuy } = holdingMetrics(row);
         return `<tr>
         <td>${assetIdentity(row.instrument)}</td>
-        <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${market?.source === "webull" ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(priceSourceLabel(market.source))}` : "MKT —"}</span></td>
+        <td><span class="cell-main mono">${quantity.toLocaleString("en-US", { maximumFractionDigits: 8 })}</span><span class="cell-sub">AVG ${quantity > 0 ? money(row.position?.average_cost, 4) : "—"}</span><span class="cell-sub ${["webull", "webull_opra"].includes(market?.source) ? "price-live" : ""}">${market ? `MKT ${money(market.price, 4)} · ${esc(priceSourceLabel(market.source))}` : "MKT —"}</span></td>
         <td>${hasMarket ? `<strong class="mono">${money(marketValue)}</strong>` : `<span class="cell-main mono">—</span>`}<span class="cell-sub">COST ${money(costBasis)}</span>${row.instrument.asset_type === "option" ? `<span class="cell-sub">MAX LOSS ${money(row.position?.maximum_loss)}</span><span class="cell-sub">NOTIONAL ${money(row.position?.notional_value)}</span>` : ""}</td>
         <td class="pnl-cell">${hasMarket ? `<strong class="mono ${pnlClass}">${pnlSign}${money(unrealized)}</strong><span class="cell-sub ${pnlClass}">${pnlSign}${percent(unrealizedPercent, 2)}</span>` : `<span class="cell-main mono">—</span><span class="cell-sub">${quantity > 0 ? "Waiting for price" : "No position"}</span>`}</td>
         <td class="allocation-cell ${trim ? "is-over" : ""}"><div class="allocation-cell__top"><strong class="mono">${percent(row.currentPercent)}<small>current</small></strong><span class="mono">${percent(row.targetPercent)}<small>target</small></span></div><div class="allocation-track is-${allocationState} ${allocationProgress > 100 ? "is-over" : ""}" style="--current:${clamp(allocationProgress, 0, 100)}%"><i></i></div><div class="allocation-cell__meta"><span class="${trim ? "negative" : "gold"}">${trim ? `${money(trim.excess)} over` : `${money(row.remaining)} left`}</span><span>${tranches ? `${tranches} tranches · ~${money(row.quota / tranches)} each` : esc(row.status)}</span></div>${trim ? `<div class="allocation-cell__advice"><strong>Suggested trim</strong><span>Sell ~${formatTradeQuantity(trim.quantity)} ${trim.unit}${trim.estimatedProceeds != null ? ` · about ${money(trim.estimatedProceeds)} at market` : ""} to return near ${percent(row.targetPercent)}.</span></div>` : ""}</td>

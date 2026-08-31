@@ -121,3 +121,19 @@ export function mergeOptionChain(contracts, snapshots) {
     return { ...contract, ...quote, bid, ask, mid };
   });
 }
+
+export function optionPortfolioMark(quote) {
+  const quoteNumber = (value) => value === null || value === undefined || value === "" ? Number.NaN : Number(value);
+  const bid = quoteNumber(quote?.bid);
+  const ask = quoteNumber(quote?.ask);
+  const last = quoteNumber(quote?.last);
+  const marketTime = String(quote?.quote_time || "").trim();
+  if (!marketTime || !Number.isFinite(Date.parse(marketTime))) return null;
+  if (Number.isFinite(bid) && bid >= 0 && Number.isFinite(ask) && ask >= bid) {
+    return { price: Math.round(((bid + ask) / 2) * 1_000_000) / 1_000_000, marketTime, method: "mid" };
+  }
+  if (Number.isFinite(last) && last >= 0) return { price: last, marketTime, method: "last" };
+  if (Number.isFinite(bid) && bid >= 0) return { price: bid, marketTime, method: "bid" };
+  if (Number.isFinite(ask) && ask >= 0) return { price: ask, marketTime, method: "ask" };
+  return null;
+}

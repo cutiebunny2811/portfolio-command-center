@@ -9,6 +9,7 @@ import {
   nearestContracts,
   normalizeOptionContract,
   normalizeOptionSnapshot,
+  optionPortfolioMark,
 } from "./option-chain-core.mjs";
 
 const corsHeaders = {
@@ -1135,8 +1136,11 @@ Deno.serve(async (request) => {
 
     const force = body?.force === true;
     const massiveApiKey = Deno.env.get("MASSIVE_API_KEY") || "";
-    const optionOwnerUserId = Deno.env.get("OPTIONS_EOD_OWNER_USER_ID") || "";
-    const optionPriceAccess = Boolean(massiveApiKey && optionOwnerUserId && authenticatedUserId === optionOwnerUserId);
+    const optionOwnerUserId = Deno.env.get("OPTIONS_OPRA_OWNER_USER_ID")?.trim()
+      || Deno.env.get("OPTIONS_EOD_OWNER_USER_ID")?.trim()
+      || "";
+    const optionPriceAccess = Boolean(optionOwnerUserId && authenticatedUserId === optionOwnerUserId);
+    const massiveFallbackAccess = Boolean(massiveApiKey && optionPriceAccess);
     const [{ data: targets, error: targetError }, { data: positions, error: positionError }, watchlistResult] = await Promise.all([
       supabase.from("allocation_targets").select("instrument_id").eq("is_active", true),
       supabase.from("position_balances").select("instrument_id").gt("quantity", 0),
@@ -1226,28 +1230,83 @@ Deno.serve(async (request) => {
         .limit(500);
       if (priceRowsError) throw priceRowsError;
       optionPriceRows = priceRows || [];
-      const optionCutoff = Date.now() - optionEodRefreshWindowMs;
+      const optionCutoff = Date.now() - refreshWindowMs;
       const freshOptionIds = new Set(optionPriceRows
-        .filter((item) => item.source === "massive_eod" && new Date(String(item.fetched_at)).getTime() >= optionCutoff)
+        .filter((item) => item.source === "webull_opra" && new Date(String(item.fetched_at)).getTime() >= optionCutoff)
         .map((item) => item.instrument_id));
       optionPending = optionInstruments.filter((item) => !freshOptionIds.has(item.id));
     }
-    const limitedOptionPending = optionPending.slice(0, optionEodRequestLimit);
-    const optionSnapshots = limitedOptionPending.length
-      ? await mapLimit(limitedOptionPending, 1, (instrument) => fetchMassiveOptionEod(instrument, massiveApiKey))
-      : [];
     const latestOptionPrice = new Map<string, Record<string, unknown>>();
     optionPriceRows.forEach((item) => {
       const id = String(item.instrument_id);
       if (!latestOptionPrice.has(id)) latestOptionPrice.set(id, item);
     });
+
+    const webullOptionPending = optionPending.slice(0, 20);
+    const webullSymbolById = new Map(webullOptionPending.map((instrument) => [
+      instrument.id,
+      buildMassiveOptionTicker(instrument).replace(/^O:/, ""),
+    ]));
+    let webullQuotes: Array<Record<string, unknown>> = [];
+    let webullRequestError = "";
+    if (webullOptionPending.length) {
+      try {
+        webullQuotes = await fetchOptionSnapshots([...webullSymbolById.values()]);
+      } catch (error) {
+        webullRequestError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const webullQuoteBySymbol = new Map<string, Record<string, unknown>>(webullQuotes
+      .filter(Boolean)
+      .map((quote) => [String(quote.symbol || ""), quote]));
     let optionUpdated = 0;
     let optionProtected = 0;
-    for (let index = 0; index < optionSnapshots.length; index += 1) {
-      const result = optionSnapshots[index];
+    let optionWebullUpdated = 0;
+    const massiveFallbackPending: OptionInstrument[] = [];
+    for (const instrument of webullOptionPending) {
+      const webullSymbol = webullSymbolById.get(instrument.id) || "";
+      const quote = webullQuoteBySymbol.get(webullSymbol);
+      const mark = optionPortfolioMark(quote);
+      if (!mark) {
+        massiveFallbackPending.push(instrument);
+        continue;
+      }
+      if (!shouldRecordOptionEod(latestOptionPrice.get(instrument.id), mark)) {
+        optionProtected += 1;
+        continue;
+      }
+      const write = await supabase.rpc("api_record_instrument_price", {
+        p_instrument_id: instrument.id,
+        p_price: mark.price,
+        p_market_time: mark.marketTime,
+        p_source: "webull_opra",
+      });
+      if (write.error) {
+        failures.push({ symbol: instrument.symbol, message: write.error.message });
+        massiveFallbackPending.push(instrument);
+      } else {
+        optionUpdated += 1;
+        optionWebullUpdated += 1;
+      }
+    }
+
+    if (webullRequestError && webullOptionPending.length) {
+      failures.push({ symbol: "options", message: webullRequestError });
+      massiveFallbackPending.splice(0, massiveFallbackPending.length, ...webullOptionPending);
+    }
+
+    const limitedMassiveFallback = massiveFallbackAccess
+      ? [...new Map(massiveFallbackPending.map((instrument) => [instrument.id, instrument])).values()].slice(0, optionEodRequestLimit)
+      : [];
+    const massiveSnapshots = limitedMassiveFallback.length
+      ? await mapLimit(limitedMassiveFallback, 1, (instrument) => fetchMassiveOptionEod(instrument, massiveApiKey))
+      : [];
+    let optionMassiveUpdated = 0;
+    for (let index = 0; index < massiveSnapshots.length; index += 1) {
+      const result = massiveSnapshots[index];
       if (result.status === "rejected") {
         failures.push({
-          symbol: limitedOptionPending[index].symbol,
+          symbol: limitedMassiveFallback[index].symbol,
           message: result.reason instanceof Error ? result.reason.message : String(result.reason),
         });
         continue;
@@ -1264,17 +1323,22 @@ Deno.serve(async (request) => {
         p_source: "massive_eod",
       });
       if (write.error) failures.push({ symbol: quote.instrument.symbol, message: write.error.message });
-      else optionUpdated += 1;
+      else {
+        optionUpdated += 1;
+        optionMassiveUpdated += 1;
+      }
     }
-    const deferredOptions = Math.max(optionPending.length - limitedOptionPending.length, 0);
+    const deferredOptions = Math.max(optionPending.length - webullOptionPending.length, 0);
     const updated = stockUpdated + optionUpdated;
-    const checked = pending.length + limitedOptionPending.length;
+    const checked = pending.length + webullOptionPending.length;
     return new Response(JSON.stringify({
       updated,
       stock_updated: stockUpdated,
       option_updated: optionUpdated,
+      option_webull_updated: optionWebullUpdated,
+      option_massive_updated: optionMassiveUpdated,
       option_price_access: optionPriceAccess,
-      option_checked: limitedOptionPending.length,
+      option_checked: webullOptionPending.length,
       option_cached: Math.max(optionInstruments.length - optionPending.length, 0),
       option_protected: optionProtected,
       option_deferred: deferredOptions,

@@ -40,16 +40,20 @@ test("an older EOD close cannot overwrite a newer manual observation", () => {
   assert.equal(shouldRecordOptionEod({ source: "manual", market_time: "2026-08-12T01:00:00Z" }, quote), true);
 });
 
-test("Massive option pricing is server-gated to one configured owner", () => {
-  assert.match(edgeFunction, /OPTIONS_EOD_OWNER_USER_ID/);
+test("portfolio option pricing uses owner-gated Webull OPRA with Massive EOD fallback", () => {
+  assert.match(edgeFunction, /OPTIONS_OPRA_OWNER_USER_ID/);
   assert.match(edgeFunction, /authenticatedUserId === optionOwnerUserId/);
   assert.match(edgeFunction, /item\.asset_type === "option" && openPositionIds\.has\(item\.id\)/);
+  assert.match(edgeFunction, /fetchOptionSnapshots/);
+  assert.match(edgeFunction, /optionPortfolioMark/);
+  assert.match(edgeFunction, /p_source: "webull_opra"/);
   assert.match(edgeFunction, /optionEodRequestLimit = 4/);
   assert.match(edgeFunction, /p_source: "massive_eod"/);
 });
 
-test("portfolio UI distinguishes owner EOD pricing from the manual fallback", () => {
-  assert.match(app, /options EOD · manual fallback/);
+test("portfolio UI labels live OPRA pricing and the EOD/manual fallbacks", () => {
+  assert.match(app, /options OPRA · EOD fallback/);
   assert.match(app, /options use manual prices/);
+  assert.match(app, /Webull OPRA/);
   assert.match(app, /Massive EOD/);
 });

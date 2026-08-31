@@ -8,6 +8,7 @@ import {
   nearestContracts,
   normalizeOptionContract,
   normalizeOptionSnapshot,
+  optionPortfolioMark,
 } from "../supabase/functions/refresh-stock-prices/option-chain-core.mjs";
 
 test("normalizes Webull option contracts without inventing missing fields", () => {
@@ -83,4 +84,27 @@ test("merges contract metadata with OPRA snapshots and computes a valid midpoint
     { symbol: "NVDA260918C00180000", bid: 4.2, ask: 4.6, last: 4.4 },
   ]);
   assert.equal(rows[0].mid, 4.4);
+});
+
+test("portfolio option mark prefers the live OPRA midpoint and preserves quote time", () => {
+  assert.deepEqual(optionPortfolioMark({
+    bid: 5.2,
+    ask: 5.4,
+    last: 5.15,
+    quote_time: "2026-09-01T14:30:00.000Z",
+  }), {
+    price: 5.3,
+    marketTime: "2026-09-01T14:30:00.000Z",
+    method: "mid",
+  });
+  assert.deepEqual(optionPortfolioMark({
+    bid: null,
+    ask: null,
+    last: 5.15,
+    quote_time: "2026-09-01T14:29:00.000Z",
+  }), {
+    price: 5.15,
+    marketTime: "2026-09-01T14:29:00.000Z",
+    method: "last",
+  });
 });

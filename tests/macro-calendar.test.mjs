@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyBlsPpiOverrides,
+  buildAdpRows,
   buildBlsPpiOverrides,
   buildFomcRows,
   buildFredRows,
@@ -149,11 +150,32 @@ test("parses FOMC meetings and builds decision, press conference, and minutes", 
   assert.ok(rows.some((row) => row.external_id === "fomc-minutes:2026-09-16"));
 });
 
-test("generates the two high-impact ISM releases only", () => {
+test("generates red ISM releases plus orange manufacturing prices", () => {
   const rows = buildIsmRows({ fetchedAt: "2026-08-01T00:00:00Z", windowFrom: "2026-08-01", windowTo: "2026-08-31" });
-  assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at]), [
-    ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z"],
-    ["ISM Services PMI", "2026-08-05T14:00:00.000Z"],
+  assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at, row.importance]), [
+    ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 3],
+    ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 2],
+    ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 3],
+  ]);
+});
+
+test("adds official orange ADP monthly releases at 08:15 Eastern", () => {
+  const rows = buildAdpRows({
+    fetchedAt: "2026-09-01T00:00:00Z",
+    windowFrom: "2026-09-01",
+    windowTo: "2026-12-31",
+  });
+
+  assert.deepEqual(rows.map((row) => [
+    row.event_name,
+    row.scheduled_at,
+    row.reference_period,
+    row.importance,
+  ]), [
+    ["ADP Non-Farm Employment Change", "2026-09-02T12:15:00.000Z", "2026-08-01", 2],
+    ["ADP Non-Farm Employment Change", "2026-09-30T12:15:00.000Z", "2026-09-01", 2],
+    ["ADP Non-Farm Employment Change", "2026-11-04T13:15:00.000Z", "2026-10-01", 2],
+    ["ADP Non-Farm Employment Change", "2026-12-02T13:15:00.000Z", "2026-11-01", 2],
   ]);
 });
 

@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   applyBlsPpiOverrides,
+  buildAdpRows,
   BLS_PPI_SERIES,
   buildBlsPpiOverrides,
   buildFomcRows,
@@ -252,6 +253,7 @@ Deno.serve(async (request) => {
         windowTo,
       }),
       ...buildIsmRows({ fetchedAt, windowFrom, windowTo }),
+      ...buildAdpRows({ fetchedAt, windowFrom, windowTo }),
       ...buildMichiganRows({
         snapshot: michiganSnapshot,
         now: fetchedAt,
@@ -319,7 +321,7 @@ Deno.serve(async (request) => {
     const { data: existing, error: existingError } = await service
       .from("macro_events")
       .select("id,source,external_id")
-      .in("source", ["fred", "federal_reserve", "ism", "university_michigan"])
+      .in("source", ["fred", "federal_reserve", "ism", "adp", "university_michigan"])
       .gte("scheduled_at", `${windowFrom}T00:00:00Z`)
       .lt(
         "scheduled_at",
@@ -365,7 +367,7 @@ Deno.serve(async (request) => {
     return result({
       updated: rows.length,
       risk_snapshots: riskSnapshots.length,
-      sources: ["BLS Public Data API", "FRED", "Federal Reserve", "ISM", "University of Michigan"],
+      sources: ["ADP", "BLS Public Data API", "FRED", "Federal Reserve", "ISM", "University of Michigan"],
       source_warning: [blsWarning, michiganWarning].filter(Boolean).join("; ") || null,
       window_from: windowFrom,
       window_to: windowTo,

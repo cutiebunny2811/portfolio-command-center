@@ -243,6 +243,14 @@ export const MICHIGAN_PRELIMINARY_RELEASES = [
   "2027-09-10", "2027-10-08", "2027-11-05", "2027-12-03",
 ];
 
+// ADP publishes these dates directly on its National Employment Report calendar.
+export const ADP_MONTHLY_RELEASES = [
+  "2026-09-02",
+  "2026-09-30",
+  "2026-11-04",
+  "2026-12-02",
+];
+
 export const BLS_PPI_SERIES = [
   { pccSeriesId: "PPIFIS", blsSeriesId: "WPSFD4" },
   { pccSeriesId: "PPIFES", blsSeriesId: "WPSFD49104" },
@@ -970,8 +978,20 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
         date: businessDays[0],
         slug: "manufacturing",
         name: "ISM Manufacturing PMI",
+        importance: 3,
       },
-      { date: businessDays[2], slug: "services", name: "ISM Services PMI" },
+      {
+        date: businessDays[0],
+        slug: "manufacturing-prices",
+        name: "ISM Manufacturing Prices",
+        importance: 2,
+      },
+      {
+        date: businessDays[2],
+        slug: "services",
+        name: "ISM Services PMI",
+        importance: 3,
+      },
     ];
     for (const event of events) {
       if (!event.date || !inWindow(event.date, windowFrom, windowTo)) continue;
@@ -988,7 +1008,7 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
         actual: null,
         previous: null,
         revised: null,
-        importance: 3,
+        importance: event.importance,
         currency: "USD",
         unit: "index",
         source_name: "Institute for Supply Management",
@@ -996,7 +1016,7 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
           "https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/",
         is_active: true,
         raw_payload: {
-          schedule_rule: event.slug === "manufacturing"
+          schedule_rule: event.slug.startsWith("manufacturing")
             ? "first business day"
             : "third business day",
         },
@@ -1007,6 +1027,45 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
     cursor.setUTCMonth(cursor.getUTCMonth() + 1);
   }
   return rows;
+}
+
+export function buildAdpRows({
+  releases = ADP_MONTHLY_RELEASES,
+  fetchedAt,
+  windowFrom,
+  windowTo,
+}) {
+  return releases
+    .filter((releaseDate) => inWindow(releaseDate, windowFrom, windowTo))
+    .map((releaseDate) => {
+      const releaseDay = Number(releaseDate.slice(8, 10));
+      const referencePeriod = releaseDay <= 7
+        ? shiftMonthStart(releaseDate, -1)
+        : shiftMonthStart(releaseDate, 0);
+      return {
+        source: "adp",
+        external_id: `adp-national-employment:${releaseDate}`,
+        series_id: null,
+        event_group: "labor",
+        signal_family: "labor_strength",
+        event_name: "ADP Non-Farm Employment Change",
+        category: "ADP National Employment Report",
+        reference_period: referencePeriod,
+        scheduled_at: zonedIso(releaseDate, "08:15"),
+        actual: null,
+        previous: null,
+        revised: null,
+        importance: 2,
+        currency: "USD",
+        unit: "thousands_change",
+        source_name: "ADP Research Institute",
+        source_url: "https://adpemploymentreport.com/",
+        is_active: true,
+        raw_payload: { schedule_source: "ADP publication calendar" },
+        fetched_at: fetchedAt,
+        updated_at: fetchedAt,
+      };
+    });
 }
 
 function plainText(html) {

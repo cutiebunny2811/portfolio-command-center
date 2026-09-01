@@ -87,7 +87,7 @@
     earningsWeekIndex: 0, earningsTrackedCount: 0, earningsLastSynced: null,
     macroEntries: [], macroNextEvent: null, macroNextFomc: null, macroReady: true,
     macroView: "calendar", macroRiskFeed: null, macroRiskReady: true,
-    macroBusy: false, macroSyncBusy: false, macroLastSynced: null,
+    macroBusy: false, macroSyncBusy: false, macroLastSynced: null, macroLastAttemptAt: 0,
     briefs: [], smartMoneyBriefs: [], notifications: [], briefReady: true, briefBusy: false, notificationFeedLoaded: false,
     selectedBriefId: null, selectedSmartMoneyBriefId: null, notificationsOpen: false, mobileMoreOpen: false,
     agentTokens: [], agentDrafts: [],
@@ -1315,6 +1315,19 @@
     state.macroRiskFeed = { ...emptyMacroRiskFeed(), ...(feed || {}), history: { ...emptyMacroRiskFeed().history, ...(feed?.history || {}) } };
   }
 
+  function macroNeedsSync() {
+    if (!state.user || !state.macroReady || state.macroSyncBusy) return false;
+    const lastSync = new Date(state.macroLastSynced || 0).getTime();
+    const lastAttempt = Number(state.macroLastAttemptAt || 0);
+    if (Date.now() - lastAttempt < 2 * 60_000) return false;
+    if (!lastSync || Date.now() - lastSync >= 5 * 60_000) return true;
+    return state.macroEntries.some((event) => {
+      const releasedAt = new Date(event.scheduled_at).getTime();
+      return !event.actual && Number.isFinite(releasedAt) &&
+        Date.now() >= releasedAt + 2 * 60_000 && Date.now() - releasedAt <= 6 * 60 * 60_000;
+    });
+  }
+
   async function loadMacroPage({ renderAfter = true } = {}) {
     state.macroBusy = true;
     if (renderAfter && state.route === "macro") renderMacro();
@@ -1328,12 +1341,16 @@
     } finally {
       state.macroBusy = false;
       if (renderAfter && state.route === "macro") renderMacro();
+      if (renderAfter && state.route === "macro" && macroNeedsSync()) {
+        void syncMacroCalendar();
+      }
     }
   }
 
   async function syncMacroCalendar({ notify = false } = {}) {
     if (localPreviewEnabled || !state.user || state.macroSyncBusy || !state.macroReady) return null;
     state.macroSyncBusy = true;
+    state.macroLastAttemptAt = Date.now();
     if (state.route === "macro") renderMacro();
     try {
       const { data, error } = await db.functions.invoke("sync-macro-calendar", { body: {} });
@@ -6366,6 +6383,7 @@
     if (state.route === "watchlist" && state.watchlistView === "market") await refreshMarketPulse();
     if (state.route === "watchlist" && state.watchlistView === "crypto") await refreshCryptoPulse();
     await refreshVisibleWatchlistChart();
+    if (state.route === "macro") await loadMacroPage();
   }
 
   window.setInterval(() => { void refreshMarketData(); }, 15 * 60_000);

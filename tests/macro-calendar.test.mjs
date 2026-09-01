@@ -12,6 +12,8 @@ import {
   expectedPeriodDate,
   formatFredValue,
   parseFomcMeetings,
+  parseAdpSnapshot,
+  parseIsmSnapshot,
   parseMichiganSnapshot,
   zonedIso,
 } from "../supabase/functions/sync-macro-calendar/macro-core.mjs";
@@ -157,6 +159,45 @@ test("generates red ISM releases plus orange manufacturing prices", () => {
     ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 2],
     ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 3],
   ]);
+});
+
+test("parses official ISM tables and applies actual and previous values", () => {
+  const html = `
+    <h1>August 2026 ISM Manufacturing PMI Report</h1>
+    <table><tbody>
+      <tr><th>Manufacturing PMI<sup>®</sup></th><td>54.6</td><td>55.6</td><td>-1.0</td></tr>
+      <tr><th>Prices</th><td>71.1</td><td>71.1</td><td>0</td></tr>
+    </tbody></table>`;
+  const snapshot = parseIsmSnapshot(html, "manufacturing", "https://ism.example/august/");
+  const rows = buildIsmRows({
+    fetchedAt: "2026-09-01T14:05:00Z",
+    windowFrom: "2026-09-01",
+    windowTo: "2026-09-01",
+    snapshots: [snapshot],
+  });
+  assert.deepEqual(rows.map((row) => [row.event_name, row.actual, row.previous]), [
+    ["ISM Manufacturing PMI", "54.6", "55.6"],
+    ["ISM Manufacturing Prices", "71.1", "71.1"],
+  ]);
+  assert.ok(rows.every((row) => row.source_url === "https://ism.example/august/"));
+});
+
+test("parses the official ADP snapshot and carries it into the next release", () => {
+  const snapshot = parseAdpSnapshot({
+    reportMonth: "July",
+    reportYear: "2026",
+    reportOverview: { cards: [{ metricValue: "44,000" }] },
+  });
+  assert.deepEqual(snapshot, { referenceDate: "2026-07-01", actual: "44K" });
+  const [row] = buildAdpRows({
+    releases: ["2026-09-02"],
+    fetchedAt: "2026-09-01T00:00:00Z",
+    windowFrom: "2026-09-01",
+    windowTo: "2026-09-03",
+    snapshot,
+  });
+  assert.equal(row.actual, null);
+  assert.equal(row.previous, "44K");
 });
 
 test("adds official orange ADP monthly releases at 08:15 Eastern", () => {

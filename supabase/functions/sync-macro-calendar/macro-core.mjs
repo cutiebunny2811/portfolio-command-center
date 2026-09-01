@@ -962,7 +962,12 @@ function firstBusinessDays(year, month, count) {
   return dates;
 }
 
-export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
+export function buildIsmRows({ fetchedAt, windowFrom, windowTo, snapshots = [] }) {
+  const snapshotsByKey = new Map(
+    snapshots.flatMap((snapshot) => Object.entries(snapshot.values || {}).map(
+      ([slug, values]) => [`${slug}:${snapshot.referenceDate}`, { ...values, sourceUrl: snapshot.sourceUrl }],
+    )),
+  );
   const [fromYear, fromMonth] = windowFrom.split("-").map(Number);
   const [toYear, toMonth] = windowTo.split("-").map(Number);
   const cursor = new Date(Date.UTC(fromYear, fromMonth - 1, 1));
@@ -995,6 +1000,8 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
     ];
     for (const event of events) {
       if (!event.date || !inWindow(event.date, windowFrom, windowTo)) continue;
+      const referencePeriod = shiftMonthStart(event.date, -1);
+      const snapshot = snapshotsByKey.get(`${event.slug}:${referencePeriod}`);
       rows.push({
         source: "ism",
         external_id: `ism-${event.slug}:${event.date}`,
@@ -1003,16 +1010,16 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
         signal_family: "growth",
         event_name: event.name,
         category: "ISM PMI",
-        reference_period: shiftMonthStart(event.date, -1),
+        reference_period: referencePeriod,
         scheduled_at: zonedIso(event.date, "10:00"),
-        actual: null,
-        previous: null,
+        actual: snapshot?.actual ?? null,
+        previous: snapshot?.previous ?? null,
         revised: null,
         importance: event.importance,
         currency: "USD",
         unit: "index",
         source_name: "Institute for Supply Management",
-        source_url:
+        source_url: snapshot?.sourceUrl ||
           "https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/",
         is_active: true,
         raw_payload: {
@@ -1029,11 +1036,48 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo }) {
   return rows;
 }
 
+function reportRowValues(html, label) {
+  const rows = String(html || "").match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  const row = rows.find((candidate) => plainText(candidate).startsWith(label));
+  if (!row) return null;
+  const values = [...row.matchAll(/<td\b[^>]*>\s*([+-]?\d+(?:\.\d+)?)\s*<\/td>/gi)]
+    .map((match) => match[1]);
+  return values.length >= 2 ? { actual: values[0], previous: values[1] } : null;
+}
+
+export function parseIsmSnapshot(html, reportType, sourceUrl = null) {
+  const text = plainText(html);
+  const heading = text.match(
+    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\s+ISM/i,
+  );
+  const referenceDate = heading ? monthStart(heading[1], Number(heading[2])) : null;
+  if (!referenceDate) return { referenceDate: null, values: {}, sourceUrl };
+  if (reportType === "services") {
+    const services = reportRowValues(html, "Services PMI");
+    return {
+      referenceDate,
+      values: services ? { services } : {},
+      sourceUrl,
+    };
+  }
+  const manufacturing = reportRowValues(html, "Manufacturing PMI");
+  const prices = reportRowValues(html, "Prices");
+  return {
+    referenceDate,
+    values: {
+      ...(manufacturing ? { manufacturing } : {}),
+      ...(prices ? { "manufacturing-prices": prices } : {}),
+    },
+    sourceUrl,
+  };
+}
+
 export function buildAdpRows({
   releases = ADP_MONTHLY_RELEASES,
   fetchedAt,
   windowFrom,
   windowTo,
+  snapshot = null,
 }) {
   return releases
     .filter((releaseDate) => inWindow(releaseDate, windowFrom, windowTo))
@@ -1042,6 +1086,13 @@ export function buildAdpRows({
       const referencePeriod = releaseDay <= 7
         ? shiftMonthStart(releaseDate, -1)
         : shiftMonthStart(releaseDate, 0);
+      const previousPeriod = shiftMonthStart(referencePeriod, -1);
+      const snapshotActual = snapshot?.referenceDate === referencePeriod
+        ? snapshot.actual
+        : null;
+      const snapshotPrevious = snapshot?.referenceDate === previousPeriod
+        ? snapshot.actual
+        : null;
       return {
         source: "adp",
         external_id: `adp-national-employment:${releaseDate}`,
@@ -1052,8 +1103,8 @@ export function buildAdpRows({
         category: "ADP National Employment Report",
         reference_period: referencePeriod,
         scheduled_at: zonedIso(releaseDate, "08:15"),
-        actual: null,
-        previous: null,
+        actual: snapshotActual,
+        previous: snapshotPrevious,
         revised: null,
         importance: 2,
         currency: "USD",
@@ -1066,6 +1117,22 @@ export function buildAdpRows({
         updated_at: fetchedAt,
       };
     });
+}
+
+export function parseAdpSnapshot(payload) {
+  const month = String(payload?.reportMonth || "");
+  const year = Number(payload?.reportYear);
+  const referenceDate = month && Number.isInteger(year)
+    ? monthStart(month, year)
+    : null;
+  const metric = String(payload?.reportOverview?.cards?.[0]?.metricValue || "")
+    .replace(/,/g, "")
+    .trim();
+  const numeric = /^[-+]?\d+(?:\.\d+)?$/.test(metric) ? Number(metric) : null;
+  return {
+    referenceDate,
+    actual: Number.isFinite(numeric) ? `${numeric / 1000}K` : null,
+  };
 }
 
 function plainText(html) {

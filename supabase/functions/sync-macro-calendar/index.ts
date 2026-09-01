@@ -12,6 +12,8 @@ import {
   dedupeMacroRows,
   FRED_EVENTS,
   parseFomcMeetings,
+  parseAdpSnapshot,
+  parseIsmSnapshot,
   parseMichiganSnapshot,
   RISK_SERIES,
   zonedIso,
@@ -31,6 +33,11 @@ const BLS_PUBLIC_API = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
 const FOMC_CALENDAR =
   "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
 const MICHIGAN_SENTIMENT = "https://www.sca.isr.umich.edu/";
+const ADP_REPORT = "https://adpemploymentreport.com/ner_production.json";
+const ISM_REPORT_BASE =
+  "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-pmi-reports";
+const ISM_CRAWLER_AGENT =
+  "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)";
 
 const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
 const shiftDays = (date: Date, days: number) =>
@@ -75,6 +82,46 @@ function isPpiReleaseWindow(releaseDates: unknown[], now: Date) {
     const delta = now.getTime() - new Date(zonedIso(releaseDate, "08:30")).getTime();
     return delta >= -10 * 60_000 && delta <= 4 * 60 * 60_000;
   });
+}
+
+const MONTH_SLUGS = [
+  "january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december",
+];
+
+async function fetchIsmSnapshots(rows: any[], now: Date) {
+  const requests = new Map<string, { type: string; referenceDate: string; sourceUrl: string }>();
+  for (const row of rows) {
+    if (new Date(row.scheduled_at) > now) continue;
+    const type = row.external_id.includes("services") ? "services" : "manufacturing";
+    const [year, month] = String(row.reference_period).split("-").map(Number);
+    const monthSlug = MONTH_SLUGS[month - 1];
+    if (!year || !monthSlug) continue;
+    const reportPath = type === "services" ? "services" : "pmi";
+    const sourceUrl = `${ISM_REPORT_BASE}/${reportPath}/${monthSlug}/`;
+    requests.set(`${type}:${row.reference_period}`, {
+      type,
+      referenceDate: row.reference_period,
+      sourceUrl,
+    });
+  }
+  const snapshots = [];
+  const warnings = [];
+  for (const request of requests.values()) {
+    try {
+      const html = await (await fetchWithRetry(request.sourceUrl, {
+        headers: { "User-Agent": ISM_CRAWLER_AGENT },
+      })).text();
+      const snapshot = parseIsmSnapshot(html, request.type, request.sourceUrl);
+      if (snapshot.referenceDate !== request.referenceDate || !Object.keys(snapshot.values).length) {
+        throw new Error(`ISM ${request.type} report was not ready for ${request.referenceDate}`);
+      }
+      snapshots.push(snapshot);
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return { snapshots, warning: warnings.join("; ") || null };
 }
 
 async function blsPpiSeries(now: Date) {
@@ -215,6 +262,18 @@ Deno.serve(async (request) => {
     } catch (error) {
       michiganWarning = error instanceof Error ? error.message : String(error);
     }
+    let adpSnapshot = null;
+    let adpWarning: string | null = null;
+    try {
+      adpSnapshot = parseAdpSnapshot(
+        await (await fetchWithRetry(ADP_REPORT)).json(),
+      );
+      if (!adpSnapshot.referenceDate || !adpSnapshot.actual) {
+        throw new Error("ADP National Employment Report could not be parsed");
+      }
+    } catch (error) {
+      adpWarning = error instanceof Error ? error.message : String(error);
+    }
 
     const releaseDatesById = Object.fromEntries(releaseResponses);
     const observationsBySeries = Object.fromEntries(observationResponses);
@@ -241,6 +300,8 @@ Deno.serve(async (request) => {
         windowFrom,
         windowTo,
       }), blsOverrides, fetchedAt);
+    const scheduledIsmRows = buildIsmRows({ fetchedAt, windowFrom, windowTo });
+    const ismResult = await fetchIsmSnapshots(scheduledIsmRows, now);
     let rows = dedupeMacroRows([
       ...fredRows,
       ...buildFomcRows({
@@ -252,8 +313,13 @@ Deno.serve(async (request) => {
         windowFrom,
         windowTo,
       }),
-      ...buildIsmRows({ fetchedAt, windowFrom, windowTo }),
-      ...buildAdpRows({ fetchedAt, windowFrom, windowTo }),
+      ...buildIsmRows({
+        fetchedAt,
+        windowFrom,
+        windowTo,
+        snapshots: ismResult.snapshots,
+      }),
+      ...buildAdpRows({ fetchedAt, windowFrom, windowTo, snapshot: adpSnapshot }),
       ...buildMichiganRows({
         snapshot: michiganSnapshot,
         now: fetchedAt,
@@ -262,22 +328,23 @@ Deno.serve(async (request) => {
         windowTo,
       }),
     ]);
-    const michiganIds = rows
-      .filter((row) => row.source === "university_michigan")
+    const durableSources = new Set(["ism", "adp", "university_michigan"]);
+    const durableIds = rows
+      .filter((row) => durableSources.has(row.source))
       .map((row) => row.external_id);
-    if (michiganIds.length) {
-      const { data: existingMichigan, error: michiganError } = await service
+    if (durableIds.length) {
+      const { data: existingDurable, error: durableError } = await service
         .from("macro_events")
-        .select("external_id,actual,previous")
-        .eq("source", "university_michigan")
-        .in("external_id", michiganIds);
-      if (michiganError) throw michiganError;
+        .select("source,external_id,actual,previous")
+        .in("source", [...durableSources])
+        .in("external_id", durableIds);
+      if (durableError) throw durableError;
       const existingById = new Map(
-        (existingMichigan || []).map((row) => [row.external_id, row]),
+        (existingDurable || []).map((row) => [`${row.source}:${row.external_id}`, row]),
       );
       rows = rows.map((row) => {
-        if (row.source !== "university_michigan") return row;
-        const existingRow = existingById.get(row.external_id);
+        if (!durableSources.has(row.source)) return row;
+        const existingRow = existingById.get(`${row.source}:${row.external_id}`);
         return existingRow
           ? {
             ...row,
@@ -368,7 +435,8 @@ Deno.serve(async (request) => {
       updated: rows.length,
       risk_snapshots: riskSnapshots.length,
       sources: ["ADP", "BLS Public Data API", "FRED", "Federal Reserve", "ISM", "University of Michigan"],
-      source_warning: [blsWarning, michiganWarning].filter(Boolean).join("; ") || null,
+      source_warning: [blsWarning, ismResult.warning, adpWarning, michiganWarning]
+        .filter(Boolean).join("; ") || null,
       window_from: windowFrom,
       window_to: windowTo,
     });

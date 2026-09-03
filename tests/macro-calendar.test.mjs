@@ -152,12 +152,12 @@ test("parses FOMC meetings and builds decision, press conference, and minutes", 
   assert.ok(rows.some((row) => row.external_id === "fomc-minutes:2026-09-16"));
 });
 
-test("generates red ISM releases plus orange manufacturing prices", () => {
+test("generates red manufacturing PMI plus orange ISM prices and services releases", () => {
   const rows = buildIsmRows({ fetchedAt: "2026-08-01T00:00:00Z", windowFrom: "2026-08-01", windowTo: "2026-08-31" });
   assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at, row.importance]), [
     ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 3],
     ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 2],
-    ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 3],
+    ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 2],
   ]);
 });
 
@@ -180,6 +180,30 @@ test("parses official ISM tables and applies actual and previous values", () => 
     ["ISM Manufacturing Prices", "71.1", "71.1"],
   ]);
   assert.ok(rows.every((row) => row.source_url === "https://ism.example/august/"));
+});
+
+test("parses the attributed table cells used by the official ISM services report", () => {
+  const html = `
+    <h1>August 2026 ISM Services PMI Report</h1>
+    <table><tbody>
+      <tr>
+        <th>&nbsp;</th>
+        <th colspan="6">Services PMI<sup>&reg;</sup></th>
+        <th colspan="3">Manufacturing PMI<sup>&reg;</sup></th>
+      </tr>
+      <tr>
+        <th scope="row">Services PMI<sup>&reg;</sup></th>
+        <td class="text-center">55.4</td>
+        <td class="text-center">54.1</td>
+        <td class="text-center">+1.3</td>
+      </tr>
+    </tbody></table>`;
+  const snapshot = parseIsmSnapshot(html, "services", "https://ism.example/services/august/");
+  assert.deepEqual(snapshot, {
+    referenceDate: "2026-08-01",
+    values: { services: { actual: "55.4", previous: "54.1" } },
+    sourceUrl: "https://ism.example/services/august/",
+  });
 });
 
 test("parses the official ADP snapshot and carries it into the next release", () => {

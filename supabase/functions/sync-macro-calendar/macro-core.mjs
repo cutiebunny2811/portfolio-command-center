@@ -995,7 +995,7 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo, snapshots = [] }
         date: businessDays[2],
         slug: "services",
         name: "ISM Services PMI",
-        importance: 3,
+        importance: 2,
       },
     ];
     for (const event of events) {
@@ -1038,11 +1038,15 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo, snapshots = [] }
 
 function reportRowValues(html, label) {
   const rows = String(html || "").match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
-  const row = rows.find((candidate) => plainText(candidate).startsWith(label));
-  if (!row) return null;
-  const values = [...row.matchAll(/<td\b[^>]*>\s*([+-]?\d+(?:\.\d+)?)\s*<\/td>/gi)]
-    .map((match) => match[1]);
-  return values.length >= 2 ? { actual: values[0], previous: values[1] } : null;
+  for (const row of rows) {
+    if (!plainText(row).startsWith(label)) continue;
+    const values = [...row.matchAll(/<td\b[^>]*>\s*([+-]?\d+(?:\.\d+)?)\s*<\/td>/gi)]
+      .map((match) => match[1]);
+    if (values.length >= 2) {
+      return { actual: values[0], previous: values[1] };
+    }
+  }
+  return null;
 }
 
 export function parseIsmSnapshot(html, reportType, sourceUrl = null) {

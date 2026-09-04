@@ -6387,6 +6387,9 @@
   }
 
   window.setInterval(() => { void refreshMarketData(); }, 15 * 60_000);
+  window.setInterval(() => {
+    if (state.route === "macro" && macroNeedsSync()) void syncMacroCalendar();
+  }, 2 * 60_000);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void refreshMarketData();
   });

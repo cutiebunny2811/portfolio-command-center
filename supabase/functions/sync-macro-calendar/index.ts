@@ -12,6 +12,7 @@ import {
   dedupeMacroRows,
   FRED_EVENTS,
   parseFomcMeetings,
+  parseFomcStatement,
   parseAdpSnapshot,
   parseIsmSnapshot,
   parseMichiganSnapshot,
@@ -32,6 +33,8 @@ const FRED_BASE = "https://api.stlouisfed.org/fred";
 const BLS_PUBLIC_API = "https://api.bls.gov/publicAPI/v2/timeseries/data/";
 const FOMC_CALENDAR =
   "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
+const FOMC_STATEMENT_BASE =
+  "https://www.federalreserve.gov/newsevents/pressreleases";
 const MICHIGAN_SENTIMENT = "https://www.sca.isr.umich.edu/";
 const ADP_REPORT = "https://adpemploymentreport.com/ner_production.json";
 const ISM_REPORT_BASE =
@@ -117,6 +120,31 @@ async function fetchIsmSnapshots(rows: any[], now: Date) {
         throw new Error(`ISM ${request.type} report was not ready for ${request.referenceDate}`);
       }
       snapshots.push(snapshot);
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return { snapshots, warning: warnings.join("; ") || null };
+}
+
+async function fetchFomcDecisionSnapshots(meetings: any[], now: Date) {
+  const snapshots: Record<string, any> = {};
+  const warnings: string[] = [];
+  for (const meeting of meetings || []) {
+    const decisionAt = new Date(zonedIso(meeting.decisionDate, "14:00"));
+    const age = now.getTime() - decisionAt.getTime();
+    if (age < 0 || age > 7 * 86_400_000) continue;
+    const compactDate = meeting.decisionDate.replaceAll("-", "");
+    const sourceUrl = `${FOMC_STATEMENT_BASE}/monetary${compactDate}a.htm`;
+    try {
+      const html = await (await fetchWithRetry(sourceUrl)).text();
+      const snapshot = parseFomcStatement(html, sourceUrl);
+      if (snapshot.lower === null || snapshot.upper === null) {
+        throw new Error(
+          `FOMC statement did not contain a target range for ${meeting.decisionDate}`,
+        );
+      }
+      snapshots[meeting.decisionDate] = snapshot;
     } catch (error) {
       warnings.push(error instanceof Error ? error.message : String(error));
     }
@@ -262,6 +290,7 @@ Deno.serve(async (request) => {
     } catch (error) {
       michiganWarning = error instanceof Error ? error.message : String(error);
     }
+    const fomcResult = await fetchFomcDecisionSnapshots(meetings, now);
     let adpSnapshot = null;
     let adpWarning: string | null = null;
     try {
@@ -308,6 +337,7 @@ Deno.serve(async (request) => {
         meetings,
         lowerObservations: observationsBySeries.DFEDTARL,
         upperObservations: observationsBySeries.DFEDTARU,
+        decisionSnapshots: fomcResult.snapshots,
         now: fetchedAt,
         fetchedAt,
         windowFrom,
@@ -435,7 +465,7 @@ Deno.serve(async (request) => {
       updated: rows.length,
       risk_snapshots: riskSnapshots.length,
       sources: ["ADP", "BLS Public Data API", "FRED", "Federal Reserve", "ISM", "University of Michigan"],
-      source_warning: [blsWarning, ismResult.warning, adpWarning, michiganWarning]
+      source_warning: [blsWarning, fomcResult.warning, ismResult.warning, adpWarning, michiganWarning]
         .filter(Boolean).join("; ") || null,
       window_from: windowFrom,
       window_to: windowTo,

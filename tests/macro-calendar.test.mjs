@@ -12,6 +12,7 @@ import {
   expectedPeriodDate,
   formatFredValue,
   parseFomcMeetings,
+  parseFomcStatement,
   parseAdpSnapshot,
   parseIsmSnapshot,
   parseMichiganSnapshot,
@@ -150,6 +151,38 @@ test("parses FOMC meetings and builds decision, press conference, and minutes", 
   assert.equal(rows.find((row) => row.external_id === "fomc-decision:2026-09-16").event_name, "FOMC Rate Decision + SEP");
   assert.equal(rows.find((row) => row.external_id === "fomc-decision:2026-09-16").previous, "4.75–5.00%");
   assert.ok(rows.some((row) => row.external_id === "fomc-minutes:2026-09-16"));
+});
+
+test("uses the official FOMC statement range and keeps the prior target separate", () => {
+  const sourceUrl = "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm";
+  const snapshot = parseFomcStatement(`
+    <p>The Committee decided to raise the target range for the federal funds rate
+    by 1/4 percentage point to 3-3/4 to 4 percent.</p>
+  `, sourceUrl);
+  assert.deepEqual(snapshot, { lower: 3.75, upper: 4, sourceUrl });
+
+  const rows = buildFomcRows({
+    meetings: [{ decisionDate: "2026-09-16", hasProjections: true }],
+    lowerObservations: [
+      { date: "2026-09-17", value: "3.75" },
+      { date: "2026-07-30", value: "3.50" },
+    ],
+    upperObservations: [
+      { date: "2026-09-17", value: "4.00" },
+      { date: "2026-07-30", value: "3.75" },
+    ],
+    decisionSnapshots: { "2026-09-16": snapshot },
+    now: "2026-09-16T18:05:00.000Z",
+    fetchedAt: "2026-09-16T18:05:00.000Z",
+    windowFrom: "2026-09-16",
+    windowTo: "2026-09-16",
+  });
+  const decision = rows.find((row) =>
+    row.external_id === "fomc-decision:2026-09-16"
+  );
+  assert.equal(decision.actual, "3.75–4.00%");
+  assert.equal(decision.previous, "3.50–3.75%");
+  assert.equal(decision.source_url, sourceUrl);
 });
 
 test("generates red manufacturing PMI plus orange ISM prices and services releases", () => {

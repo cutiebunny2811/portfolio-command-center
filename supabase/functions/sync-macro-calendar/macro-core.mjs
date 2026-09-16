@@ -819,6 +819,30 @@ function formatTargetRange(lower, upper) {
   return `${low.toFixed(2)}–${high.toFixed(2)}%`;
 }
 
+function parseRateToken(value) {
+  const normalized = String(value || "").trim().replace(/[‐‑–—]/g, "-");
+  const mixed = /^(\d+)-(\d+)\/(\d+)$/.exec(normalized);
+  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
+  const fraction = /^(\d+)\/(\d+)$/.exec(normalized);
+  if (fraction) return Number(fraction[1]) / Number(fraction[2]);
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+export function parseFomcStatement(html, sourceUrl = null) {
+  const text = plainText(html);
+  const match = text.match(
+    /target range for the federal funds rate[\s\S]{0,180}?\b(?:at|to)\s+(\d+(?:[‐‑–—-]\d+\/\d+|\/\d+|\.\d+)?)\s+to\s+(\d+(?:[‐‑–—-]\d+\/\d+|\/\d+|\.\d+)?)\s+percent/i,
+  );
+  const lower = parseRateToken(match?.[1]);
+  const upper = parseRateToken(match?.[2]);
+  return {
+    lower: Number.isFinite(lower) ? lower : null,
+    upper: Number.isFinite(upper) ? upper : null,
+    sourceUrl,
+  };
+}
+
 function policyRow(
   {
     externalId,
@@ -861,6 +885,7 @@ export function buildFomcRows(
     meetings,
     lowerObservations,
     upperObservations,
+    decisionSnapshots = {},
     now,
     fetchedAt,
     windowFrom,
@@ -874,22 +899,28 @@ export function buildFomcRows(
   for (const meeting of meetings || []) {
     const decisionAt = zonedIso(meeting.decisionDate, "14:00");
     const decisionReleased = new Date(decisionAt) <= current;
-    const lowerActual = decisionReleased
-      ? latestAtOrBefore(lowerObservations, meeting.decisionDate)
-      : null;
-    const upperActual = decisionReleased
-      ? latestAtOrBefore(upperObservations, meeting.decisionDate)
-      : null;
-    const lowerPrevious = latestAtOrBefore(
-      lowerObservations,
-      meeting.decisionDate,
-      decisionReleased,
+    const effectiveDate = dateOnly(
+      shiftDays(new Date(`${meeting.decisionDate}T00:00:00Z`), 1),
     );
-    const upperPrevious = latestAtOrBefore(
-      upperObservations,
-      meeting.decisionDate,
-      decisionReleased,
-    );
+    const lowerFallback = decisionReleased
+      ? latestAtOrBefore(lowerObservations, effectiveDate)
+      : null;
+    const upperFallback = decisionReleased
+      ? latestAtOrBefore(upperObservations, effectiveDate)
+      : null;
+    const fallbackReady = lowerFallback?.date > meeting.decisionDate &&
+      upperFallback?.date > meeting.decisionDate;
+    const decisionSnapshot = decisionSnapshots[meeting.decisionDate] || null;
+    const lowerActual = decisionSnapshot?.lower !== null &&
+        decisionSnapshot?.lower !== undefined
+      ? { value: decisionSnapshot.lower }
+      : fallbackReady ? lowerFallback : null;
+    const upperActual = decisionSnapshot?.upper !== null &&
+        decisionSnapshot?.upper !== undefined
+      ? { value: decisionSnapshot.upper }
+      : fallbackReady ? upperFallback : null;
+    const lowerPrevious = latestAtOrBefore(lowerObservations, meeting.decisionDate);
+    const upperPrevious = latestAtOrBefore(upperObservations, meeting.decisionDate);
     if (inWindow(meeting.decisionDate, windowFrom, windowTo)) {
       rows.push(policyRow({
         externalId: `fomc-decision:${meeting.decisionDate}`,
@@ -902,7 +933,7 @@ export function buildFomcRows(
           : null,
         previous: formatTargetRange(lowerPrevious, upperPrevious),
         category: "FOMC",
-        sourceUrl,
+        sourceUrl: decisionSnapshot?.sourceUrl || sourceUrl,
         fetchedAt,
       }));
       const pressAt = zonedIso(meeting.decisionDate, "14:30");

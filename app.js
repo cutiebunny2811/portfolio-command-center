@@ -5345,24 +5345,33 @@
 
   function openCashDialog() {
     const portfolio = currentPortfolio();
+    const cashBalance = num(state.cash.find((item) => item.portfolio_id === portfolio.id)?.cash_balance);
     openDialog({
       kicker: `${portfolio.name} · Draft → Confirm`, title: "Record cash movement", submitLabel: "Preview movement",
-      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required></label></div><section class="cash-fx-fields" data-cash-fx-fields><div class="field-row"><label class="field"><span>Net amount (THB)</span><input name="thb_amount" type="number" min="0.01" step="0.01" required></label><div class="cash-fx-rate"><small>EFFECTIVE FX RATE</small><strong data-cash-fx-rate>—</strong><span>Calculated from THB ÷ USD</span></div></div><p class="form-hint">Enter the exact net THB paid or received. Your broker charges no separate FX fee, so PCC derives the effective rate directly.</p></section><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
+      body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required><small data-cash-available>Available in PCC: ${money(cashBalance)}</small></label></div><section class="cash-fx-fields" data-cash-fx-fields><div class="field-row"><label class="field"><span>Net amount (THB)</span><input name="thb_amount" type="number" min="0.01" step="0.01" required></label><div class="cash-fx-rate"><small>EFFECTIVE FX RATE</small><strong data-cash-fx-rate>—</strong><span>Calculated from THB ÷ USD</span></div></div><p class="form-hint">Enter the exact net THB paid or received. Your broker charges no separate FX fee, so PCC derives the effective rate directly.</p></section><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,
       onSubmit: async (form) => {
         const movementType = String(form.get("type") || "");
         const usdAmount = num(form.get("amount"));
+        const isRoundedFullWithdrawal = movementType === "withdrawal"
+          && usdAmount > cashBalance
+          && Math.round(usdAmount * 100) === Math.round(cashBalance * 100);
+        if (movementType === "withdrawal" && usdAmount > cashBalance && !isRoundedFullWithdrawal) {
+          const shortfall = usdAmount - cashBalance;
+          throw new Error(`PCC has ${money(cashBalance)} available. Record the missing ${money(shortfall)} cash activity before withdrawing ${money(usdAmount)}.`);
+        }
+        const recordedUsdAmount = isRoundedFullWithdrawal ? cashBalance : usdAmount;
         const usesFx = ["deposit", "withdrawal", "initial_funding"].includes(movementType);
         const thbAmount = usesFx ? num(form.get("thb_amount")) : 0;
         const idempotencyKey = uid("web-cash");
         const draft = await rpc("api_create_cash_draft", {
-          p_portfolio_id: portfolio.id, p_movement_type: movementType, p_amount: usdAmount,
+          p_portfolio_id: portfolio.id, p_movement_type: movementType, p_amount: recordedUsdAmount,
           p_idempotency_key: idempotencyKey, p_occurred_at: new Date(form.get("occurred")).toISOString(), p_notes: form.get("notes") || null
         });
         if (usesFx) {
           const prepared = await rpc("api_prepare_cash_fx", {
             p_portfolio_id: portfolio.id,
             p_movement_type: movementType,
-            p_usd_amount: usdAmount,
+            p_usd_amount: recordedUsdAmount,
             p_thb_amount: thbAmount,
             p_idempotency_key: idempotencyKey
           });

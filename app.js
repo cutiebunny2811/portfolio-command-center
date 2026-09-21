@@ -26,9 +26,10 @@
   })[char]);
   const num = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const cashAmount = (value) => Math.abs(num(value)) < 0.005 ? 0 : num(value);
   const money = (value, digits = 2) => new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits
-  }).format(num(value));
+  }).format(Math.abs(num(value)) < (0.5 * 10 ** -digits) ? 0 : num(value));
   const strikeMoney = (value) => new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 3
   }).format(num(value));
@@ -329,7 +330,7 @@
 
   function portfolioStats(portfolio) {
     const positions = state.positions.filter((item) => item.portfolio_id === portfolio.id && num(item.quantity) > 0);
-    const cash = num(state.cash.find((item) => item.portfolio_id === portfolio.id)?.cash_balance);
+    const cash = cashAmount(state.cash.find((item) => item.portfolio_id === portfolio.id)?.cash_balance);
     const budget = num(portfolio.fixed_budget);
     const prices = latestPriceMap();
     const instruments = instrumentMap();
@@ -5345,7 +5346,7 @@
 
   function openCashDialog() {
     const portfolio = currentPortfolio();
-    const cashBalance = num(state.cash.find((item) => item.portfolio_id === portfolio.id)?.cash_balance);
+    const cashBalance = cashAmount(state.cash.find((item) => item.portfolio_id === portfolio.id)?.cash_balance);
     openDialog({
       kicker: `${portfolio.name} · Draft → Confirm`, title: "Record cash movement", submitLabel: "Preview movement",
       body: `<div class="field-row"><label class="field"><span>Movement</span><select name="type"><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="initial_funding">Initial funding</option><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="tax">Tax</option></select></label><label class="field"><span>Amount (USD)</span><input name="amount" type="number" min="0.01" step="0.01" required><small data-cash-available>Available in PCC: ${money(cashBalance)}</small></label></div><section class="cash-fx-fields" data-cash-fx-fields><div class="field-row"><label class="field"><span>Net amount (THB)</span><input name="thb_amount" type="number" min="0.01" step="0.01" required></label><div class="cash-fx-rate"><small>EFFECTIVE FX RATE</small><strong data-cash-fx-rate>—</strong><span>Calculated from THB ÷ USD</span></div></div><p class="form-hint">Enter the exact net THB paid or received. Your broker charges no separate FX fee, so PCC derives the effective rate directly.</p></section><label class="field"><span>Date and time</span><input name="occurred" type="datetime-local" value="${localDateTime()}" required></label><label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" placeholder="Broker transfer, funding source, or context"></textarea></label><p class="form-hint">Cash moves only inside ${esc(portfolio.name)} and never changes its fixed budget.</p>`,

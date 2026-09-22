@@ -30,6 +30,7 @@ const optionEodRequestLimit = 4;
 const optionContractCacheWindowMs = 15 * 60_000;
 const optionContractCache = new Map<string, { fetchedAt: number; rows: Record<string, unknown>[] }>();
 const chartConfigs = {
+  M1: { count: 800, cacheWindowMs: 2 * 60_000 },
   D: { count: 320, cacheWindowMs: 20 * 60 * 60_000 },
   M240: { count: 260, cacheWindowMs: 4 * 60 * 60_000 },
   M60: { count: 260, cacheWindowMs: 45 * 60_000 },
@@ -160,10 +161,11 @@ type ChartBar = {
   volume: number;
 };
 
-type ChartTimespan = "D" | "M60" | "M240";
+type ChartTimespan = "M1" | "D" | "M60" | "M240";
 
 function chartTimespan(value: unknown): ChartTimespan {
   const normalized = String(value || "D").trim().toUpperCase();
+  if (normalized === "M1" || normalized === "1M") return "M1";
   if (normalized === "D" || normalized === "1D") return "D";
   if (normalized === "M60" || normalized === "1H") return "M60";
   if (normalized === "M240" || normalized === "4H") return "M240";

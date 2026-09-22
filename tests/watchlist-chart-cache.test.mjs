@@ -9,6 +9,7 @@ const functionUrl = new URL("../supabase/functions/refresh-stock-prices/index.ts
 const agentApiUrl = new URL("../supabase/functions/portfolio-agent-api/index.ts", import.meta.url);
 const migrationUrl = new URL("../supabase/migrations/20260819020000_market_chart_cache.sql", import.meta.url);
 const timeframeMigrationUrl = new URL("../supabase/migrations/20260819060000_market_chart_timeframes.sql", import.meta.url);
+const minuteMigrationUrl = new URL("../supabase/migrations/20260923020000_market_chart_one_minute.sql", import.meta.url);
 const technicalsUrl = new URL("../chart-technicals.js", import.meta.url);
 const cachePolicyUrl = new URL("../supabase/functions/refresh-stock-prices/chart-cache-policy.mjs", import.meta.url);
 
@@ -65,6 +66,17 @@ test("chart endpoint serves a shared cache per timeframe and lets refresh bypass
   assert.match(source, /api_claim_market_chart_refresh/);
   assert.match(source, /if \(cachedBars\.length\) \{[\s\S]*refresh_error: detail/);
   assert.match(source, /onConflict: "instrument_id,timespan"/);
+});
+
+test("one-minute bars use the same shared cache with a two-minute provider window", async () => {
+  const [source, migration] = await Promise.all([readFile(functionUrl, "utf8"), readFile(minuteMigrationUrl, "utf8")]);
+  assert.match(source, /M1: \{ count: 800, cacheWindowMs: 2 \* 60_000 \}/);
+  assert.match(source, /normalized === "M1" \|\| normalized === "1M"/);
+  assert.match(migration, /timespan in \('M1', 'M60', 'M240', 'D'\)/);
+  assert.match(migration, /p_timespan not in \('M1', 'M60', 'M240', 'D'\)/);
+  const { chartCacheIsStale } = await import(cachePolicyUrl);
+  assert.equal(chartCacheIsStale({ timespan: "M1", fetchedAt: "2026-09-23T19:00:00Z", now: new Date("2026-09-23T19:01:59Z"), cacheWindowMs: 2 * 60_000 }), false);
+  assert.equal(chartCacheIsStale({ timespan: "M1", fetchedAt: "2026-09-23T19:00:00Z", now: new Date("2026-09-23T19:02:00Z"), cacheWindowMs: 2 * 60_000 }), true);
 });
 
 test("daily chart cache settles a candle fetched just before the New York close", async () => {

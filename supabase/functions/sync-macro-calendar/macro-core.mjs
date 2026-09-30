@@ -1014,7 +1014,7 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo, snapshots = [] }
         date: businessDays[0],
         slug: "manufacturing",
         name: "ISM Manufacturing PMI",
-        importance: 3,
+        importance: 2,
       },
       {
         date: businessDays[0],

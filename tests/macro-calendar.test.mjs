@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   applyBlsPpiOverrides,
   buildAdpRows,
@@ -185,13 +186,19 @@ test("uses the official FOMC statement range and keeps the prior target separate
   assert.equal(decision.source_url, sourceUrl);
 });
 
-test("generates red manufacturing PMI plus orange ISM prices and services releases", () => {
+test("generates orange ISM PMI releases", () => {
   const rows = buildIsmRows({ fetchedAt: "2026-08-01T00:00:00Z", windowFrom: "2026-08-01", windowTo: "2026-08-31" });
   assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at, row.importance]), [
-    ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 3],
+    ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 2],
     ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 2],
     ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 2],
   ]);
+});
+
+test("repairs stored manufacturing PMI importance", async () => {
+  const migration = await readFile(new URL("../supabase/053_ism_manufacturing_pmi_medium_importance.sql", import.meta.url), "utf8");
+  assert.match(migration, /event_name = 'ISM Manufacturing PMI'/);
+  assert.match(migration, /importance = 2/);
 });
 
 test("parses official ISM tables and applies actual and previous values", () => {

@@ -1020,7 +1020,7 @@ export function buildIsmRows({ fetchedAt, windowFrom, windowTo, snapshots = [] }
         date: businessDays[0],
         slug: "manufacturing-prices",
         name: "ISM Manufacturing Prices",
-        importance: 2,
+        importance: 1,
       },
       {
         date: businessDays[2],

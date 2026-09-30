@@ -186,11 +186,11 @@ test("uses the official FOMC statement range and keeps the prior target separate
   assert.equal(decision.source_url, sourceUrl);
 });
 
-test("generates orange ISM PMI releases", () => {
+test("generates orange ISM headline PMI and yellow prices", () => {
   const rows = buildIsmRows({ fetchedAt: "2026-08-01T00:00:00Z", windowFrom: "2026-08-01", windowTo: "2026-08-31" });
   assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at, row.importance]), [
     ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 2],
-    ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 2],
+    ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 1],
     ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 2],
   ]);
 });
@@ -199,6 +199,15 @@ test("repairs stored manufacturing PMI importance", async () => {
   const migration = await readFile(new URL("../supabase/053_ism_manufacturing_pmi_medium_importance.sql", import.meta.url), "utf8");
   assert.match(migration, /event_name = 'ISM Manufacturing PMI'/);
   assert.match(migration, /importance = 2/);
+});
+
+test("renders red, orange and yellow impact tiers", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(app, /clamp\(Math\.round\(num\(event\.importance\)\), 1, 3\)/);
+  assert.match(app, /"Low impact"/);
+  assert.match(styles, /\.macro-impact--medium i \{ background: var\(--orange-bright\); \}/);
+  assert.match(styles, /\.macro-impact--low i \{ background: var\(--gold-bright\); \}/);
 });
 
 test("parses official ISM tables and applies actual and previous values", () => {

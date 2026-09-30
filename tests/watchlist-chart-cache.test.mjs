@@ -27,7 +27,7 @@ test("watchlist chart exposes cached 1H, 4H and 1D views with EMA200", async () 
   assert.match(app, /No nearby level/);
   assert.doesNotMatch(app, /data-action="watchlist-range"/);
   assert.match(index, /chart-technicals\.js\?v=20260820-chart-session/);
-  assert.match(index, /app\.js\?v=20260922-cash-cent-normalization/);
+  assert.match(index, /app\.js\?v=20261001-macro-impact-colors/);
 });
 
 test("nearby levels reject remote historical pivots and never invent ATR levels", async () => {

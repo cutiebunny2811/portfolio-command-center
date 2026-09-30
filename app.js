@@ -3074,12 +3074,12 @@
     const read = macroRead(event);
     const sourceUrl = /^https:\/\//i.test(event.source_url || "") ? event.source_url : "";
     const consensus = event.forecast ? `<small>CONSENSUS ${esc(event.forecast)}</small>` : "";
-    const importance = Number(event.importance) >= 3 ? 3 : 2;
-    const impactLabel = importance === 3 ? "High impact" : "Medium impact";
+    const importance = clamp(Math.round(num(event.importance)), 1, 3);
+    const impactLabel = importance === 3 ? "High impact" : importance === 2 ? "Medium impact" : "Low impact";
     const impactBars = Array.from({ length: importance }, () => "<i></i>").join("");
     return `<article class="macro-event">
       <div class="macro-event__time">
-        <span class="macro-impact macro-impact--${importance === 3 ? "high" : "medium"}" aria-label="${impactLabel}">${impactBars}</span>
+        <span class="macro-impact macro-impact--${importance === 3 ? "high" : importance === 2 ? "medium" : "low"}" aria-label="${impactLabel}">${impactBars}</span>
         <strong>${esc(macroTime(event.scheduled_at, "America/New_York", true))}</strong>
         <small>${esc(macroTime(event.scheduled_at, "Asia/Bangkok"))} BKK</small>
       </div>

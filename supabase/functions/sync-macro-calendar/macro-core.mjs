@@ -256,6 +256,12 @@ export const BLS_PPI_SERIES = [
   { pccSeriesId: "PPIFES", blsSeriesId: "WPSFD49104" },
 ];
 
+export const BLS_EMPLOYMENT_SERIES = [
+  { pccSeriesId: "PAYEMS", blsSeriesId: "CES0000000001", valueKind: "level_change" },
+  { pccSeriesId: "UNRATE", blsSeriesId: "LNS14000000", valueKind: "percent" },
+  { pccSeriesId: "CES0500000003", blsSeriesId: "CES0500000003", valueKind: "percent_change" },
+];
+
 export const RISK_SERIES = [
   { seriesId: "SAHMREALTIME", sourceUrl: "https://fred.stlouisfed.org/series/SAHMREALTIME" },
   { seriesId: "ICSA", sourceUrl: "https://fred.stlouisfed.org/series/ICSA" },
@@ -817,6 +823,87 @@ function formatTargetRange(lower, upper) {
   const high = parseFredNumber(upper?.value);
   if (low === null || high === null) return null;
   return `${low.toFixed(2)}–${high.toFixed(2)}%`;
+}
+
+export function buildBlsEmploymentOverrides(series, fetchedAt) {
+  const bySeries = new Map((series || []).map((item) => [item.seriesID, item]));
+  const overrides = new Map();
+
+  for (const config of BLS_EMPLOYMENT_SERIES) {
+    const observations = [...(bySeries.get(config.blsSeriesId)?.data || [])]
+      .map((item) => ({ ...item, date: blsObservationDate(item) }))
+      .filter((item) => item.date && Number.isFinite(Number(item.value)))
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    for (let index = 0; index < observations.length; index += 1) {
+      const current = observations[index];
+      const previous = observations[index + 1];
+      const earlier = observations[index + 2];
+      let actual = null;
+      let previousValue = null;
+
+      if (config.valueKind === "level_change" && previous) {
+        actual = formatFredValue(String(Number(current.value) - Number(previous.value)), "thousands_change");
+        previousValue = earlier
+          ? formatFredValue(String(Number(previous.value) - Number(earlier.value)), "thousands_change")
+          : null;
+      } else if (config.valueKind === "percent_change" && previous) {
+        const change = oneMonthPercentChange(current.value, previous.value);
+        const previousChange = earlier
+          ? oneMonthPercentChange(previous.value, earlier.value)
+          : null;
+        actual = change === null ? null : formatFredValue(String(change), "percent");
+        previousValue = previousChange === null
+          ? null
+          : formatFredValue(String(previousChange), "percent");
+      } else if (config.valueKind === "percent") {
+        actual = formatFredValue(current.value, "percent");
+        previousValue = previous ? formatFredValue(previous.value, "percent") : null;
+      }
+      if (!actual) continue;
+
+      overrides.set(`${config.pccSeriesId}:${current.date}`, {
+        actual,
+        previous: previousValue,
+        source_name: "U.S. Bureau of Labor Statistics",
+        source_url: "https://www.bls.gov/news.release/empsit.nr0.htm",
+        raw_payload: {
+          primary_source: "bls_api",
+          bls_series_id: config.blsSeriesId,
+          observation_date: current.date,
+          observation_value: current.value,
+          previous_observation_date: previous?.date || null,
+          previous_observation_value: previous?.value || null,
+          fetched_at: fetchedAt,
+        },
+      });
+    }
+  }
+
+  return overrides;
+}
+
+export function applyBlsEmploymentOverrides(rows, overrides, now) {
+  const current = new Date(now);
+  return rows.map((row) => {
+    if (row.source !== "fred" || new Date(row.scheduled_at) > current) return row;
+    const expectedDate = row.raw_payload?.expected_observation_date;
+    const override = overrides.get(`${row.series_id}:${expectedDate}`);
+    if (!override) return row;
+
+    return {
+      ...row,
+      actual: override.actual,
+      previous: override.previous ?? row.previous,
+      source_name: override.source_name,
+      source_url: override.source_url,
+      raw_payload: {
+        ...row.raw_payload,
+        fallback_source: "fred",
+        ...override.raw_payload,
+      },
+    };
+  });
 }
 
 function parseRateToken(value) {

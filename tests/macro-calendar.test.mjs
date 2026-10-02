@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  applyBlsEmploymentOverrides,
   applyBlsPpiOverrides,
   buildAdpRows,
+  buildBlsEmploymentOverrides,
   buildBlsPpiOverrides,
   buildFomcRows,
   buildFredRows,
@@ -152,6 +154,47 @@ test("parses FOMC meetings and builds decision, press conference, and minutes", 
   assert.equal(rows.find((row) => row.external_id === "fomc-decision:2026-09-16").event_name, "FOMC Rate Decision + SEP");
   assert.equal(rows.find((row) => row.external_id === "fomc-decision:2026-09-16").previous, "4.75–5.00%");
   assert.ok(rows.some((row) => row.external_id === "fomc-minutes:2026-09-16"));
+});
+
+test("uses the official BLS employment release before FRED catches up", () => {
+  const fetchedAt = "2026-10-02T12:35:00.000Z";
+  const rows = buildFredRows({
+    releaseDatesById: { 50: [{ date: "2026-10-02" }] },
+    observationsBySeries: {
+      "PAYEMS:chg": [{ date: "2026-08-01", value: "162" }],
+      "UNRATE:lin": [{ date: "2026-08-01", value: "4.1" }],
+      "CES0500000003:pch": [{ date: "2026-08-01", value: "0.3" }],
+    },
+    now: fetchedAt,
+    fetchedAt,
+    windowFrom: "2026-10-02",
+    windowTo: "2026-10-02",
+  });
+  const overrides = buildBlsEmploymentOverrides([
+    { seriesID: "CES0000000001", data: [
+      { year: "2026", period: "M09", value: "159044" },
+      { year: "2026", period: "M08", value: "159015" },
+      { year: "2026", period: "M07", value: "158882" },
+    ] },
+    { seriesID: "LNS14000000", data: [
+      { year: "2026", period: "M09", value: "4.2" },
+      { year: "2026", period: "M08", value: "4.1" },
+    ] },
+    { seriesID: "CES0500000003", data: [
+      { year: "2026", period: "M09", value: "37.81" },
+      { year: "2026", period: "M08", value: "37.76" },
+      { year: "2026", period: "M07", value: "37.64" },
+    ] },
+  ], fetchedAt);
+  const updated = applyBlsEmploymentOverrides(rows, overrides, fetchedAt);
+
+  assert.deepEqual(updated.map((row) => [row.event_name, row.actual, row.previous]), [
+    ["Nonfarm Payrolls", "29K", "133K"],
+    ["Unemployment Rate", "4.2%", "4.1%"],
+    ["Average Hourly Earnings (MoM)", "0.1%", "0.3%"],
+  ]);
+  assert.ok(updated.every((row) => row.source_name === "U.S. Bureau of Labor Statistics"));
+  assert.ok(updated.every((row) => row.raw_payload.fallback_source === "fred"));
 });
 
 test("uses the official FOMC statement range and keeps the prior target separate", () => {

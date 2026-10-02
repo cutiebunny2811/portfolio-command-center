@@ -1525,6 +1525,7 @@
       return data;
     } catch (error) {
       console.warn(error);
+      if (notify) setSync(false, "Price sync failed");
       if (notify) toast(friendlyError(error), true);
       return null;
     } finally {

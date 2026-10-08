@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
 import { chartCacheIsStale, reconcileDailyBarsWithPrice } from "./chart-cache-policy.mjs";
+import { regularMarketSnapshot, regularSnapshotIsStale } from "./market-pulse-core.mjs";
 import {
   chooseExpiry,
   expirationChoices,
@@ -19,7 +20,8 @@ const corsHeaders = {
 };
 
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
-const snapshotPath = "/openapi/market-data/stock/snapshot";
+const snapshotPath = "/market-data/stocks/snapshots/list";
+const legacySnapshotPath = "/openapi/market-data/stock/snapshot";
 const barsPath = "/openapi/market-data/stock/bars";
 const optionContractsPath = "/openapi/instrument/option/contracts";
 const optionSnapshotPath = "/openapi/market-data/option/snapshot";
@@ -284,6 +286,7 @@ async function signedGet(
   appSecret: string,
   host: string,
   accessToken?: string,
+  apiVersion = "v2",
 ): Promise<{ response: Response; payload: unknown }> {
   const timestamp = timestampUtc();
   const nonce = crypto.randomUUID().replaceAll("-", "");
@@ -295,7 +298,7 @@ async function signedGet(
     "x-signature-algorithm": "HMAC-SHA1",
     "x-signature-version": "1.0",
     "x-signature-nonce": nonce,
-    "x-version": "v2",
+    "x-version": apiVersion,
   };
   if (accessToken) headers["x-access-token"] = accessToken;
   const url = new URL(`https://${host}${path}`);
@@ -303,6 +306,19 @@ async function signedGet(
   const response = await fetch(url, { headers });
   const payload = await response.json().catch(() => null);
   return { response, payload };
+}
+
+async function fetchStockSnapshots(
+  query: Record<string, string>,
+  appKey: string,
+  appSecret: string,
+  host: string,
+  accessToken?: string,
+): Promise<{ response: Response; payload: unknown; endpoint: "current" | "legacy" }> {
+  const current = await signedGet(snapshotPath, query, appKey, appSecret, host, accessToken, "v3");
+  if (current.response.ok) return { ...current, endpoint: "current" };
+  const legacy = await signedGet(legacySnapshotPath, query, appKey, appSecret, host, accessToken, "v2");
+  return { ...legacy, endpoint: "legacy" };
 }
 
 function regularSnapshotDayBar(snapshot: Record<string, unknown>): ChartBar | null {
@@ -446,39 +462,45 @@ async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Prom
     extend_hour_required: "false",
     overnight_required: "false",
   };
-  const { response, payload } = await signedGet(snapshotPath, query, appKey, appSecret, host, accessToken);
+  const { response, payload } = await fetchStockSnapshots(query, appKey, appSecret, host, accessToken);
   if (!response.ok) {
     const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 600) : `HTTP ${response.status}`;
     throw new Error(`Webull market pulse snapshot failed: ${detail}`);
   }
 
   const bySymbol = new Map(instruments.map((item) => [item.symbol.toUpperCase(), item]));
-  return payloadRows(payload).flatMap((row): MarketPulseSnapshot[] => {
+  const snapshots = payloadRows(payload).flatMap((row): MarketPulseSnapshot[] => {
     const symbol = String(row.symbol || "").trim().toUpperCase();
     const instrument = bySymbol.get(symbol);
-    const value = marketValue(row);
+    const value = regularMarketSnapshot(row);
     if (!instrument || !value) return [];
-    const previousClose = finiteNumber(row.pre_close ?? row.previous_close);
-    const reportedChange = finiteNumber(row.change ?? row.change_value);
-    const changeValue = reportedChange ?? (previousClose && previousClose > 0 ? value.price - previousClose : null);
-    const changePercent = previousClose && previousClose > 0
-      ? (value.price / previousClose - 1) * 100
-      : finiteNumber(row.change_ratio) != null
-        ? Number(row.change_ratio) * 100
-        : null;
     const identity = webullIdentity(row);
     return [{
       instrument,
       price: value.price,
-      previousClose,
-      changeValue,
-      changePercent,
-      volume: finiteNumber(row.volume),
-      turnover: finiteNumber(row.turnover),
+      previousClose: value.previousClose,
+      changeValue: value.changeValue,
+      changePercent: value.changePercent,
+      volume: value.volume,
+      turnover: value.turnover,
       marketTime: value.marketTime,
       ...identity,
     }];
   });
+  const stale = snapshots.filter((item) => regularSnapshotIsStale(item.marketTime));
+  if (!stale.length) return snapshots;
+  const repairs = await mapLimit(stale, 4, (item) =>
+    fetchMarketPulseFromBars(item.instrument, appKey, appSecret, host, accessToken)
+  );
+  const repaired = new Map<string, MarketPulseSnapshot>();
+  repairs.forEach((result, index) => {
+    if (result.status === "fulfilled") repaired.set(stale[index].instrument.symbol, result.value);
+  });
+  const failed = repairs.find((result) => result.status === "rejected");
+  if (failed?.status === "rejected") {
+    throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
+  }
+  return snapshots.map((item) => repaired.get(item.instrument.symbol) || item);
 }
 
 function returnFromClose(currentPrice: number, close: number | undefined): number | null {
@@ -543,6 +565,54 @@ async function fetchLatestRegularClose(
     webullInstrumentId: null,
     logoUrl: null,
     dayBar: bars[0],
+  };
+}
+
+async function fetchMarketPulseFromBars(
+  instrument: MarketPulseInstrument,
+  appKey: string,
+  appSecret: string,
+  host: string,
+  accessToken?: string,
+): Promise<MarketPulseSnapshot> {
+  const query = {
+    symbol: instrument.symbol.trim().toUpperCase(),
+    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    timespan: "D",
+    count: "5",
+    real_time_required: "true",
+  };
+  const { response, payload } = await signedGet(barsPath, query, appKey, appSecret, host, accessToken);
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
+    throw new Error(`${instrument.symbol}: stale snapshot and live-bar repair failed: ${detail}`);
+  }
+  const bars = historicalBarRows(payload).map((bar) => {
+    const close = finiteNumber(bar.close);
+    const rawTime = bar.time ?? bar.timestamp ?? bar.date;
+    const numericTime = Number(rawTime);
+    const parsed = Number.isFinite(numericTime)
+      ? new Date(numericTime < 10_000_000_000 ? numericTime * 1000 : numericTime)
+      : new Date(String(rawTime || ""));
+    return close && close > 0 && Number.isFinite(parsed.getTime())
+      ? { close, time: parsed.toISOString(), volume: finiteNumber(bar.volume ?? bar.vol) }
+      : null;
+  }).filter((bar): bar is { close: number; time: string; volume: number | null } => Boolean(bar));
+  bars.sort((a, b) => b.time.localeCompare(a.time));
+  if (!bars.length) throw new Error(`${instrument.symbol}: stale snapshot and live-bar repair returned no bars`);
+  const price = bars[0].close;
+  const previousClose = bars[1]?.close ?? null;
+  return {
+    instrument,
+    price,
+    previousClose,
+    changeValue: previousClose ? price - previousClose : null,
+    changePercent: previousClose ? (price / previousClose - 1) * 100 : null,
+    volume: bars[0].volume,
+    turnover: null,
+    marketTime: bars[0].time,
+    webullInstrumentId: null,
+    logoUrl: null,
   };
 }
 
@@ -613,7 +683,7 @@ async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
     extend_hour_required: "false",
     overnight_required: "false",
   };
-  const { response, payload } = await signedGet(snapshotPath, query, appKey, appSecret, host, accessToken);
+  const { response, payload } = await fetchStockSnapshots(query, appKey, appSecret, host, accessToken);
   if (!response.ok) {
     const detail = payload && typeof payload === "object"
       ? JSON.stringify(payload).slice(0, 300)

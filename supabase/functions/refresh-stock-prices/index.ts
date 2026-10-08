@@ -953,6 +953,14 @@ Deno.serve(async (request) => {
         symbols: missingSymbols.join(","),
         message: "Webull returned a stale regular-session quote and no current live bar was available",
       });
+      if (missingSymbols.length) {
+        const { error: staleCacheError } = await supabase
+          .from("market_pulse_latest")
+          .delete()
+          .eq("user_id", authenticatedUserId)
+          .in("symbol", missingSymbols);
+        if (staleCacheError) throw staleCacheError;
+      }
       const logoFailure = await syncInstrumentLogos(supabase, snapshots.map((snapshot) => ({
         instrumentId: snapshot.instrument.instrumentId,
         webullInstrumentId: snapshot.webullInstrumentId,

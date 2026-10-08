@@ -34,4 +34,7 @@ test("collector prefers the documented v3 endpoint and keeps v2 as fallback", as
   assert.match(source, /signedGet\(legacySnapshotPath,[\s\S]*"v2"\)/);
   assert.match(source, /return snapshots\.flatMap\(\(item\) =>/);
   assert.match(source, /missingSymbols\.length/);
+  assert.match(source, /fetchMarketPulseBatchOnce\(instruments/);
+  assert.match(source, /fetchMarketPulseBatch\(instruments\.slice\(0, middle\)\)/);
+  assert.match(source, /fetchMarketPulseBatch\(instruments\.slice\(middle\)\)/);
 });

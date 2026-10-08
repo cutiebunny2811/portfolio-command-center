@@ -443,7 +443,7 @@ function chunksOf<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
-async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Promise<MarketPulseSnapshot[]> {
+async function fetchMarketPulseBatchOnce(instruments: MarketPulseInstrument[]): Promise<MarketPulseSnapshot[]> {
   if (!instruments.length) return [];
   const category = instruments[0].asset_type === "etf" ? "US_ETF" : "US_STOCK";
   if (instruments.some((item) => (item.asset_type === "etf" ? "US_ETF" : "US_STOCK") !== category)) {
@@ -505,6 +505,26 @@ async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Prom
     const replacement = repaired.get(item.instrument.symbol);
     return replacement ? [replacement] : [];
   });
+}
+
+async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Promise<MarketPulseSnapshot[]> {
+  try {
+    return await fetchMarketPulseBatchOnce(instruments);
+  } catch (error) {
+    if (instruments.length <= 1) {
+      console.warn("Market Pulse symbol refresh failed", {
+        symbol: instruments[0]?.symbol || "unknown",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    const middle = Math.ceil(instruments.length / 2);
+    const [left, right] = await Promise.all([
+      fetchMarketPulseBatch(instruments.slice(0, middle)),
+      fetchMarketPulseBatch(instruments.slice(middle)),
+    ]);
+    return [...left, ...right];
+  }
 }
 
 function returnFromClose(currentPrice: number, close: number | undefined): number | null {

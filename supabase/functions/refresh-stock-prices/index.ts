@@ -495,12 +495,16 @@ async function fetchMarketPulseBatch(instruments: MarketPulseInstrument[]): Prom
   const repaired = new Map<string, MarketPulseSnapshot>();
   repairs.forEach((result, index) => {
     if (result.status === "fulfilled") repaired.set(stale[index].instrument.symbol, result.value);
+    else console.warn("Market Pulse stale quote repair failed", {
+      symbol: stale[index].instrument.symbol,
+      message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+    });
   });
-  const failed = repairs.find((result) => result.status === "rejected");
-  if (failed?.status === "rejected") {
-    throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
-  }
-  return snapshots.map((item) => repaired.get(item.instrument.symbol) || item);
+  return snapshots.flatMap((item) => {
+    if (!regularSnapshotIsStale(item.marketTime)) return [item];
+    const replacement = repaired.get(item.instrument.symbol);
+    return replacement ? [replacement] : [];
+  });
 }
 
 function returnFromClose(currentPrice: number, close: number | undefined): number | null {
@@ -923,13 +927,18 @@ Deno.serve(async (request) => {
       const failures = batchResults.flatMap((result, index) => result.status === "rejected"
         ? [{ symbols: batches[index].map((item) => item.symbol).join(","), message: result.reason instanceof Error ? result.reason.message : String(result.reason) }]
         : []);
+      const snapshotBySymbol = new Map(snapshots.map((item) => [item.instrument.symbol, item]));
+      const missingSymbols = pending.filter((item) => !snapshotBySymbol.has(item.symbol)).map((item) => item.symbol);
+      if (missingSymbols.length) failures.push({
+        symbols: missingSymbols.join(","),
+        message: "Webull returned a stale regular-session quote and no current live bar was available",
+      });
       const logoFailure = await syncInstrumentLogos(supabase, snapshots.map((snapshot) => ({
         instrumentId: snapshot.instrument.instrumentId,
         webullInstrumentId: snapshot.webullInstrumentId,
         logoUrl: snapshot.logoUrl,
       })));
       if (logoFailure) failures.push({ symbols: "logos", message: logoFailure });
-      const snapshotBySymbol = new Map(snapshots.map((item) => [item.instrument.symbol, item]));
 
       const sectorCutoff = Date.now() - 60 * 60_000;
       const sectorPending = desired.filter((item) => {

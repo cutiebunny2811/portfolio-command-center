@@ -32,4 +32,6 @@ test("collector prefers the documented v3 endpoint and keeps v2 as fallback", as
   assert.match(source, /const legacySnapshotPath = "\/openapi\/market-data\/stock\/snapshot"/);
   assert.match(source, /signedGet\(snapshotPath,[\s\S]*"v3"\)/);
   assert.match(source, /signedGet\(legacySnapshotPath,[\s\S]*"v2"\)/);
+  assert.match(source, /return snapshots\.flatMap\(\(item\) =>/);
+  assert.match(source, /missingSymbols\.length/);
 });

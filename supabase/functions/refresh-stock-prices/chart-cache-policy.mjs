@@ -72,6 +72,52 @@ function isWeekday(clock) {
   return clock && !["Sat", "Sun"].includes(clock.weekday);
 }
 
+export function hourlyBarsFromMinutes(minuteBars, now = Date.now()) {
+  if (!Array.isArray(minuteBars)) return [];
+  const groups = new Map();
+  for (const bar of minuteBars) {
+    const time = new Date(bar?.time || "").getTime();
+    const clock = newYorkClock(time);
+    if (!clock || !isWeekday(clock) || clock.minutes < regularSessionOpenMinutes || clock.minutes >= 16 * 60) continue;
+    const slot = Math.floor((clock.minutes - regularSessionOpenMinutes) / 60);
+    const slotStartMinutes = regularSessionOpenMinutes + slot * 60;
+    const start = time - (clock.minutes - slotStartMinutes) * 60_000;
+    const expected = Math.min(60, 16 * 60 - slotStartMinutes);
+    const key = `${clock.dateKey}:${slot}`;
+    if (!groups.has(key)) groups.set(key, { start, expected, rows: new Map() });
+    groups.get(key).rows.set(clock.minutes, bar);
+  }
+  const result = [];
+  for (const group of groups.values()) {
+    if (group.start + group.expected * 60_000 > now || group.rows.size !== group.expected) continue;
+    const rows = [...group.rows.values()].sort((a, b) => a.time.localeCompare(b.time));
+    const first = rows[0], last = rows.at(-1);
+    const valid = rows.every((bar) => [bar.open, bar.high, bar.low, bar.close, bar.volume]
+      .every((value) => Number.isFinite(value)));
+    if (!valid) continue;
+    result.push({
+      time: new Date(group.start).toISOString(),
+      open: first.open,
+      high: Math.max(...rows.map((bar) => bar.high)),
+      low: Math.min(...rows.map((bar) => bar.low)),
+      close: last.close,
+      volume: rows.reduce((sum, bar) => sum + bar.volume, 0),
+    });
+  }
+  return result.sort((a, b) => a.time.localeCompare(b.time));
+}
+
+export function mergeHourlyHistory(cachedBars, fetchedBars, limit = 260) {
+  const byTime = new Map();
+  for (const bar of [...(Array.isArray(cachedBars) ? cachedBars : []), ...(Array.isArray(fetchedBars) ? fetchedBars : [])]) {
+    const time = new Date(bar?.time || "").getTime();
+    if (!Number.isFinite(time) || ![bar?.open, bar?.high, bar?.low, bar?.close, bar?.volume]
+      .every((value) => Number.isFinite(value))) continue;
+    byTime.set(time, bar);
+  }
+  return [...byTime.entries()].sort(([left], [right]) => left - right).slice(-limit).map(([, bar]) => bar);
+}
+
 export function chartCacheIsStale({ timespan, fetchedAt, cacheWindowMs, now = Date.now() }) {
   const fetchedTime = new Date(fetchedAt || "").getTime();
   const nowTime = now instanceof Date ? now.getTime() : Number(now);

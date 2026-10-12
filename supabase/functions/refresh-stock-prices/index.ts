@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
-import { chartCacheIsStale, reconcileDailyBarsWithPrice } from "./chart-cache-policy.mjs";
+import { chartCacheIsStale, hourlyBarsFromMinutes, mergeHourlyHistory, reconcileDailyBarsWithPrice } from "./chart-cache-policy.mjs";
 import { makeWebullSignature } from "./webull-signature.mjs";
 import { regularMarketSnapshot, regularSnapshotIsStale } from "./market-pulse-core.mjs";
 import {
@@ -67,12 +67,17 @@ const marketPulseSectors = [
   { symbol: "SPY", displayName: "S&P 500" },
   { symbol: "GLD", displayName: "Gold" },
 ];
+const knownEtfSymbols = new Set([...marketPulseBenchmarks, ...marketPulseSectors].map((item) => item.symbol));
 
 type Instrument = {
   id: string;
   symbol: string;
   asset_type: "stock" | "etf";
 };
+
+function stockCategory(instrument: Instrument): "US_STOCK" | "US_ETF" {
+  return instrument.asset_type === "etf" || knownEtfSymbols.has(instrument.symbol.toUpperCase()) ? "US_ETF" : "US_STOCK";
+}
 
 type OptionInstrument = {
   id: string;
@@ -376,7 +381,13 @@ async function fetchOptionContractRows(underlying: string, force = false): Promi
       status: "LISTING",
     };
     if (paginationKey) query.pagination_key = paginationKey;
-    const { response, payload } = await signedGet(optionContractsPath, query, appKey, appSecret, host, accessToken);
+    let { response, payload } = await signedGet(optionContractsPath, query, appKey, appSecret, host, accessToken);
+    // A regional gateway can reject the optional status filter with an opaque 404.
+    if (page === 0 && response.status === 404) {
+      ({ response, payload } = await signedGet(optionContractsPath, {
+        category: "US_OPTION", underlying_symbols: underlying,
+      }, appKey, appSecret, host, accessToken));
+    }
     if (!response.ok) {
       const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 600) : `HTTP ${response.status}`;
       throw new Error(`Webull option contracts failed: ${detail}`);
@@ -542,7 +553,7 @@ async function fetchLatestRegularClose(
 ): Promise<PriceResult> {
   const body = {
     symbols: [instrument.symbol.trim().toUpperCase()],
-    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    category: stockCategory(instrument),
     timespan: "D",
     count: 5,
     real_time_required: false,
@@ -626,7 +637,7 @@ async function fetchMarketPulseFromBars(
   };
 }
 
-async function fetchHistoricalBars(instrument: Instrument, count: number, timespan: ChartTimespan = "D"): Promise<ChartBar[]> {
+async function fetchHistoricalBars(instrument: Instrument, count: number, timespan: ChartTimespan = "D", regularOnly = false): Promise<ChartBar[]> {
   const appKey = Deno.env.get("WEBULL_APP_KEY")?.trim();
   const appSecret = Deno.env.get("WEBULL_APP_SECRET")?.trim();
   const region = Deno.env.get("WEBULL_REGION")?.trim().toLowerCase() || "th";
@@ -636,13 +647,19 @@ async function fetchHistoricalBars(instrument: Instrument, count: number, timesp
 
   const body = {
     symbols: [instrument.symbol.trim().toUpperCase()],
-    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    category: stockCategory(instrument),
     timespan,
-    count: Math.min(Math.max(Math.trunc(count), 10), 800),
-    real_time_required: false,
+    count: Math.min(Math.max(Math.trunc(count), 10), timespan === "M1" ? 1650 : 800),
+    real_time_required: timespan === "M60" || timespan === "M240",
+    ...(regularOnly ? { trading_sessions: "RTH" } : {}),
   };
   const { response, payload } = await signedPost(barsPath, body, appKey, appSecret, host, accessToken);
   if (!response.ok) {
+    if (timespan === "M60" && response.status === 404) {
+      const minuteBars = await fetchHistoricalBars(instrument, 1650, "M1", true);
+      const hourly = hourlyBarsFromMinutes(minuteBars);
+      if (hourly.length) return hourly;
+    }
     const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
     throw new Error(`${instrument.symbol}: Webull bars failed: ${detail}`);
   }
@@ -686,7 +703,7 @@ async function fetchSnapshot(instrument: Instrument): Promise<PriceResult> {
 
   const query = {
     symbols: instrument.symbol.trim().toUpperCase(),
-    category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
+    category: stockCategory(instrument),
     // Regular-session data is available on the standard market-data entitlement.
     // Requesting either extended or overnight quotes can make the entire snapshot
     // fail outside regular hours when the Webull account has no matching add-on.
@@ -801,13 +818,19 @@ Deno.serve(async (request) => {
         instrumentId: null,
         symbol,
         displayName: symbol,
-        asset_type: "stock",
+        asset_type: knownEtfSymbols.has(symbol) ? "etf" : "stock",
         isWatchlist: false,
         isBenchmark: false,
         isSector: false,
         sectorName: null,
       };
-      const [underlyingSnapshot] = await fetchMarketPulseBatch([marketInstrument]);
+      let [underlyingSnapshot] = await fetchMarketPulseBatch([marketInstrument]);
+      if (!underlyingSnapshot?.price) {
+        [underlyingSnapshot] = await fetchMarketPulseBatch([{
+          ...marketInstrument,
+          asset_type: marketInstrument.asset_type === "etf" ? "stock" : "etf",
+        }]);
+      }
       if (!underlyingSnapshot?.price) throw new Error(`${symbol}: Webull returned no usable underlying quote`);
       const contracts = (await fetchOptionContractRows(symbol, force))
         .filter((contract) => isStandardOptionContract(contract, symbol));
@@ -1178,7 +1201,7 @@ Deno.serve(async (request) => {
           : latestPrice;
         const bars = timespan === "D"
           ? reconcileDailyBarsWithPrice(fetchedBars, effectivePrice, fetchedAt).bars
-          : fetchedBars;
+          : timespan === "M60" ? mergeHourlyHistory(cachedBars, fetchedBars, chartConfig.count) : fetchedBars;
         const { error: writeError } = await admin.from("market_chart_cache").upsert({
           instrument_id: instrumentId,
           symbol: instrument.symbol.trim().toUpperCase(),

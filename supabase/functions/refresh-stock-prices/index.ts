@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildMassiveOptionTicker, latestOptionEodQuote, shouldRecordOptionEod } from "./option-eod.mjs";
 import { chartCacheIsStale, reconcileDailyBarsWithPrice } from "./chart-cache-policy.mjs";
+import { makeWebullSignature } from "./webull-signature.mjs";
 import {
   chooseExpiry,
   expirationChoices,
@@ -19,10 +20,10 @@ const corsHeaders = {
 };
 
 const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
-const snapshotPath = "/openapi/market-data/stock/snapshot";
-const barsPath = "/openapi/market-data/stock/bars";
-const optionContractsPath = "/openapi/instrument/option/contracts";
-const optionSnapshotPath = "/openapi/market-data/option/snapshot";
+const snapshotPath = "/market-data/stocks/snapshots/list";
+const barsPath = "/market-data/stocks/bars/list";
+const optionContractsPath = "/trading/instruments/options/contracts/list";
+const optionSnapshotPath = "/market-data/options/snapshots/list";
 const webullLogoCdn = "https://quotes-static.webullfintech.com/ticker-icon";
 const refreshWindowMs = 15 * 60_000;
 const optionEodRefreshWindowMs = 8 * 60 * 60_000;
@@ -176,43 +177,6 @@ function timestampUtc(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let value = "";
-  for (const byte of bytes) value += String.fromCharCode(byte);
-  return btoa(value);
-}
-
-async function makeSignature(
-  path: string,
-  query: Record<string, string>,
-  appKey: string,
-  appSecret: string,
-  host: string,
-  timestamp: string,
-  nonce: string,
-): Promise<string> {
-  const values: Record<string, string> = {
-    ...query,
-    host,
-    "x-app-key": appKey,
-    "x-signature-algorithm": "HMAC-SHA1",
-    "x-signature-nonce": nonce,
-    "x-signature-version": "1.0",
-    "x-timestamp": timestamp,
-  };
-  const sorted = Object.keys(values).sort().map((key) => `${key}=${values[key]}`).join("&");
-  const encoded = encodeURIComponent(`${path}&${sorted}`);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(`${appSecret}&`),
-    { name: "HMAC", hash: "SHA-1" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(encoded));
-  return bytesToBase64(new Uint8Array(signature));
-}
-
 function marketValue(snapshot: Record<string, unknown>): { price: number; marketTime: string } | null {
   const nested = ["pre_market", "after_hours", "overnight"]
     .map((key) => snapshot[key])
@@ -287,7 +251,7 @@ async function signedGet(
 ): Promise<{ response: Response; payload: unknown }> {
   const timestamp = timestampUtc();
   const nonce = crypto.randomUUID().replaceAll("-", "");
-  const signature = await makeSignature(path, query, appKey, appSecret, host, timestamp, nonce);
+  const signature = makeWebullSignature({ path, query, appKey, appSecret, host, timestamp, nonce });
   const headers: Record<string, string> = {
     "x-app-key": appKey,
     "x-timestamp": timestamp,
@@ -295,12 +259,40 @@ async function signedGet(
     "x-signature-algorithm": "HMAC-SHA1",
     "x-signature-version": "1.0",
     "x-signature-nonce": nonce,
-    "x-version": "v2",
+    "x-version": "v3",
   };
   if (accessToken) headers["x-access-token"] = accessToken;
   const url = new URL(`https://${host}${path}`);
   Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
   const response = await fetch(url, { headers });
+  const payload = await response.json().catch(() => null);
+  return { response, payload };
+}
+
+async function signedPost(
+  path: string,
+  body: Record<string, unknown>,
+  appKey: string,
+  appSecret: string,
+  host: string,
+  accessToken?: string,
+): Promise<{ response: Response; payload: unknown }> {
+  const timestamp = timestampUtc();
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const bodyString = JSON.stringify(body);
+  const signature = makeWebullSignature({ path, body: bodyString, appKey, appSecret, host, timestamp, nonce });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-app-key": appKey,
+    "x-timestamp": timestamp,
+    "x-signature": signature,
+    "x-signature-algorithm": "HMAC-SHA1",
+    "x-signature-version": "1.0",
+    "x-signature-nonce": nonce,
+    "x-version": "v3",
+  };
+  if (accessToken) headers["x-access-token"] = accessToken;
+  const response = await fetch(`https://${host}${path}`, { method: "POST", headers, body: bodyString });
   const payload = await response.json().catch(() => null);
   return { response, payload };
 }
@@ -360,20 +352,14 @@ async function fetchOptionContractRows(underlying: string, force = false): Promi
   }
   const { appKey, appSecret, host, accessToken } = webullCredentials();
   const collected: Record<string, unknown>[] = [];
-  let lastInstrumentId = "";
-  const startDate = new Date();
-  const endDate = new Date(startDate);
-  endDate.setUTCMonth(endDate.getUTCMonth() + 18);
-  for (let page = 0; page < 4; page += 1) {
+  let paginationKey = "";
+  for (let page = 0; page < 8; page += 1) {
     const query: Record<string, string> = {
       category: "US_OPTION",
       underlying_symbols: underlying,
       status: "LISTING",
-      start_date: startDate.toISOString().slice(0, 10),
-      end_date: endDate.toISOString().slice(0, 10),
-      page_size: "1000",
     };
-    if (lastInstrumentId) query.last_instrument_id = lastInstrumentId;
+    if (paginationKey) query.pagination_key = paginationKey;
     const { response, payload } = await signedGet(optionContractsPath, query, appKey, appSecret, host, accessToken);
     if (!response.ok) {
       const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 600) : `HTTP ${response.status}`;
@@ -381,10 +367,10 @@ async function fetchOptionContractRows(underlying: string, force = false): Promi
     }
     const rows = nestedRows(payload);
     collected.push(...rows);
-    if (rows.length < 1000) break;
-    const nextId = String(rows[rows.length - 1]?.instrument_id || "");
-    if (!nextId || nextId === lastInstrumentId) break;
-    lastInstrumentId = nextId;
+    const nextKey = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? String((payload as Record<string, unknown>).pagination_key || "") : "";
+    if (!nextKey || nextKey === paginationKey || !rows.length) break;
+    paginationKey = nextKey;
   }
   optionContractCache.set(underlying, { fetchedAt: Date.now(), rows: collected });
   return collected.map(normalizeOptionContract).filter((item): item is OptionContract => Boolean(item));
@@ -508,14 +494,14 @@ async function fetchLatestRegularClose(
   host: string,
   accessToken?: string,
 ): Promise<PriceResult> {
-  const query = {
-    symbol: instrument.symbol.trim().toUpperCase(),
+  const body = {
+    symbols: [instrument.symbol.trim().toUpperCase()],
     category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
     timespan: "D",
-    count: "5",
-    real_time_required: "false",
+    count: 5,
+    real_time_required: false,
   };
-  const { response, payload } = await signedGet(barsPath, query, appKey, appSecret, host, accessToken);
+  const { response, payload } = await signedPost(barsPath, body, appKey, appSecret, host, accessToken);
   if (!response.ok) {
     const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
     throw new Error(`${instrument.symbol}: historical close fallback failed: ${detail}`);
@@ -554,14 +540,14 @@ async function fetchHistoricalBars(instrument: Instrument, count: number, timesp
   const accessToken = Deno.env.get("WEBULL_ACCESS_TOKEN")?.trim();
   if (!appKey || !appSecret) throw new Error("Webull secrets are not configured");
 
-  const query = {
-    symbol: instrument.symbol.trim().toUpperCase(),
+  const body = {
+    symbols: [instrument.symbol.trim().toUpperCase()],
     category: instrument.asset_type === "etf" ? "US_ETF" : "US_STOCK",
     timespan,
-    count: String(Math.min(Math.max(Math.trunc(count), 10), 800)),
-    real_time_required: "false",
+    count: Math.min(Math.max(Math.trunc(count), 10), 800),
+    real_time_required: false,
   };
-  const { response, payload } = await signedGet(barsPath, query, appKey, appSecret, host, accessToken);
+  const { response, payload } = await signedPost(barsPath, body, appKey, appSecret, host, accessToken);
   if (!response.ok) {
     const detail = payload && typeof payload === "object" ? JSON.stringify(payload).slice(0, 300) : `HTTP ${response.status}`;
     throw new Error(`${instrument.symbol}: Webull bars failed: ${detail}`);

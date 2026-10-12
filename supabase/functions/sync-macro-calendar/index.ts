@@ -1,8 +1,11 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
+  applyBlsEmploymentOverrides,
   applyBlsPpiOverrides,
+  BLS_EMPLOYMENT_SERIES,
   buildAdpRows,
   BLS_PPI_SERIES,
+  buildBlsEmploymentOverrides,
   buildBlsPpiOverrides,
   buildFomcRows,
   buildFredRows,
@@ -87,6 +90,15 @@ function isPpiReleaseWindow(releaseDates: unknown[], now: Date) {
   });
 }
 
+function isEmploymentReleaseWindow(releaseDates: unknown[], now: Date) {
+  return (releaseDates || []).some((item) => {
+    const releaseDate = String((item as Record<string, unknown>)?.date || item || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) return false;
+    const delta = now.getTime() - new Date(zonedIso(releaseDate, "08:30")).getTime();
+    return delta >= -10 * 60_000 && delta <= 24 * 60 * 60_000;
+  });
+}
+
 const MONTH_SLUGS = [
   "january", "february", "march", "april", "may", "june",
   "july", "august", "september", "october", "november", "december",
@@ -152,12 +164,12 @@ async function fetchFomcDecisionSnapshots(meetings: any[], now: Date) {
   return { snapshots, warning: warnings.join("; ") || null };
 }
 
-async function blsPpiSeries(now: Date) {
+async function blsSeries(seriesIds: string[], now: Date) {
   const response = await fetchWithRetry(BLS_PUBLIC_API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      seriesid: BLS_PPI_SERIES.map((item) => item.blsSeriesId),
+      seriesid: seriesIds,
       startyear: String(now.getUTCFullYear() - 1),
       endyear: String(now.getUTCFullYear()),
     }),
@@ -315,13 +327,29 @@ Deno.serve(async (request) => {
     let blsOverrides = new Map();
     if (isPpiReleaseWindow(releaseDatesById[46] || [], now)) {
       try {
-        blsOverrides = buildBlsPpiOverrides(await blsPpiSeries(now), fetchedAt);
+        blsOverrides = buildBlsPpiOverrides(
+          await blsSeries(BLS_PPI_SERIES.map((item) => item.blsSeriesId), now),
+          fetchedAt,
+        );
       } catch (error) {
         blsWarning = error instanceof Error ? error.message : String(error);
       }
     }
 
-    const fredRows = applyBlsPpiOverrides(buildFredRows({
+    let employmentWarning: string | null = null;
+    let employmentOverrides = new Map();
+    if (isEmploymentReleaseWindow(releaseDatesById[50] || [], now)) {
+      try {
+        employmentOverrides = buildBlsEmploymentOverrides(
+          await blsSeries(BLS_EMPLOYMENT_SERIES.map((item) => item.blsSeriesId), now),
+          fetchedAt,
+        );
+      } catch (error) {
+        employmentWarning = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    let fredRows = applyBlsPpiOverrides(buildFredRows({
         releaseDatesById,
         observationsBySeries,
         now: fetchedAt,
@@ -329,6 +357,11 @@ Deno.serve(async (request) => {
         windowFrom,
         windowTo,
       }), blsOverrides, fetchedAt);
+    fredRows = applyBlsEmploymentOverrides(
+      fredRows,
+      employmentOverrides,
+      fetchedAt,
+    );
     const scheduledIsmRows = buildIsmRows({ fetchedAt, windowFrom, windowTo });
     const ismResult = await fetchIsmSnapshots(scheduledIsmRows, now);
     let rows = dedupeMacroRows([
@@ -465,7 +498,7 @@ Deno.serve(async (request) => {
       updated: rows.length,
       risk_snapshots: riskSnapshots.length,
       sources: ["ADP", "BLS Public Data API", "FRED", "Federal Reserve", "ISM", "University of Michigan"],
-      source_warning: [blsWarning, fomcResult.warning, ismResult.warning, adpWarning, michiganWarning]
+      source_warning: [blsWarning, employmentWarning, fomcResult.warning, ismResult.warning, adpWarning, michiganWarning]
         .filter(Boolean).join("; ") || null,
       window_from: windowFrom,
       window_to: windowTo,

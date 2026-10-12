@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
+  applyBlsEmploymentOverrides,
   applyBlsPpiOverrides,
   buildAdpRows,
+  buildBlsEmploymentOverrides,
   buildBlsPpiOverrides,
   buildFomcRows,
   buildFredRows,
@@ -153,6 +156,47 @@ test("parses FOMC meetings and builds decision, press conference, and minutes", 
   assert.ok(rows.some((row) => row.external_id === "fomc-minutes:2026-09-16"));
 });
 
+test("uses the official BLS employment release before FRED catches up", () => {
+  const fetchedAt = "2026-10-02T12:35:00.000Z";
+  const rows = buildFredRows({
+    releaseDatesById: { 50: [{ date: "2026-10-02" }] },
+    observationsBySeries: {
+      "PAYEMS:chg": [{ date: "2026-08-01", value: "162" }],
+      "UNRATE:lin": [{ date: "2026-08-01", value: "4.1" }],
+      "CES0500000003:pch": [{ date: "2026-08-01", value: "0.3" }],
+    },
+    now: fetchedAt,
+    fetchedAt,
+    windowFrom: "2026-10-02",
+    windowTo: "2026-10-02",
+  });
+  const overrides = buildBlsEmploymentOverrides([
+    { seriesID: "CES0000000001", data: [
+      { year: "2026", period: "M09", value: "159044" },
+      { year: "2026", period: "M08", value: "159015" },
+      { year: "2026", period: "M07", value: "158882" },
+    ] },
+    { seriesID: "LNS14000000", data: [
+      { year: "2026", period: "M09", value: "4.2" },
+      { year: "2026", period: "M08", value: "4.1" },
+    ] },
+    { seriesID: "CES0500000003", data: [
+      { year: "2026", period: "M09", value: "37.81" },
+      { year: "2026", period: "M08", value: "37.76" },
+      { year: "2026", period: "M07", value: "37.64" },
+    ] },
+  ], fetchedAt);
+  const updated = applyBlsEmploymentOverrides(rows, overrides, fetchedAt);
+
+  assert.deepEqual(updated.map((row) => [row.event_name, row.actual, row.previous]), [
+    ["Nonfarm Payrolls", "29K", "133K"],
+    ["Unemployment Rate", "4.2%", "4.1%"],
+    ["Average Hourly Earnings (MoM)", "0.1%", "0.3%"],
+  ]);
+  assert.ok(updated.every((row) => row.source_name === "U.S. Bureau of Labor Statistics"));
+  assert.ok(updated.every((row) => row.raw_payload.fallback_source === "fred"));
+});
+
 test("uses the official FOMC statement range and keeps the prior target separate", () => {
   const sourceUrl = "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm";
   const snapshot = parseFomcStatement(`
@@ -185,13 +229,28 @@ test("uses the official FOMC statement range and keeps the prior target separate
   assert.equal(decision.source_url, sourceUrl);
 });
 
-test("generates red manufacturing PMI plus orange ISM prices and services releases", () => {
+test("generates orange ISM headline PMI and yellow prices", () => {
   const rows = buildIsmRows({ fetchedAt: "2026-08-01T00:00:00Z", windowFrom: "2026-08-01", windowTo: "2026-08-31" });
   assert.deepEqual(rows.map((row) => [row.event_name, row.scheduled_at, row.importance]), [
-    ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 3],
-    ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 2],
+    ["ISM Manufacturing PMI", "2026-08-03T14:00:00.000Z", 2],
+    ["ISM Manufacturing Prices", "2026-08-03T14:00:00.000Z", 1],
     ["ISM Services PMI", "2026-08-05T14:00:00.000Z", 2],
   ]);
+});
+
+test("repairs stored manufacturing PMI importance", async () => {
+  const migration = await readFile(new URL("../supabase/053_ism_manufacturing_pmi_medium_importance.sql", import.meta.url), "utf8");
+  assert.match(migration, /event_name = 'ISM Manufacturing PMI'/);
+  assert.match(migration, /importance = 2/);
+});
+
+test("renders red, orange and yellow impact tiers", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(app, /clamp\(Math\.round\(num\(event\.importance\)\), 1, 3\)/);
+  assert.match(app, /"Low impact"/);
+  assert.match(styles, /\.macro-impact--medium i \{ background: var\(--orange-bright\); \}/);
+  assert.match(styles, /\.macro-impact--low i \{ background: var\(--gold-bright\); \}/);
 });
 
 test("parses official ISM tables and applies actual and previous values", () => {

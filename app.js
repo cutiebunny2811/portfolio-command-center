@@ -2584,7 +2584,9 @@
       body: `<div class="warning-box">This corrects the confirmed record, then rebuilds this ticker's weighted-average cost, cash effect and realized P/L in chronological order.</div>
         <div class="field-row"><label class="field"><span>Quantity</span><input name="quantity" type="number" min="0.00000001" step="0.00000001" value="${esc(execution.quantity)}" required></label><label class="field"><span>Price per share</span><input name="price" type="number" min="0" step="0.0001" value="${esc(execution.price)}" required></label></div>
         <div class="field-row"><label class="field"><span>Fee</span><input name="fee" type="number" min="0" step="any" inputmode="decimal" value="${esc(execution.fee)}" required></label><label class="field"><span>Date and time</span><input name="executed" type="datetime-local" value="${localDateTime(execution.executed_at)}" required></label></div>
-        <label class="field"><span>Reason for correction</span><textarea name="reason" maxlength="500" placeholder="Wrong quantity, price, fee or date..." required></textarea></label>`,
+        <label class="field"><span>Reason for correction</span><textarea name="reason" maxlength="500" placeholder="Wrong quantity, price, fee or date..." required></textarea></label>
+        <div class="warning-box"><strong>Wrong portfolio or transaction?</strong><br>Delete this record and PCC will rebuild the ticker's shares, cash and realized P/L from the remaining history.</div>
+        <button class="button button--danger" type="button" data-action="trade-history-delete" data-execution-id="${execution.id}">Delete transaction</button>`,
       onSubmit: async (form) => {
         await rpc("api_correct_execution", {
           p_execution_id: execution.id,
@@ -2596,6 +2598,35 @@
         });
         closeDialog();
         toast(`${instrument.symbol} history corrected`);
+        await loadData({ quiet: true });
+        openExecutionHistoryDialog();
+      }
+    });
+  }
+
+  function openExecutionDeleteDialog(executionId) {
+    const execution = state.executions.find((item) => item.id === executionId);
+    const instrument = instrumentMap().get(execution?.instrument_id);
+    const portfolio = state.portfolios.find((item) => item.id === execution?.portfolio_id);
+    if (!execution || !instrument || !portfolio) {
+      toast("Transaction could not be loaded", true);
+      return;
+    }
+    openDialog({
+      kicker: `${portfolio.name} · Audited deletion`,
+      title: `Delete ${instrument.symbol} ${String(execution.side).toUpperCase()}?`,
+      submitLabel: "Delete transaction",
+      danger: true,
+      body: `<div class="warning-box">This permanently removes only this confirmed transaction. PCC will rebuild ${instrument.symbol} shares, cash, cost basis and realized P/L from the remaining records.</div>
+        <dl class="review-list"><div><dt>Quantity</dt><dd>${formatTradeQuantity(execution.quantity)}</dd></div><div><dt>Price</dt><dd>${money(execution.price, 4)}</dd></div><div><dt>Fee</dt><dd>${money(execution.fee, 4)}</dd></div><div><dt>Date</dt><dd>${new Date(execution.executed_at).toLocaleString()}</dd></div></dl>
+        <label class="field"><span>Reason for deletion</span><textarea name="reason" maxlength="500" placeholder="Recorded in the wrong portfolio..." required></textarea></label>`,
+      onSubmit: async (form) => {
+        await rpc("api_delete_execution", {
+          p_execution_id: execution.id,
+          p_reason: form.get("reason")
+        });
+        closeDialog();
+        toast(`${instrument.symbol} transaction deleted and ledger rebuilt`);
         await loadData({ quiet: true });
         openExecutionHistoryDialog();
       }
@@ -6162,6 +6193,7 @@
     else if (action === "fx-opening-setup") openFxOpeningDialog();
     else if (action === "fx-rate-refresh") await refreshFxRate({ force: true, notify: true });
     else if (action === "trade-history-edit") openExecutionEditDialog(target.dataset.executionId);
+    else if (action === "trade-history-delete") openExecutionDeleteDialog(target.dataset.executionId);
     else if (action === "target-edit") openTargetDialog(target.dataset.instrumentId);
     else if (action === "price-record") openPriceDialog(target.dataset.instrumentId);
     else if (action === "asset-remove") openRemoveAssetDialog(target.dataset.instrumentId);

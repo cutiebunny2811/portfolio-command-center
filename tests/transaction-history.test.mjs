@@ -27,3 +27,19 @@ test("cash activity has a compact responsive ledger", () => {
   assert.match(css, /\.cash-history-table\s*\{/);
   assert.match(app, /cash-history-card/);
 });
+
+test("confirmed trades can be deleted with an audited ledger rebuild", () => {
+  const migration = readFileSync(
+    new URL("../supabase/migrations/20261015010000_delete_execution_with_rebuild.sql", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(app, /data-action="trade-history-delete"/);
+  assert.match(app, /api_delete_execution/);
+  assert.match(app, /Delete transaction/);
+  assert.match(migration, /delete from public\.journal_entries/i);
+  assert.match(migration, /delete from public\.executions/i);
+  assert.match(migration, /public\.api_rebuild_position/i);
+  assert.match(migration, /public\.api_cash_balance/i);
+  assert.match(migration, /'delete_execution'/i);
+});

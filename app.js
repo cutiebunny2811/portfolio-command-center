@@ -2650,6 +2650,7 @@
         <div class="kpi"><small>Total capital</small><strong>${money(stats.capital)}</strong></div>
         <div class="kpi"><small>Amount used</small><strong>${money(stats.deployed)}</strong></div>
         <div class="kpi"><small>Money remaining</small><strong class="gold">${money(stats.cash)}</strong></div>
+        <div class="kpi"><small>Unrealized P/L</small><strong class="${stats.returnAmount > 0 ? "positive" : stats.returnAmount < 0 ? "negative" : ""}">${stats.returnAmount > 0 ? "+" : ""}${money(stats.returnAmount)}</strong><span class="kpi__detail">${stats.returnPercent > 0 ? "+" : ""}${percent(stats.returnPercent, 2)} on open positions</span></div>
       </section>
       <section class="plan-summary ${plan.isOver ? "is-risk" : plan.isComplete ? "is-complete" : ""}">
         <div><span class="section-index">ALLOCATION PLAN</span><strong>${percent(plan.planned)} / 100%</strong></div>

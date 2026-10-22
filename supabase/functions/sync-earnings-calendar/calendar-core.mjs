@@ -90,11 +90,13 @@ export function buildCanonicalRows({
     [...finnhubByExactEvent.values()].map((event) => String(event.symbol || "").trim().toUpperCase()),
   );
   const yahooByExactEvent = new Map();
+  const yahooSymbols = new Set();
   for (const event of yahooCalendar || []) {
     const symbol = String(event?.symbol || "").trim().toUpperCase();
     const date = String(event?.date || "");
     if (!trackedSymbols.has(symbol) || finnhubSymbols.has(symbol)) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < windowFrom || date > windowTo) continue;
+    yahooSymbols.add(symbol);
     yahooByExactEvent.set(`${symbol}:${date}`, event);
   }
 
@@ -110,6 +112,24 @@ export function buildCanonicalRows({
     const candidate = { eventKey, symbol, earningsDate, alpha, yahoo };
     const current = fallbackBySymbol.get(symbol);
     if (!current || candidate.earningsDate < current.earningsDate) fallbackBySymbol.set(symbol, candidate);
+  }
+
+  // Yahoo's earnings history can lag or stop before the current year for some
+  // foreign ADRs. Once an Alpha date has elapsed, retain it as a historical
+  // event only when Finnhub omitted the symbol and Yahoo supplied no competing
+  // date anywhere in the month. Future schedules still require two providers.
+  for (const [eventKey, alpha] of alphaByExactEvent.entries()) {
+    const [symbol, earningsDate] = eventKey.split(":");
+    if (finnhubSymbols.has(symbol) || fallbackBySymbol.has(symbol) || yahooSymbols.has(symbol)) continue;
+    if (earningsDate > asOfDate) continue;
+    fallbackBySymbol.set(symbol, {
+      eventKey,
+      symbol,
+      earningsDate,
+      alpha,
+      yahoo: null,
+      elapsedAlphaOnly: true,
+    });
   }
 
   // Provider windows stop returning dates after they have passed. Preserve a
@@ -179,7 +199,7 @@ export function buildCanonicalRows({
       };
     });
 
-  const fallbackRows = [...fallbackBySymbol.values()].map(({ eventKey, symbol, earningsDate, alpha, yahoo, preservedHour, preservedPayload }) => {
+  const fallbackRows = [...fallbackBySymbol.values()].map(({ eventKey, symbol, earningsDate, alpha, yahoo, preservedHour, preservedPayload, elapsedAlphaOnly }) => {
     const existing = existingByEventKey.get(eventKey) || {};
     const isPreservedPast = Boolean(preservedHour);
     return {
@@ -189,7 +209,11 @@ export function buildCanonicalRows({
       event_key: eventKey,
       symbol,
       earnings_date: earningsDate,
-      report_hour: isPreservedPast ? preservedHour : normalizeHour(yahoo.hour),
+      report_hour: isPreservedPast
+        ? preservedHour
+        : elapsedAlphaOnly
+          ? normalizeAlphaHour(alphaValue(alpha, "timeOfTheDay", "reportTime", "hour"))
+          : normalizeHour(yahoo.hour),
       fiscal_quarter: existing.fiscal_quarter ?? null,
       fiscal_year: existing.fiscal_year ?? null,
       eps_estimate: finiteOrNull(alphaValue(alpha, "estimate", "epsEstimate", "estimatedEPS"))
@@ -199,7 +223,11 @@ export function buildCanonicalRows({
       revenue_actual: finiteOrNull(existing.revenue_actual),
       is_active: true,
       raw_payload: {
-        schedule_authority: isPreservedPast ? "preserved_past_alpha_exact" : "alpha_yahoo_exact_match",
+        schedule_authority: isPreservedPast
+          ? "preserved_past_alpha_exact"
+          : elapsedAlphaOnly
+            ? "alpha_elapsed_no_yahoo_schedule"
+            : "alpha_yahoo_exact_match",
         metrics_enrichment: "alpha_vantage",
         finnhub: null,
         alpha_vantage: alpha,

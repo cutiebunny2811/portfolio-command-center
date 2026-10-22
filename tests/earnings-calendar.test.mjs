@@ -115,6 +115,38 @@ test("a Yahoo disagreement cannot create or move a fallback event", () => {
   assert.deepEqual(rows, []);
 });
 
+test("an elapsed Alpha event survives when Finnhub omitted it and Yahoo has no current-month schedule", () => {
+  const rows = buildCanonicalRows({
+    finnhubCalendar: [],
+    alphaCalendar: [{ symbol: "NOK", reportDate: "2026-10-22", estimate: "0.08" }],
+    yahooCalendar: [],
+    tracked: new Set(["NOK"]),
+    windowFrom: "2026-10-01",
+    windowTo: "2026-10-31",
+    existingByEventKey: new Map(),
+    syncedAt: "2026-10-23T00:00:00.000Z",
+  });
+
+  assert.deepEqual(rows.map(({ event_key, report_hour }) => [event_key, report_hour]), [["NOK:2026-10-22", "tbd"]]);
+  assert.equal(rows[0].eps_estimate, 0.08);
+  assert.equal(rows[0].raw_payload.schedule_authority, "alpha_elapsed_no_yahoo_schedule");
+});
+
+test("an unconfirmed future Alpha event still requires Yahoo agreement", () => {
+  const rows = buildCanonicalRows({
+    finnhubCalendar: [],
+    alphaCalendar: [{ symbol: "NOK", reportDate: "2026-10-24" }],
+    yahooCalendar: [],
+    tracked: new Set(["NOK"]),
+    windowFrom: "2026-10-01",
+    windowTo: "2026-10-31",
+    existingByEventKey: new Map(),
+    syncedAt: "2026-10-23T00:00:00.000Z",
+  });
+
+  assert.deepEqual(rows, []);
+});
+
 test("Yahoo and Alpha can never override a Finnhub symbol even when both agree elsewhere", () => {
   const rows = build({
     finnhubCalendar: [{ symbol: "CAT", date: "2026-08-04", hour: "bmo" }],

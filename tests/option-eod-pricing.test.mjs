@@ -46,9 +46,9 @@ test("portfolio option pricing uses owner-gated Webull OPRA with Massive EOD fal
   assert.match(edgeFunction, /item\.asset_type === "option" && openPositionIds\.has\(item\.id\)/);
   assert.match(edgeFunction, /fetchOptionSnapshots/);
   assert.match(edgeFunction, /optionPortfolioMark/);
-  assert.match(edgeFunction, /p_source: "webull_opra"/);
+  assert.match(edgeFunction, /recordPortfolioPrice\(instrument\.id, mark\.price, mark\.marketTime, "webull_opra"\)/);
   assert.match(edgeFunction, /optionEodRequestLimit = 4/);
-  assert.match(edgeFunction, /p_source: "massive_eod"/);
+  assert.match(edgeFunction, /recordPortfolioPrice\(quote\.instrument\.id, quote\.price, quote\.marketTime, "massive_eod"\)/);
 });
 
 test("portfolio UI labels live OPRA pricing and the EOD/manual fallbacks", () => {

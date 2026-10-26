@@ -1496,7 +1496,9 @@
     state.priceRefreshBusy = true;
     if (notify) setSync(true, "Updating market prices...");
     try {
-      const { data, error } = await db.functions.invoke("refresh-stock-prices", { body: { force } });
+      const { data, error } = await db.functions.invoke("refresh-stock-prices", {
+        body: { action: "portfolio_prices", force }
+      });
       if (error) {
         let detail = error.message;
         try {

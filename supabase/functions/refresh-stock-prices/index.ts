@@ -16,7 +16,7 @@ import {
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -769,20 +769,28 @@ Deno.serve(async (request) => {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const authorization = request.headers.get("Authorization");
-    if (!authorization) return new Response(JSON.stringify({ error: "Authentication required" }), { status: 401, headers: jsonHeaders });
+    const action = String(body?.action || "");
+    const authorization = request.headers.get("Authorization") || "";
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const priceSyncSecret = Deno.env.get("PRICE_SYNC_SECRET")?.trim() || "";
+    const suppliedSyncSecret = request.headers.get("x-sync-secret")?.trim() || "";
+    const scheduledPortfolioRefresh = action === "portfolio_prices"
+      && Boolean(priceSyncSecret && suppliedSyncSecret === priceSyncSecret);
+    if (!authorization && !scheduledPortfolioRefresh) {
+      return new Response(JSON.stringify({ error: "Authentication required" }), { status: 401, headers: jsonHeaders });
+    }
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authorization } },
+      global: { headers: authorization ? { Authorization: authorization } : {} },
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const admin = createClient(supabaseUrl, supabaseServiceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     const bearer = authorization.replace(/^Bearer\s+/i, "").trim();
-    const internalUserId = ["chart", "option_chain"].includes(String(body?.action || "")) && bearer === supabaseServiceRoleKey
+    const internalUserId = scheduledPortfolioRefresh
+      || (["chart", "option_chain"].includes(action) && bearer === supabaseServiceRoleKey)
       ? String(body?.user_id || "").trim()
       : "";
     let authenticatedUserId = internalUserId;
@@ -1253,6 +1261,27 @@ Deno.serve(async (request) => {
     }
 
     const force = body?.force === true;
+    const portfolioOnly = action === "portfolio_prices";
+    const portfolioClient = scheduledPortfolioRefresh ? admin : supabase;
+    const recordPortfolioPrice = (
+      instrumentId: string,
+      price: number,
+      marketTime: string,
+      source: string,
+    ) => scheduledPortfolioRefresh
+      ? admin.from("instrument_prices").insert({
+          user_id: authenticatedUserId,
+          instrument_id: instrumentId,
+          price,
+          source,
+          market_time: marketTime,
+        })
+      : supabase.rpc("api_record_instrument_price", {
+          p_instrument_id: instrumentId,
+          p_price: price,
+          p_market_time: marketTime,
+          p_source: source,
+        });
     const massiveApiKey = Deno.env.get("MASSIVE_API_KEY") || "";
     const optionOwnerUserId = Deno.env.get("OPTIONS_OPRA_OWNER_USER_ID")?.trim()
       || Deno.env.get("OPTIONS_EOD_OWNER_USER_ID")?.trim()
@@ -1260,9 +1289,15 @@ Deno.serve(async (request) => {
     const optionPriceAccess = Boolean(optionOwnerUserId && authenticatedUserId === optionOwnerUserId);
     const massiveFallbackAccess = Boolean(massiveApiKey && optionPriceAccess);
     const [{ data: targets, error: targetError }, { data: positions, error: positionError }, watchlistResult] = await Promise.all([
-      supabase.from("allocation_targets").select("instrument_id").eq("is_active", true),
-      supabase.from("position_balances").select("instrument_id").gt("quantity", 0),
-      supabase.from("watchlist_items").select("instrument_id"),
+      portfolioClient
+        .from("allocation_targets")
+        .select("instrument_id,portfolios!inner(user_id)")
+        .eq("portfolios.user_id", authenticatedUserId)
+        .eq("is_active", true),
+      portfolioClient.from("position_balances").select("instrument_id").eq("user_id", authenticatedUserId).gt("quantity", 0),
+      portfolioOnly
+        ? Promise.resolve({ data: [], error: null })
+        : portfolioClient.from("watchlist_items").select("instrument_id").eq("user_id", authenticatedUserId),
     ]);
     if (targetError) throw targetError;
     if (positionError) throw positionError;
@@ -1278,9 +1313,10 @@ Deno.serve(async (request) => {
       reason: "No active instruments",
     }), { headers: jsonHeaders });
 
-    const { data: instruments, error: instrumentError } = await supabase
+    const { data: instruments, error: instrumentError } = await portfolioClient
       .from("instruments")
       .select("id,symbol,asset_type,underlying_symbol,option_type,strike,expiry")
+      .eq("user_id", authenticatedUserId)
       .in("id", activeIds)
       .in("asset_type", ["stock", "etf", "option"])
       .order("symbol")
@@ -1299,9 +1335,10 @@ Deno.serve(async (request) => {
     let pending = stockInstruments;
     if (!force && pending.length) {
       const cutoff = new Date(Date.now() - refreshWindowMs).toISOString();
-      const { data: fresh, error: freshError } = await supabase
+      const { data: fresh, error: freshError } = await portfolioClient
         .from("instrument_prices")
         .select("instrument_id")
+        .eq("user_id", authenticatedUserId)
         .in("instrument_id", pending.map((item) => item.id))
         .eq("source", "webull")
         .gte("fetched_at", cutoff);
@@ -1315,16 +1352,16 @@ Deno.serve(async (request) => {
     const failures = snapshots.flatMap((result, index) => result.status === "rejected"
       ? [{ symbol: pending[index].symbol, message: result.reason instanceof Error ? result.reason.message : String(result.reason) }]
       : []);
-    const writes = await Promise.all(successes.map(({ value }) => supabase.rpc("api_record_instrument_price", {
-      p_instrument_id: value.instrument.id,
-      p_price: value.price,
-      p_market_time: value.marketTime,
-      p_source: "webull",
-    })));
+    const writes = await Promise.all(successes.map(({ value }) => recordPortfolioPrice(
+      value.instrument.id,
+      value.price,
+      value.marketTime,
+      "webull",
+    )));
     writes.forEach((result, index) => {
       if (result.error) failures.push({ symbol: successes[index].value.instrument.symbol, message: result.error.message });
     });
-    const logoFailure = await syncInstrumentLogos(supabase, successes.map(({ value }) => ({
+    const logoFailure = scheduledPortfolioRefresh ? null : await syncInstrumentLogos(supabase, successes.map(({ value }) => ({
       instrumentId: value.instrument.id,
       webullInstrumentId: value.webullInstrumentId,
       logoUrl: value.logoUrl,
@@ -1340,9 +1377,10 @@ Deno.serve(async (request) => {
     let optionPending = optionInstruments;
     let optionPriceRows: Record<string, unknown>[] = [];
     if (optionInstruments.length) {
-      const { data: priceRows, error: priceRowsError } = await supabase
+      const { data: priceRows, error: priceRowsError } = await portfolioClient
         .from("instrument_prices")
         .select("instrument_id,source,market_time,fetched_at")
+        .eq("user_id", authenticatedUserId)
         .in("instrument_id", optionInstruments.map((item) => item.id))
         .order("fetched_at", { ascending: false })
         .limit(500);
@@ -1393,12 +1431,7 @@ Deno.serve(async (request) => {
         optionProtected += 1;
         continue;
       }
-      const write = await supabase.rpc("api_record_instrument_price", {
-        p_instrument_id: instrument.id,
-        p_price: mark.price,
-        p_market_time: mark.marketTime,
-        p_source: "webull_opra",
-      });
+      const write = await recordPortfolioPrice(instrument.id, mark.price, mark.marketTime, "webull_opra");
       if (write.error) {
         failures.push({ symbol: instrument.symbol, message: write.error.message });
         massiveFallbackPending.push(instrument);
@@ -1434,12 +1467,7 @@ Deno.serve(async (request) => {
         optionProtected += 1;
         continue;
       }
-      const write = await supabase.rpc("api_record_instrument_price", {
-        p_instrument_id: quote.instrument.id,
-        p_price: quote.price,
-        p_market_time: quote.marketTime,
-        p_source: "massive_eod",
-      });
+      const write = await recordPortfolioPrice(quote.instrument.id, quote.price, quote.marketTime, "massive_eod");
       if (write.error) failures.push({ symbol: quote.instrument.symbol, message: write.error.message });
       else {
         optionUpdated += 1;

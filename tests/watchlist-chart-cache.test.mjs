@@ -27,7 +27,7 @@ test("watchlist chart exposes cached 1H, 4H and 1D views with EMA200", async () 
   assert.match(app, /No nearby level/);
   assert.doesNotMatch(app, /data-action="watchlist-range"/);
   assert.match(index, /chart-technicals\.js\?v=20260820-chart-session/);
-  assert.match(index, /app\.js\?v=20261003-price-refresh-timeout/);
+  assert.match(index, /app\.js\?v=20261027-background-price-sync/);
 });
 
 test("nearby levels reject remote historical pivots and never invent ATR levels", async () => {
@@ -190,7 +190,7 @@ test("agent chart calls exchange the agent token for a scoped internal chart req
   assert.match(agentApi, /"Authorization": `Bearer \$\{serviceRoleKey\}`/);
   assert.match(agentApi, /"apikey": serviceRoleKey/);
   assert.match(agentApi, /user_id: identity\.user_id/);
-  assert.match(source, /\["chart", "option_chain"\]\.includes\(String\(body\?\.action/);
+  assert.match(source, /\["chart", "option_chain"\]\.includes\(action\)/);
   assert.match(source, /bearer === supabaseServiceRoleKey/);
   assert.match(source, /Invalid internal user/);
   assert.match(source, /const chartClient = internalUserId \? admin : supabase/);

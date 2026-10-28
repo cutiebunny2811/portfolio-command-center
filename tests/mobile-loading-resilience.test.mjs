@@ -16,7 +16,7 @@ test("Smart Money is lazy and cannot take down the mobile dashboard startup", as
   assert.match(app, /state\.smartMoneyError = friendlyError\(error\)/);
   assert.match(app, /data-action="smart-money-retry"/);
   assert.match(app, /async function loadSmartMoneyPage/);
-  assert.match(index, /app\.js\?v=20261027-background-price-sync/);
+  assert.match(index, /app\.js\?v=20261028-price-cache-resilience/);
   assert.match(app, /state\.watchlistLoaded \? Promise\.resolve\(state\.watchlist\) : optionalWatchlistQuery\(\)/);
 });
 

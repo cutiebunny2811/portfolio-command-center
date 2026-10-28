@@ -113,6 +113,7 @@
   const mobileMorePanel = $("#mobile-more-panel");
   const iosMajorVersion = Number(navigator.userAgent.match(/(?:CPU(?: iPhone)? OS|iPhone OS) (\d+)[._]/i)?.[1] || 0);
   const needsIOS26ViewportFix = /iP(?:hone|ad|od)/i.test(navigator.userAgent) && iosMajorVersion >= 26 && Boolean(window.visualViewport);
+  const portfolioPriceRefreshWindowMs = 12 * 60_000;
   let dialogSubmit = null;
   let toastTimer = null;
   let researchSearchTimer = null;
@@ -260,6 +261,9 @@
     if (/refresh-stock-prices.*not found|Failed to send a request to the Edge Function|FunctionsFetchError|404/i.test(message)) {
       return "Webull price refresh is not deployed yet. Deploy the refresh-stock-prices Supabase Edge Function and add its Webull secrets.";
     }
+    if (/canceling statement due to statement timeout/i.test(message)) {
+      return "Price history is busy. Showing saved prices while background sync retries.";
+    }
     if (/watchlist_items|api_add_watchlist_item|api_remove_watchlist_item/i.test(message)) {
       return "Watchlist is not installed yet. Run 011_watchlist.sql in Supabase first.";
     }
@@ -344,6 +348,83 @@
       if (!map.has(price.instrument_id)) map.set(price.instrument_id, price);
     });
     return map;
+  }
+
+  function priceCacheKey(userId = state.user?.id) {
+    return userId ? `pcc:latest-prices:v1:${userId}` : "";
+  }
+
+  function validPriceRows(rows) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => (
+      row
+      && typeof row.instrument_id === "string"
+      && row.instrument_id
+      && Number.isFinite(Number(row.price))
+      && Number(row.price) >= 0
+    ));
+  }
+
+  function priceRowTime(row) {
+    const fetched = new Date(row?.fetched_at || "").getTime();
+    if (Number.isFinite(fetched)) return fetched;
+    const market = new Date(row?.market_time || "").getTime();
+    return Number.isFinite(market) ? market : 0;
+  }
+
+  function persistPriceCache(rows = state.prices) {
+    const key = priceCacheKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify({
+        saved_at: new Date().toISOString(),
+        prices: validPriceRows(rows).slice(0, 500),
+      }));
+    } catch (error) {
+      console.warn("Price cache write skipped", error);
+    }
+  }
+
+  function restorePriceCache(userId) {
+    const key = priceCacheKey(userId);
+    if (!key) return [];
+    try {
+      return validPriceRows(JSON.parse(localStorage.getItem(key) || "{}")?.prices);
+    } catch (error) {
+      console.warn("Price cache read skipped", error);
+      return [];
+    }
+  }
+
+  function mergePriceRows(rows) {
+    const merged = new Map();
+    [...validPriceRows(state.prices), ...validPriceRows(rows)].forEach((row) => {
+      const current = merged.get(row.instrument_id);
+      if (!current || priceRowTime(row) >= priceRowTime(current)) merged.set(row.instrument_id, row);
+    });
+    state.prices = [...merged.values()].sort((a, b) => String(a.instrument_id).localeCompare(String(b.instrument_id)));
+    persistPriceCache();
+    return state.prices;
+  }
+
+  function portfolioPriceRefreshNeeded() {
+    const activeIds = new Set([
+      ...state.positions.filter((item) => num(item.quantity) > 0).map((item) => item.instrument_id),
+      ...state.targets.filter((item) => item.is_active !== false).map((item) => item.instrument_id),
+    ]);
+    const stockIds = state.instruments
+      .filter((item) => activeIds.has(item.id) && ["stock", "etf"].includes(String(item.asset_type).toLowerCase()))
+      .map((item) => item.id);
+    const optionIds = state.instruments
+      .filter((item) => activeIds.has(item.id) && String(item.asset_type).toLowerCase() === "option")
+      .map((item) => item.id);
+    if (!stockIds.length) {
+      return optionIds.length > 0 && (state.optionPriceAccess || !state.prices.length);
+    }
+    const prices = latestPriceMap();
+    return stockIds.some((id) => {
+      const row = prices.get(id);
+      return !row || row.source !== "webull" || Date.now() - priceRowTime(row) >= portfolioPriceRefreshWindowMs;
+    });
   }
 
   function latestWebullPriceTime() {
@@ -665,7 +746,9 @@
   }
 
   async function fetchLatestInstrumentPrices() {
-    return query("Prices", db.rpc("api_get_latest_instrument_prices"));
+    const prices = await query("Prices", db.rpc("api_get_latest_instrument_prices"));
+    mergePriceRows(prices);
+    return prices;
   }
 
   function afterFirstPaint(callback) {
@@ -680,7 +763,7 @@
         fetchLatestInstrumentPrices(),
         fetchJournalView({ page: 1, pageSize: 6 })
       ]);
-      state.prices = prices;
+      mergePriceRows(prices);
       state.journalOverview = journalOverview;
       if (["overview", "portfolio"].includes(state.route)) render();
     })().catch((error) => {
@@ -1539,6 +1622,7 @@
     if (localPreviewEnabled || !state.user || state.priceRefreshBusy) return null;
     const eligible = state.instruments.some((item) => ["stock", "etf", "option"].includes(String(item.asset_type).toLowerCase()));
     if (!eligible) return null;
+    if (!force && !portfolioPriceRefreshNeeded()) return { skipped: true, cached: true };
     state.priceRefreshBusy = true;
     if (notify) setSync(true, "Updating market prices...");
     try {
@@ -1556,11 +1640,21 @@
       if (data?.error) throw new Error(`Market price refresh: ${data.error}`);
       state.optionPriceAccess = data?.option_price_access === true;
       state.lastWebullRefresh = new Date();
+      const priceUpdates = validPriceRows(data?.price_updates);
+      if (priceUpdates.length) mergePriceRows(priceUpdates);
       if (num(data?.updated) > 0) {
-        [state.prices, state.instruments] = await Promise.all([
-          fetchLatestInstrumentPrices(),
-          query("Instruments", db.from("instruments").select("*").order("symbol"))
-        ]);
+        try {
+          state.instruments = await query("Instruments", db.from("instruments").select("*").order("symbol"));
+        } catch (instrumentError) {
+          console.warn("Instrument metadata refresh skipped", instrumentError);
+        }
+      }
+      if (!state.prices.length || (num(data?.updated) > priceUpdates.length && !priceUpdates.length)) {
+        try {
+          await fetchLatestInstrumentPrices();
+        } catch (priceError) {
+          console.warn("Latest price read skipped", priceError);
+        }
       }
       setSync(true, `Synced ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
       if (notify) {
@@ -1574,7 +1668,9 @@
     } catch (error) {
       console.warn(error);
       if (notify) setSync(false, "Price sync failed");
-      if (notify) toast(friendlyError(error), true);
+      if (notify) toast(state.prices.length
+        ? "Price update delayed. Saved prices remain visible while background sync retries."
+        : friendlyError(error), true);
       return null;
     } finally {
       state.priceRefreshBusy = false;
@@ -1795,12 +1891,14 @@
 
   async function showApp(user) {
     state.user = user;
+    state.prices = restorePriceCache(user.id);
     authShell.hidden = true;
     onboardingShell.hidden = true;
     appShell.hidden = false;
     await loadData();
     afterFirstPaint(() => {
-      void loadPriorityData().then(() => refreshStockPrices());
+      void loadPriorityData();
+      void refreshStockPrices();
       void loadHistoryData().catch((error) => console.warn(error));
       if (!["briefs", "smart-money-briefs"].includes(state.route)) void loadNotificationFeed();
       void loadRouteData(state.route);

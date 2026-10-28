@@ -11,6 +11,7 @@ test("portfolio refresh uses the lightweight portfolio-only action", () => {
   assert.match(app, /body:\s*\{ action: "portfolio_prices", force \}/);
   assert.match(edge, /const portfolioOnly = action === "portfolio_prices"/);
   assert.match(edge, /portfolioOnly\s*\? Promise\.resolve\(\{ data: \[\], error: null \}\)/);
+  assert.match(edge, /price_updates: priceUpdates/);
 });
 
 test("scheduled refresh is authenticated and scoped to one member", () => {

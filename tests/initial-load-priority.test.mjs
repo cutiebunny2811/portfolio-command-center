@@ -32,7 +32,7 @@ test("market desks and history hydrate after the first browser paint", () => {
   const body = functionBody("showApp", "fetchMemberOnboarding");
   assert.match(body, /await loadData\(\)/);
   assert.match(body, /afterFirstPaint/);
-  assert.match(body, /loadPriorityData\(\)\.then\(\(\) => refreshStockPrices\(\)\)/);
+  assert.match(body, /void loadPriorityData\(\);\s*void refreshStockPrices\(\);/);
   assert.match(body, /void loadHistoryData\(\)/);
   assert.match(body, /void loadNotificationFeed\(\)/);
   assert.match(body, /void loadRouteData\(state\.route\)/);

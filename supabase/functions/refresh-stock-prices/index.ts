@@ -1309,6 +1309,7 @@ Deno.serve(async (request) => {
       stock_updated: 0,
       option_updated: 0,
       option_price_access: optionPriceAccess,
+      price_updates: [],
       skipped: true,
       reason: "No active instruments",
     }), { headers: jsonHeaders });
@@ -1327,6 +1328,7 @@ Deno.serve(async (request) => {
       stock_updated: 0,
       option_updated: 0,
       option_price_access: optionPriceAccess,
+      price_updates: [],
       skipped: true,
       reason: "No supported instruments",
     }), { headers: jsonHeaders });
@@ -1361,6 +1363,14 @@ Deno.serve(async (request) => {
     writes.forEach((result, index) => {
       if (result.error) failures.push({ symbol: successes[index].value.instrument.symbol, message: result.error.message });
     });
+    const responseFetchedAt = new Date().toISOString();
+    const priceUpdates = successes.flatMap(({ value }, index) => writes[index].error ? [] : [{
+      instrument_id: value.instrument.id,
+      price: value.price,
+      source: "webull",
+      market_time: value.marketTime,
+      fetched_at: responseFetchedAt,
+    }]);
     const logoFailure = scheduledPortfolioRefresh ? null : await syncInstrumentLogos(supabase, successes.map(({ value }) => ({
       instrumentId: value.instrument.id,
       webullInstrumentId: value.webullInstrumentId,
@@ -1438,6 +1448,13 @@ Deno.serve(async (request) => {
       } else {
         optionUpdated += 1;
         optionWebullUpdated += 1;
+        priceUpdates.push({
+          instrument_id: instrument.id,
+          price: mark.price,
+          source: "webull_opra",
+          market_time: mark.marketTime,
+          fetched_at: responseFetchedAt,
+        });
       }
     }
 
@@ -1472,6 +1489,13 @@ Deno.serve(async (request) => {
       else {
         optionUpdated += 1;
         optionMassiveUpdated += 1;
+        priceUpdates.push({
+          instrument_id: quote.instrument.id,
+          price: quote.price,
+          source: "massive_eod",
+          market_time: quote.marketTime,
+          fetched_at: responseFetchedAt,
+        });
       }
     }
     const deferredOptions = Math.max(optionPending.length - webullOptionPending.length, 0);
@@ -1484,6 +1508,7 @@ Deno.serve(async (request) => {
       option_webull_updated: optionWebullUpdated,
       option_massive_updated: optionMassiveUpdated,
       option_price_access: optionPriceAccess,
+      price_updates: priceUpdates,
       option_checked: webullOptionPending.length,
       option_cached: Math.max(optionInstruments.length - optionPending.length, 0),
       option_protected: optionProtected,

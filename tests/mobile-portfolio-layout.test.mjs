@@ -33,3 +33,11 @@ test("desktop allocation summary keeps its label and ratio aligned on one line",
   assert.match(css, /\.plan-summary > div:first-child \.section-index,[\s\S]*?white-space:\s*nowrap;/);
   assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.plan-summary\s*\{\s*grid-template-columns:\s*1fr;/);
 });
+
+test("iOS 26 mobile navigation follows the visual viewport instead of the broken fixed bottom anchor", () => {
+  assert.match(app, /needsIOS26ViewportFix/);
+  assert.match(app, /window\.visualViewport\?\.addEventListener\("scroll", queueMobileViewportChromeSync\)/);
+  assert.match(app, /top: `\$\{navTop\}px`/);
+  assert.match(app, /bottom: "auto"/);
+  assert.match(css, /\.workspace\s*\{[^}]*padding:[^;}]*env\(safe-area-inset-bottom\)/);
+});

@@ -2128,7 +2128,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .sync-status, .account-button { display: none; }
   .topbar__status { padding: 0 14px; }
   .sidebar { display: none; }
-  .workspace { width: 100%; padding: 26px 16px 96px; }
+  .workspace { width: 100%; padding: 26px 16px calc(96px + env(safe-area-inset-bottom)); }
   .portfolio-switcher { display: flex; gap: 6px; overflow-x: auto; margin: 0 -16px 26px; padding: 0 16px 4px; scrollbar-width: none; }
   .portfolio-switcher::-webkit-scrollbar { display: none; }
   .portfolio-switcher button { flex: 0 0 auto; min-height: 34px; border: 1px solid var(--rule); border-radius: 99px; background: transparent; color: var(--paper-dim); padding: 6px 11px; font-size: 10px; }

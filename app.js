@@ -109,6 +109,10 @@
   const loading = $("#loading");
   const dialog = $("#dialog");
   const dialogForm = $("#dialog-form");
+  const mobileNav = $(".mobile-nav");
+  const mobileMorePanel = $("#mobile-more-panel");
+  const iosMajorVersion = Number(navigator.userAgent.match(/(?:CPU(?: iPhone)? OS|iPhone OS) (\d+)[._]/i)?.[1] || 0);
+  const needsIOS26ViewportFix = /iP(?:hone|ad|od)/i.test(navigator.userAgent) && iosMajorVersion >= 26 && Boolean(window.visualViewport);
   let dialogSubmit = null;
   let toastTimer = null;
   let researchSearchTimer = null;
@@ -128,6 +132,48 @@
   let watchlistLoadPromise = null;
   let notificationFeedPromise = null;
   let priorityLoadPromise = null;
+
+  function resetMobileViewportChrome() {
+    for (const element of [mobileNav, mobileMorePanel]) {
+      element?.style.removeProperty("top");
+      element?.style.removeProperty("bottom");
+      element?.style.removeProperty("left");
+      element?.style.removeProperty("right");
+      element?.style.removeProperty("width");
+    }
+  }
+
+  function syncMobileViewportChrome() {
+    const viewport = window.visualViewport;
+    if (!needsIOS26ViewportFix || !viewport || !window.matchMedia("(max-width: 760px)").matches) {
+      resetMobileViewportChrome();
+      return;
+    }
+
+    const navHeight = mobileNav.offsetHeight || 70;
+    const navTop = Math.max(viewport.offsetTop, viewport.offsetTop + viewport.height - navHeight);
+    Object.assign(mobileNav.style, {
+      top: `${navTop}px`,
+      bottom: "auto",
+      left: `${viewport.offsetLeft}px`,
+      right: "auto",
+      width: `${viewport.width}px`,
+    });
+
+    if (!mobileMorePanel.hidden) {
+      Object.assign(mobileMorePanel.style, {
+        top: `${Math.max(viewport.offsetTop, navTop - mobileMorePanel.offsetHeight)}px`,
+        bottom: "auto",
+        left: `${viewport.offsetLeft}px`,
+        right: "auto",
+        width: `${viewport.width}px`,
+      });
+    }
+  }
+
+  function queueMobileViewportChromeSync() {
+    window.requestAnimationFrame(syncMobileViewportChrome);
+  }
 
   function destroyWatchlistChart() {
     if (!watchlistChart) return;
@@ -1787,7 +1833,6 @@
   function renderNav() {
     const nav = $("#portfolio-nav");
     const switcher = $("#portfolio-switcher");
-    const mobileMorePanel = $("#mobile-more-panel");
     const mobileMoreButton = $("#mobile-more-button");
     const mobileMoreRoutes = new Set(["smart-money", "research", "earnings", "macro"]);
     nav.innerHTML = state.portfolios.map((portfolio) => {
@@ -1803,6 +1848,7 @@
     mobileMoreButton.classList.toggle("is-active", mobileMoreRoutes.has(state.route) || state.mobileMoreOpen);
     mobileMoreButton.setAttribute("aria-expanded", String(state.mobileMoreOpen));
     refreshIcons();
+    queueMobileViewportChromeSync();
   }
 
   function render() {
@@ -6412,12 +6458,16 @@
   });
   let resizeTimer;
   window.addEventListener("resize", () => {
+    queueMobileViewportChromeSync();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (state.route === "journal") drawEquityCurvePaged(state.journalDaily);
       if (state.route === "watchlist" && state.watchlistView === "charts") drawWatchlistChart();
     }, 120);
   });
+  window.visualViewport?.addEventListener("resize", queueMobileViewportChromeSync);
+  window.visualViewport?.addEventListener("scroll", queueMobileViewportChromeSync);
+  window.addEventListener("orientationchange", queueMobileViewportChromeSync);
 
   async function refreshVisibleWatchlistChart() {
     if (state.route !== "watchlist" || state.watchlistView !== "charts" || !state.selectedWatchlistInstrumentId || state.watchlistChartBusy) return;

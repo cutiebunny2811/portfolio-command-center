@@ -28,6 +28,16 @@ export const alphaValue = (event, ...keys) => {
   return "";
 };
 
+const yahooValue = (event, ...keys) => {
+  const raw = event?.raw && typeof event.raw === "object" ? event.raw : {};
+  const normalized = new Map(Object.entries({ ...raw, ...(event || {}) }).map(([key, value]) => [normalizedKey(key), value]));
+  for (const key of keys) {
+    const value = normalized.get(normalizedKey(key));
+    if (value != null) return value;
+  }
+  return null;
+};
+
 const normalizeAlphaHour = (value) => {
   const hour = String(value || "").trim().toLowerCase();
   if (["pre-market", "premarket", "before market open", "before open", "bmo"].includes(hour)) return "bmo";
@@ -94,7 +104,7 @@ export function buildCanonicalRows({
   for (const event of yahooCalendar || []) {
     const symbol = String(event?.symbol || "").trim().toUpperCase();
     const date = String(event?.date || "");
-    if (!trackedSymbols.has(symbol) || finnhubSymbols.has(symbol)) continue;
+    if (!trackedSymbols.has(symbol)) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < windowFrom || date > windowTo) continue;
     yahooSymbols.add(symbol);
     yahooByExactEvent.set(`${symbol}:${date}`, event);
@@ -112,6 +122,36 @@ export function buildCanonicalRows({
     const candidate = { eventKey, symbol, earningsDate, alpha, yahoo };
     const current = fallbackBySymbol.get(symbol);
     if (!current || candidate.earningsDate < current.earningsDate) fallbackBySymbol.set(symbol, candidate);
+  }
+
+  // A company can release results early while Finnhub still carries the old
+  // future schedule. When Alpha and Yahoo agree on an elapsed date and Yahoo
+  // already has an actual EPS, treat that reported event as authoritative.
+  // This cannot move an unreported event or replace a Finnhub row that has
+  // itself reached the reporting date.
+  const reportedOverrideSymbols = new Set();
+  for (const [eventKey, alpha] of alphaByExactEvent.entries()) {
+    const [symbol, earningsDate] = eventKey.split(":");
+    if (earningsDate > asOfDate) continue;
+    const yahoo = yahooByExactEvent.get(eventKey);
+    if (!yahoo || finiteOrNull(yahooValue(yahoo, "epsActual", "actualEPS")) == null) continue;
+    const finnhubEvents = [...finnhubByExactEvent.values()]
+      .filter((event) => String(event?.symbol || "").trim().toUpperCase() === symbol);
+    if (!finnhubEvents.length) continue;
+    if (finnhubEvents.some((event) => String(event?.date || "") <= asOfDate)) continue;
+    const overriddenFinnhub = finnhubEvents
+      .sort((left, right) => String(left?.date || "").localeCompare(String(right?.date || "")))[0];
+    if (!overriddenFinnhub || String(overriddenFinnhub.date || "") <= earningsDate) continue;
+    reportedOverrideSymbols.add(symbol);
+    fallbackBySymbol.set(symbol, {
+      eventKey,
+      symbol,
+      earningsDate,
+      alpha,
+      yahoo,
+      reportedOverride: true,
+      overriddenFinnhub,
+    });
   }
 
   // Yahoo's earnings history can lag or stop before the current year for some
@@ -166,6 +206,7 @@ export function buildCanonicalRows({
 
   const finnhubRows = [...finnhubByExactEvent.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
+    .filter(([, event]) => !reportedOverrideSymbols.has(String(event?.symbol || "").trim().toUpperCase()))
     .map(([eventKey, event]) => {
       const symbol = String(event.symbol || "").trim().toUpperCase();
       const earningsDate = String(event.date || "");
@@ -199,7 +240,7 @@ export function buildCanonicalRows({
       };
     });
 
-  const fallbackRows = [...fallbackBySymbol.values()].map(({ eventKey, symbol, earningsDate, alpha, yahoo, preservedHour, preservedPayload, elapsedAlphaOnly }) => {
+  const fallbackRows = [...fallbackBySymbol.values()].map(({ eventKey, symbol, earningsDate, alpha, yahoo, preservedHour, preservedPayload, elapsedAlphaOnly, reportedOverride, overriddenFinnhub }) => {
     const existing = existingByEventKey.get(eventKey) || {};
     const isPreservedPast = Boolean(preservedHour);
     return {
@@ -217,19 +258,25 @@ export function buildCanonicalRows({
       fiscal_quarter: existing.fiscal_quarter ?? null,
       fiscal_year: existing.fiscal_year ?? null,
       eps_estimate: finiteOrNull(alphaValue(alpha, "estimate", "epsEstimate", "estimatedEPS"))
+        ?? finiteOrNull(yahooValue(yahoo, "epsEstimate", "estimatedEPS"))
         ?? finiteOrNull(existing.eps_estimate),
-      eps_actual: finiteOrNull(existing.eps_actual),
-      revenue_estimate: finiteOrNull(existing.revenue_estimate),
-      revenue_actual: finiteOrNull(existing.revenue_actual),
+      eps_actual: finiteOrNull(yahooValue(yahoo, "epsActual", "actualEPS"))
+        ?? finiteOrNull(existing.eps_actual),
+      revenue_estimate: finiteOrNull(yahooValue(yahoo, "revenueEstimate", "estimatedRevenue"))
+        ?? finiteOrNull(existing.revenue_estimate),
+      revenue_actual: finiteOrNull(yahooValue(yahoo, "revenueActual", "actualRevenue"))
+        ?? finiteOrNull(existing.revenue_actual),
       is_active: true,
       raw_payload: {
         schedule_authority: isPreservedPast
           ? "preserved_past_alpha_exact"
           : elapsedAlphaOnly
             ? "alpha_elapsed_no_yahoo_schedule"
-            : "alpha_yahoo_exact_match",
+            : reportedOverride
+              ? "alpha_yahoo_reported_override"
+              : "alpha_yahoo_exact_match",
         metrics_enrichment: "alpha_vantage",
-        finnhub: null,
+        finnhub: overriddenFinnhub || null,
         alpha_vantage: alpha,
         yahoo_finance: yahoo ? (yahoo.raw || yahoo) : (preservedPayload?.yahoo_finance || null),
         confirmed_schedule: preservedPayload?.confirmed_schedule || null,

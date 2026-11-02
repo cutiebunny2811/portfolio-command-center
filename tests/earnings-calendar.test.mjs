@@ -156,6 +156,44 @@ test("Yahoo and Alpha can never override a Finnhub symbol even when both agree e
   assert.deepEqual(rows.map(({ event_key, report_hour }) => [event_key, report_hour]), [["CAT:2026-08-04", "bmo"]]);
 });
 
+test("reported Alpha and Yahoo event replaces a stale future Finnhub schedule", () => {
+  const rows = buildCanonicalRows({
+    finnhubCalendar: [{ symbol: "LITE", date: "2026-11-05", hour: "amc", epsEstimate: 4.21 }],
+    alphaCalendar: [{ symbol: "LITE", reportDate: "2026-11-02", estimate: "4.14" }],
+    yahooCalendar: [{
+      symbol: "LITE",
+      date: "2026-11-02",
+      hour: "bmo",
+      raw: { epsactual: 4.57, epsestimate: 4.14 },
+    }],
+    tracked: new Set(["LITE"]),
+    windowFrom: "2026-11-01",
+    windowTo: "2026-11-30",
+    existingByEventKey: new Map(),
+    syncedAt: "2026-11-02T13:00:00.000Z",
+  });
+
+  assert.deepEqual(rows.map(({ event_key, report_hour }) => [event_key, report_hour]), [["LITE:2026-11-02", "bmo"]]);
+  assert.equal(rows[0].eps_actual, 4.57);
+  assert.equal(rows[0].raw_payload.schedule_authority, "alpha_yahoo_reported_override");
+  assert.equal(rows[0].raw_payload.finnhub.date, "2026-11-05");
+});
+
+test("an elapsed estimate cannot replace Finnhub until Yahoo has reported actual EPS", () => {
+  const rows = buildCanonicalRows({
+    finnhubCalendar: [{ symbol: "LITE", date: "2026-11-05", hour: "amc" }],
+    alphaCalendar: [{ symbol: "LITE", reportDate: "2026-11-02", estimate: "4.14" }],
+    yahooCalendar: [{ symbol: "LITE", date: "2026-11-02", hour: "bmo", raw: { epsestimate: 4.14 } }],
+    tracked: new Set(["LITE"]),
+    windowFrom: "2026-11-01",
+    windowTo: "2026-11-30",
+    existingByEventKey: new Map(),
+    syncedAt: "2026-11-02T13:00:00.000Z",
+  });
+
+  assert.deepEqual(rows.map(({ event_key, report_hour }) => [event_key, report_hour]), [["LITE:2026-11-05", "amc"]]);
+});
+
 test("a verified missing-ticker event is preserved after its report date passes", () => {
   const rows = buildCanonicalRows({
     finnhubCalendar: [],

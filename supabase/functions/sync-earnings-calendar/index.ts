@@ -313,12 +313,28 @@ Deno.serve(async (request) => {
         .map((event) => String(event?.symbol || "").trim().toUpperCase())
         .filter((symbol) => tracked.has(symbol)),
     );
+    const asOfDate = dateOnly(now);
+    const finnhubDatesBySymbol = new Map<string, string[]>();
+    for (const event of finnhubCalendar) {
+      const symbol = String(event?.symbol || "").trim().toUpperCase();
+      const date = String(event?.date || "");
+      if (!tracked.has(symbol) || date < windowFrom || date > windowTo) continue;
+      const dates = finnhubDatesBySymbol.get(symbol) || [];
+      dates.push(date);
+      finnhubDatesBySymbol.set(symbol, dates);
+    }
     const yahooCandidateSymbols = [...new Set(
       alphaCalendar
         .filter((event) => {
           const symbol = alphaValue(event, "symbol", "ticker").toUpperCase();
           const date = alphaValue(event, "reportDate", "earningsDate", "date");
-          return tracked.has(symbol) && !finnhubSymbols.has(symbol) && date >= windowFrom && date <= windowTo;
+          if (!tracked.has(symbol) || date < windowFrom || date > windowTo) return false;
+          if (!finnhubSymbols.has(symbol)) return true;
+          const finnhubDates = finnhubDatesBySymbol.get(symbol) || [];
+          return date <= asOfDate
+            && finnhubDates.length > 0
+            && finnhubDates.every((finnhubDate) => finnhubDate > asOfDate)
+            && finnhubDates.some((finnhubDate) => finnhubDate > date);
         })
         .map((event) => alphaValue(event, "symbol", "ticker").toUpperCase()),
     )].sort();

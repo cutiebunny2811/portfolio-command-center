@@ -194,6 +194,39 @@ test("an elapsed estimate cannot replace Finnhub until Yahoo has reported actual
   assert.deepEqual(rows.map(({ event_key, report_hour }) => [event_key, report_hour]), [["LITE:2026-11-05", "amc"]]);
 });
 
+test("a verified company report overrides providers that still carry the old date", () => {
+  const rows = buildCanonicalRows({
+    finnhubCalendar: [{ symbol: "LITE", date: "2026-11-05", hour: "amc", epsEstimate: 4.21 }],
+    alphaCalendar: [{ symbol: "LITE", reportDate: "2026-11-05", estimate: "4.14" }],
+    yahooCalendar: [],
+    verifiedOverrides: [{
+      symbol: "LITE",
+      earnings_date: "2026-11-02",
+      report_hour: "bmo",
+      fiscal_quarter: 1,
+      fiscal_year: 2027,
+      eps_estimate: 4.14,
+      eps_actual: 4.57,
+      revenue_estimate: 1_250_000_000,
+      revenue_actual: 1_262_600_000,
+      source_url: "https://investor.lumentum.com/",
+      source_note: "Q1 FY2027 results released early with the Marvell transaction announcement",
+      is_active: true,
+    }],
+    tracked: new Set(["LITE"]),
+    windowFrom: "2026-11-01",
+    windowTo: "2026-11-30",
+    existingByEventKey: new Map(),
+    syncedAt: "2026-11-02T14:00:00.000Z",
+  });
+
+  assert.deepEqual(rows.map(({ event_key, report_hour }) => [event_key, report_hour]), [["LITE:2026-11-02", "bmo"]]);
+  assert.equal(rows[0].eps_actual, 4.57);
+  assert.equal(rows[0].revenue_actual, 1_262_600_000);
+  assert.equal(rows[0].raw_payload.schedule_authority, "company_reported_override");
+  assert.equal(rows[0].raw_payload.finnhub[0].date, "2026-11-05");
+});
+
 test("a verified missing-ticker event is preserved after its report date passes", () => {
   const rows = buildCanonicalRows({
     finnhubCalendar: [],

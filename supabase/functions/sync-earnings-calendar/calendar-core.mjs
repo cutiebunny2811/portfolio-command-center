@@ -68,6 +68,7 @@ export function buildCanonicalRows({
   finnhubCalendar,
   alphaCalendar = [],
   yahooCalendar = [],
+  verifiedOverrides = [],
   tracked,
   windowFrom,
   windowTo,
@@ -76,6 +77,14 @@ export function buildCanonicalRows({
 }) {
   const asOfDate = String(syncedAt).slice(0, 10);
   const trackedSymbols = tracked instanceof Set ? tracked : new Set(tracked || []);
+  const verifiedBySymbol = new Map();
+  for (const override of verifiedOverrides || []) {
+    const symbol = String(override?.symbol || "").trim().toUpperCase();
+    const earningsDate = String(override?.earnings_date || "");
+    if (!trackedSymbols.has(symbol) || override?.is_active === false) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(earningsDate) || earningsDate < windowFrom || earningsDate > windowTo) continue;
+    verifiedBySymbol.set(symbol, { ...override, symbol, earnings_date: earningsDate });
+  }
   const alphaByExactEvent = new Map();
   for (const event of alphaCalendar || []) {
     const symbol = alphaValue(event, "symbol", "ticker").toUpperCase();
@@ -116,7 +125,7 @@ export function buildCanonicalRows({
   const fallbackBySymbol = new Map();
   for (const [eventKey, alpha] of alphaByExactEvent.entries()) {
     const [symbol, earningsDate] = eventKey.split(":");
-    if (finnhubSymbols.has(symbol)) continue;
+    if (verifiedBySymbol.has(symbol) || finnhubSymbols.has(symbol)) continue;
     const yahoo = yahooByExactEvent.get(eventKey);
     if (!yahoo) continue;
     const candidate = { eventKey, symbol, earningsDate, alpha, yahoo };
@@ -132,6 +141,7 @@ export function buildCanonicalRows({
   const reportedOverrideSymbols = new Set();
   for (const [eventKey, alpha] of alphaByExactEvent.entries()) {
     const [symbol, earningsDate] = eventKey.split(":");
+    if (verifiedBySymbol.has(symbol)) continue;
     if (earningsDate > asOfDate) continue;
     const yahoo = yahooByExactEvent.get(eventKey);
     if (!yahoo || finiteOrNull(yahooValue(yahoo, "epsActual", "actualEPS")) == null) continue;
@@ -160,7 +170,7 @@ export function buildCanonicalRows({
   // date anywhere in the month. Future schedules still require two providers.
   for (const [eventKey, alpha] of alphaByExactEvent.entries()) {
     const [symbol, earningsDate] = eventKey.split(":");
-    if (finnhubSymbols.has(symbol) || fallbackBySymbol.has(symbol) || yahooSymbols.has(symbol)) continue;
+    if (verifiedBySymbol.has(symbol) || finnhubSymbols.has(symbol) || fallbackBySymbol.has(symbol) || yahooSymbols.has(symbol)) continue;
     if (earningsDate > asOfDate) continue;
     fallbackBySymbol.set(symbol, {
       eventKey,
@@ -181,7 +191,7 @@ export function buildCanonicalRows({
     const separator = eventKey.lastIndexOf(":");
     const symbol = eventKey.slice(0, separator).toUpperCase();
     const earningsDate = eventKey.slice(separator + 1);
-    if (!trackedSymbols.has(symbol) || finnhubSymbols.has(symbol) || fallbackBySymbol.has(symbol)) continue;
+    if (!trackedSymbols.has(symbol) || verifiedBySymbol.has(symbol) || finnhubSymbols.has(symbol) || fallbackBySymbol.has(symbol)) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(earningsDate) || earningsDate < windowFrom || earningsDate > windowTo) continue;
     if (earningsDate >= asOfDate) continue;
     const payload = existing?.raw_payload && typeof existing.raw_payload === "object" ? existing.raw_payload : {};
@@ -206,7 +216,10 @@ export function buildCanonicalRows({
 
   const finnhubRows = [...finnhubByExactEvent.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .filter(([, event]) => !reportedOverrideSymbols.has(String(event?.symbol || "").trim().toUpperCase()))
+    .filter(([, event]) => {
+      const symbol = String(event?.symbol || "").trim().toUpperCase();
+      return !verifiedBySymbol.has(symbol) && !reportedOverrideSymbols.has(symbol);
+    })
     .map(([eventKey, event]) => {
       const symbol = String(event.symbol || "").trim().toUpperCase();
       const earningsDate = String(event.date || "");
@@ -286,6 +299,44 @@ export function buildCanonicalRows({
     };
   });
 
-  return [...finnhubRows, ...fallbackRows]
+  const verifiedRows = [...verifiedBySymbol.values()].map((override) => {
+    const eventKey = `${override.symbol}:${override.earnings_date}`;
+    const existing = existingByEventKey.get(eventKey) || {};
+    return {
+      source: "finnhub",
+      event_key: eventKey,
+      symbol: override.symbol,
+      earnings_date: override.earnings_date,
+      report_hour: normalizeHour(override.report_hour),
+      fiscal_quarter: override.fiscal_quarter ?? existing.fiscal_quarter ?? null,
+      fiscal_year: override.fiscal_year ?? existing.fiscal_year ?? null,
+      eps_estimate: finiteOrNull(override.eps_estimate) ?? finiteOrNull(existing.eps_estimate),
+      eps_actual: finiteOrNull(override.eps_actual) ?? finiteOrNull(existing.eps_actual),
+      revenue_estimate: finiteOrNull(override.revenue_estimate) ?? finiteOrNull(existing.revenue_estimate),
+      revenue_actual: finiteOrNull(override.revenue_actual) ?? finiteOrNull(existing.revenue_actual),
+      is_active: true,
+      raw_payload: {
+        schedule_authority: "company_reported_override",
+        metrics_enrichment: "verified_override",
+        finnhub: [...finnhubByExactEvent.values()].filter((event) => String(event?.symbol || "").trim().toUpperCase() === override.symbol),
+        alpha_vantage: [...alphaByExactEvent.entries()]
+          .filter(([key]) => key.startsWith(`${override.symbol}:`))
+          .map(([, event]) => event),
+        yahoo_finance: [...yahooByExactEvent.entries()]
+          .filter(([key]) => key.startsWith(`${override.symbol}:`))
+          .map(([, event]) => event.raw || event),
+        confirmed_schedule: {
+          date: override.earnings_date,
+          hour: normalizeHour(override.report_hour),
+          source_url: override.source_url || null,
+          note: override.source_note || null,
+        },
+      },
+      fetched_at: syncedAt,
+      updated_at: syncedAt,
+    };
+  });
+
+  return [...finnhubRows, ...fallbackRows, ...verifiedRows]
     .sort((left, right) => left.event_key.localeCompare(right.event_key));
 }

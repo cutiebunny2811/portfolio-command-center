@@ -307,6 +307,20 @@ Deno.serve(async (request) => {
 
     const alphaCalendar = await fetchAlphaVantage(alphaKey);
 
+    const verifiedOverrides: Record<string, unknown>[] = [];
+    const trackedSymbols = [...tracked];
+    for (let offset = 0; offset < trackedSymbols.length; offset += 100) {
+      const { data, error } = await service
+        .from("earnings_event_overrides")
+        .select("symbol,earnings_date,report_hour,fiscal_quarter,fiscal_year,eps_estimate,eps_actual,revenue_estimate,revenue_actual,source_url,source_note,is_active")
+        .eq("is_active", true)
+        .in("symbol", trackedSymbols.slice(offset, offset + 100))
+        .gte("earnings_date", windowFrom)
+        .lte("earnings_date", windowTo);
+      if (error) throw error;
+      verifiedOverrides.push(...(data || []));
+    }
+
     const finnhubSymbols = new Set(
       finnhubCalendar
         .filter((event) => String(event?.date || "") >= windowFrom && String(event?.date || "") <= windowTo)
@@ -344,7 +358,6 @@ Deno.serve(async (request) => {
     const yahooCalendar = await fetchYahooEarnings(yahooCandidateSymbols, windowFrom, windowTo);
 
     const existingByEventKey = new Map<string, Record<string, unknown>>();
-    const trackedSymbols = [...tracked];
     for (let offset = 0; offset < trackedSymbols.length; offset += 100) {
       const { data, error } = await service
         .from("earnings_events")
@@ -361,6 +374,7 @@ Deno.serve(async (request) => {
       finnhubCalendar,
       alphaCalendar,
       yahooCalendar,
+      verifiedOverrides,
       tracked,
       windowFrom,
       windowTo,
@@ -416,6 +430,7 @@ Deno.serve(async (request) => {
         yahoo_finance: yahooCalendar.length,
       },
       fallback_candidates: yahooCandidateSymbols.length,
+      verified_overrides: verifiedOverrides.length,
       window_from: windowFrom,
       window_to: windowTo,
     }), { headers: jsonHeaders });

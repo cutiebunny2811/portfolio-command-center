@@ -252,10 +252,13 @@
     if (/AUTH_REQUEST_TIMEOUT/i.test(message)) {
       return "Sign-in service did not respond. Check your connection and try again.";
     }
+    if (/PGRST002|Could not query the database for the schema cache/i.test(message)) {
+      return "PCC data service is restarting. Wait a moment and try again.";
+    }
     if (/api_get_journal_view/i.test(message)) {
       return "Scalable Journal API is not installed yet. Run 007_journal_scaling.sql in Supabase first.";
     }
-    if (/api_create_journal_entry|schema cache|function .* does not exist/i.test(message)) {
+    if (/api_create_journal_entry|function .* does not exist/i.test(message)) {
       return "Journal API is not installed yet. Run 005_journal_api.sql in Supabase first.";
     }
     if (/api_remove_asset_from_portfolio/i.test(message)) {

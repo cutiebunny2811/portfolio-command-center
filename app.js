@@ -249,6 +249,9 @@
 
   function friendlyError(error) {
     const message = error?.message || String(error || "Unknown error");
+    if (/AUTH_REQUEST_TIMEOUT/i.test(message)) {
+      return "Sign-in service did not respond. Check your connection and try again.";
+    }
     if (/api_get_journal_view/i.test(message)) {
       return "Scalable Journal API is not installed yet. Run 007_journal_scaling.sql in Supabase first.";
     }
@@ -6388,14 +6391,22 @@
     errorNode.classList.remove("is-success");
     button.disabled = true; button.textContent = "Signing in…"; errorNode.textContent = "";
     const form = new FormData(event.currentTarget);
-    const { data, error } = await db.auth.signInWithPassword({ email: form.get("email"), password: form.get("password") });
-    if (error) { errorNode.textContent = error.message; button.disabled = false; button.textContent = "Enter dashboard"; return; }
+    let timeoutId;
     try {
+      const timeout = new Promise((_, reject) => {
+        timeoutId = window.setTimeout(() => reject(new Error("AUTH_REQUEST_TIMEOUT")), 20_000);
+      });
+      const { data, error } = await Promise.race([
+        db.auth.signInWithPassword({ email: form.get("email"), password: form.get("password") }),
+        timeout,
+      ]);
+      if (error) throw error;
       await enterAuthenticatedApp(data.user);
     } catch (entryError) {
       console.error(entryError);
       errorNode.textContent = friendlyError(entryError);
     } finally {
+      window.clearTimeout(timeoutId);
       button.disabled = false; button.textContent = "Enter dashboard";
     }
   });

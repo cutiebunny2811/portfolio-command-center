@@ -17,5 +17,5 @@ test("login recovers when the Supabase Auth request stalls", async () => {
   assert.match(app, /PGRST002\|Could not query the database for the schema cache/);
   assert.match(app, /PCC data service is restarting\. Wait a moment and try again\./);
   assert.doesNotMatch(app, /api_create_journal_entry\|schema cache/);
-  assert.match(index, /app\.js\?v=20261107-auth-timeout/);
+  assert.match(index, /app\.js\?v=20261107-auth-recovery/);
 });
